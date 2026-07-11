@@ -10,6 +10,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
 .venv/
 venv/
 
@@ -17,6 +18,7 @@ venv/
 node_modules/
 .next/
 dist/
+build/
 out/
 *.tsbuildinfo
 
