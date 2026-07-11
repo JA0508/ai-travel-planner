@@ -1,0 +1,10 @@
+{"label":"internal_museum_focused_long_weekend","text":"城市: 上海\n天数: 3\n偏好: 这次更想把上海排得偏博物馆和展览一些，但每天别太赶，能留一点慢慢走的时间。"}
+{"label":"internal_citywalk_neighborhood_day","text":"城市: 上海\n天数: 2\n偏好: 其中一天更想做 citywalk，想逛老街和街区，不要一直在大景点之间来回跑。"}
+{"label":"internal_food_break_rhythm","text":"城市: 上海\n天数: 2\n偏好: 节奏想轻一点，白天多一点咖啡店、小吃和顺路休息的停靠。"}
+{"label":"internal_evening_riverside_plan","text":"城市: 上海\n天数: 2\n偏好: 晚上希望留给滨江、夜景和散步，白天正常安排就好。"}
+{"label":"internal_mixed_humanities_and_night","text":"城市: 上海\n天数: 3\n偏好: 人文一点最好，白天想有博物馆和 citywalk，晚上如果能顺着看夜景会更舒服。"}
+{"label":"internal_open_ended_relaxed","text":"城市: 上海\n天数: 2\n偏好: 行程轻松一点就可以，没有特别指定一定要去哪类地方。"}
+{"label":"internal_named_museum_route","text":"城市: 上海\n景点: 上海博物馆, 上海自然博物馆\n偏好: 想把这天排得顺一点，中间别太折腾。"}
+{"label":"internal_named_wandering_route","text":"城市: 上海\n景点: 思南公馆, 新天地\n偏好: 想保留边走边逛的感觉，别变成纯打卡路线。"}
+{"label":"internal_parser_inferred_evening_mood","text":"城市: 上海\n天数: 2\n偏好: 晚上想留一点氛围感，行程不用排太满。","parser_mode":"normalized_override","style_preferences":["night_view"],"style_preference_sources":{"night_view":"inferred"}}
+{"label":"internal_explicit_beats_inferred_museum","text":"城市: 上海\n景点: 上海博物馆\n偏好: 其实这次还是更想做博物馆和展览路线。","parser_mode":"normalized_override","style_preferences":["museum"],"style_preference_sources":{"museum":"inferred"}}

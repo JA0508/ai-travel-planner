@@ -1,0 +1,9 @@
+{"label":"museum_weekend_request","text":"城市: 上海\n偏好: 这次周末更想排成一个偏博物馆和展览的人文路线，中间穿插一点慢慢走的时间。"}
+{"label":"citywalk_old_street_request","text":"城市: 上海\n偏好: 更想要老街和 citywalk 的感觉，慢慢逛街区，不想一直赶打卡点。"}
+{"label":"cafe_break_request","text":"城市: 上海\n偏好: 这天想轻松一点，路上可以穿插咖啡店、小吃和顺路休息的地方。"}
+{"label":"riverside_evening_request","text":"城市: 上海\n偏好: 晚上想留给滨江夜景和散步，白天不用排得太满。"}
+{"label":"mixed_museum_citywalk_evening_request","text":"城市: 上海\n偏好: 白天想一半博物馆一半 citywalk，晚上如果能顺着看夜景会更好。"}
+{"label":"weak_open_request","text":"城市: 上海\n偏好: 行程轻松一点就行，其他没有特别要求。"}
+{"label":"museum_named_spots_request","text":"城市: 上海\n景点: 上海博物馆, 上海自然博物馆\n偏好: 节奏舒服一点，你帮我顺一下当天路线。"}
+{"label":"old_street_named_spots_request","text":"城市: 上海\n景点: 思南公馆, 新天地\n偏好: 节奏别太赶，想保留一点边走边逛的感觉。"}
+{"label":"soft_evening_parser_inferred_request","text":"城市: 上海\n偏好: 晚上更想留一点氛围感，其他安排可以简单些。","parser_mode":"normalized_override","style_preferences":["night_view"],"style_preference_sources":{"night_view":"inferred"}}

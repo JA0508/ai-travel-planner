@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Node / Next.js
+node_modules/
+.next/
+dist/
+out/
+*.tsbuildinfo
+
+# Local caches and generated artifacts
+.amap_geocode_cache.json
+*.log
+coverage/

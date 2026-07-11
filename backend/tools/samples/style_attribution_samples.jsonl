@@ -1,0 +1,10 @@
+{"label":"museum_explicit","text":"城市: 上海\n偏好: 博物馆, 展览"}
+{"label":"museum_poi_mix","text":"城市: 上海\n景点: 上海博物馆, 上海自然博物馆"}
+{"label":"citywalk_explicit","text":"城市: 上海\n偏好: citywalk, 老街, 慢慢逛"}
+{"label":"old_street_poi_mix","text":"城市: 上海\n景点: 思南公馆, 新天地"}
+{"label":"food_stop_explicit","text":"城市: 上海\n偏好: 咖啡, 小吃"}
+{"label":"night_view_explicit","text":"城市: 上海\n偏好: 夜景, 滨江散步"}
+{"label":"weak_signal","text":"城市: 上海\n偏好: 轻松一点"}
+{"label":"mixed_explicit_dominates","text":"城市: 上海\n偏好: 博物馆, 展览","parser_mode":"normalized_override","style_preferences":["museum"],"style_preference_sources":{"museum":"inferred"}}
+{"label":"parser_explicit_night_view","text":"城市: 上海\n偏好: 轻松一点","parser_mode":"normalized_override","style_preferences":["night_view"],"style_preference_sources":{"night_view":"explicit"}}
+{"label":"parser_inferred_night_view","text":"城市: 上海\n偏好: 轻松一点","parser_mode":"normalized_override","style_preferences":["night_view"],"style_preference_sources":{"night_view":"inferred"}}
