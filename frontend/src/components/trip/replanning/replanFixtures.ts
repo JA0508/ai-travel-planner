@@ -1,0 +1,228 @@
+"use client";
+
+import type { ReplanItineraryLike } from "./replanTypes";
+
+export const replanFixtureItinerary: ReplanItineraryLike = {
+  trip_days: 3,
+  hotel: { name: "钟楼附近酒店" },
+  planning_anchor_source: {
+    source_type: "provided_hotel",
+    source_name: "钟楼附近酒店",
+  },
+  trip_intent: {
+    current_intent: {
+      flexible_scenic_spots: ["西安城墙", "陕西历史博物馆", "大雁塔", "大唐不夜城"],
+      flexible_restaurants: ["回民街小吃", "永兴坊"],
+      carry_forward_scenic_spots: ["西安城墙", "陕西历史博物馆", "大雁塔", "大唐不夜城"],
+      carry_forward_restaurants: ["回民街小吃", "永兴坊"],
+      auto_seeded_scenic_spots: [],
+      auto_seeded_restaurants: [],
+      rejected_scenic_spots: [],
+      rejected_restaurants: [],
+      notes: [],
+    },
+    summary_lines: ["当前 brief 包含历史文化和夜游偏好。"],
+  },
+  planning_assumptions: {
+    regeneration_intent: {
+      flexible_scenic_spots: ["西安城墙", "陕西历史博物馆", "大雁塔", "大唐不夜城"],
+      flexible_restaurants: ["回民街小吃", "永兴坊"],
+      carry_forward_scenic_spots: ["西安城墙", "陕西历史博物馆", "大雁塔", "大唐不夜城"],
+      carry_forward_restaurants: ["回民街小吃", "永兴坊"],
+      auto_seeded_scenic_spots: [],
+      auto_seeded_restaurants: [],
+      rejected_scenic_spots: [],
+      rejected_restaurants: [],
+      notes: [],
+    },
+    execution_trace: [],
+    follow_up_interpretation: null,
+  },
+  boundary_explanation: {
+    arrival_anchor_influenced: true,
+    arrival_anchor_name: "西安北站",
+    arrival_poi_name: "西安城墙",
+    departure_anchor_influenced: true,
+    departure_anchor_name: "西安站",
+    departure_poi_name: "大雁塔",
+  },
+  days: [
+    {
+      day: 1,
+      blocks: [
+        {
+          block_type: "morning",
+          start_time: "09:00",
+          end_time: "12:00",
+          items: [],
+        },
+        {
+          block_type: "afternoon",
+          start_time: "13:30",
+          end_time: "17:30",
+          items: [
+            {
+              name: "西安城墙",
+              type: "scenic",
+              day: 1,
+              start_time: "14:00",
+              end_time: "16:00",
+              is_fixed: false,
+              placement_reason: "抵达后安排轻量景点。",
+              source_type: "user_seed",
+              travel_from_name: "西安北站",
+              travel_distance_m: 6800,
+              travel_duration_s: 1600,
+            },
+          ],
+        },
+        {
+          block_type: "evening",
+          start_time: "18:00",
+          end_time: "21:30",
+          items: [
+            {
+              name: "回民街小吃",
+              type: "restaurant",
+              day: 1,
+              start_time: "18:30",
+              end_time: "20:00",
+              is_fixed: false,
+              placement_reason: "夜间餐食。",
+              source_type: "user_seed",
+              travel_from_name: "西安城墙",
+              travel_distance_m: 1200,
+              travel_duration_s: 900,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      day: 2,
+      blocks: [
+        {
+          block_type: "morning",
+          start_time: "09:00",
+          end_time: "12:00",
+          items: [
+            {
+              name: "陕西历史博物馆",
+              type: "scenic",
+              day: 2,
+              start_time: "09:30",
+              end_time: "11:30",
+              is_fixed: true,
+              placement_reason: "预约票固定时段。",
+              source_type: "user_fixed",
+              source_label: "已锁定",
+              source_reason: "用户固定预约。",
+              travel_from_name: "钟楼附近酒店",
+              travel_distance_m: 5200,
+              travel_duration_s: 1400,
+            },
+          ],
+        },
+        {
+          block_type: "afternoon",
+          start_time: "13:30",
+          end_time: "17:30",
+          items: [
+            {
+              name: "大雁塔",
+              type: "scenic",
+              day: 2,
+              start_time: "14:00",
+              end_time: "16:00",
+              is_fixed: false,
+              placement_reason: "靠近博物馆。",
+              source_type: "user_seed",
+              travel_from_name: "陕西历史博物馆",
+              travel_distance_m: 1100,
+              travel_duration_s: 760,
+            },
+            {
+              name: "曲江池遗址公园",
+              type: "scenic",
+              day: 2,
+              start_time: "16:30",
+              end_time: "17:30",
+              is_fixed: false,
+              placement_reason: "自动补齐附近散步点。",
+              source_type: "auto_filled",
+              travel_from_name: "大雁塔",
+              travel_distance_m: 3100,
+              travel_duration_s: 1200,
+            },
+          ],
+        },
+        {
+          block_type: "evening",
+          start_time: "18:00",
+          end_time: "21:30",
+          items: [
+            {
+              name: "大唐不夜城",
+              type: "scenic",
+              day: 2,
+              start_time: "19:00",
+              end_time: "21:00",
+              is_fixed: false,
+              placement_reason: "夜游。",
+              source_type: "user_seed",
+              travel_from_name: "曲江池遗址公园",
+              travel_distance_m: 1600,
+              travel_duration_s: 900,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      day: 3,
+      blocks: [
+        {
+          block_type: "morning",
+          start_time: "09:00",
+          end_time: "12:00",
+          items: [
+            {
+              name: "永兴坊",
+              type: "restaurant",
+              day: 3,
+              start_time: "10:30",
+              end_time: "12:00",
+              is_fixed: false,
+              placement_reason: "离站前轻食。",
+              source_type: "auto_seeded_meal",
+              travel_from_name: "钟楼附近酒店",
+              travel_distance_m: 2500,
+              travel_duration_s: 900,
+            },
+          ],
+        },
+        {
+          block_type: "afternoon",
+          start_time: "13:30",
+          end_time: "17:30",
+          items: [],
+        },
+        {
+          block_type: "evening",
+          start_time: "18:00",
+          end_time: "21:30",
+          items: [],
+        },
+      ],
+    },
+  ],
+};
+
+export const replanFixturePrompts = {
+  removeFlexibleStop: "去掉曲江池遗址公园，第二天下午轻一点",
+  blockFixedStop: "不要陕西历史博物馆了",
+  moveStop: "把大雁塔挪到第三天上午",
+  relaxDay: "第二天下午轻一点，不要太赶",
+  weatherGap: "如果下雨，把户外景点换成室内",
+  backendPreference: "接下来尽量少走路，景点安排得近一点",
+} as const;

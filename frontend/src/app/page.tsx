@@ -21,6 +21,13 @@ import {
   type RouteWorkspaceSheetKey,
 } from "@/components/trip/RouteWorkspaceShell";
 import { DesktopRouteLeftRail } from "@/components/trip/DesktopRouteLeftRail";
+import { ConversationalReplanPanel } from "@/components/trip/replanning/ConversationalReplanPanel";
+import type {
+  ReplanExecutionResult,
+  ReplanHistoryEntry,
+  ReplanMutationPlan,
+} from "@/components/trip/replanning/replanTypes";
+import { applyReplanMutationPlanToItinerary } from "@/components/trip/replanning/replanViewModel";
 import { TripReadinessPanel } from "@/components/trip/readiness/TripReadinessPanel";
 import { buildTripReadinessViewModel } from "@/components/trip/readiness/tripReadinessModel";
 import {
@@ -2613,6 +2620,118 @@ function buildRegenerationSemanticsViewModel(
     await runFollowUpReplan(followUpText);
   }
 
+  async function handleConversationalReplanExecute(
+    plan: ReplanMutationPlan,
+    rawText: string,
+  ): Promise<ReplanExecutionResult<ItineraryResponse>> {
+    if (!result) {
+      return {
+        ok: false,
+        message: "当前没有可调整的行程结果。",
+      };
+    }
+
+    if (plan.executionMode === "backend_replan") {
+      const beforeItinerary = result;
+      setLatestDirectOptimizationComparison(null);
+      scheduleResultReveal();
+      const afterItinerary = await runFollowUpReplan(rawText);
+      if (!afterItinerary) {
+        return {
+          ok: false,
+          message: "后端 follow-up replan 未返回新行程。",
+        };
+      }
+      return {
+        ok: true,
+        beforeItinerary,
+        afterItinerary,
+        message: "已通过后端 follow-up replan 生成新版行程。",
+        usedBackend: true,
+      };
+    }
+
+    if (plan.executionMode !== "local_mutation") {
+      return {
+        ok: false,
+        message: "这次调整还没有可安全执行的 mutation plan。",
+      };
+    }
+
+    const beforeItinerary = result;
+    const locallyMutatedItinerary = applyReplanMutationPlanToItinerary(beforeItinerary, plan);
+    setResult(locallyMutatedItinerary);
+    syncLocalReplanIntentState(locallyMutatedItinerary);
+    setError(null);
+    setActiveSwapTarget(null);
+    setRecentCompletionTaskItemKey(null);
+    setCompletionTaskEdits([]);
+    setCommittedSwaps([]);
+
+    const refreshedResult = await postTripJson<ItineraryResponse>(
+      REFRESH_ITINERARY_SURFACES_API_URL,
+      {
+        itinerary: locallyMutatedItinerary,
+        completion_candidate_history: completionCandidateHistory,
+      },
+      "刷新调整后的解释和补全评分失败",
+      "已完成本地调整，但暂时无法刷新解释和补全评分。",
+    );
+
+    const afterItinerary = refreshedResult.ok ? refreshedResult.data : locallyMutatedItinerary;
+    setResult(afterItinerary);
+    setCompletionCandidateHistory(
+      afterItinerary.trip_intent?.completion_candidate_history ?? completionCandidateHistory,
+    );
+    syncLocalReplanIntentState(afterItinerary);
+    if (!refreshedResult.ok) {
+      setError(refreshedResult.message);
+    }
+
+    return {
+      ok: true,
+      beforeItinerary,
+      afterItinerary,
+      message: refreshedResult.ok
+        ? "已执行本地 mutation，并刷新解释/补全表面。"
+        : "已执行本地 mutation；解释和补全表面将在下次生成后刷新。",
+      usedBackend: false,
+    };
+  }
+
+  function handleUndoConversationalReplan(entry: ReplanHistoryEntry<ItineraryResponse>) {
+    setResult(entry.beforeItinerary);
+    syncLocalReplanIntentState(entry.beforeItinerary);
+    setError(null);
+  }
+
+  function syncLocalReplanIntentState(itinerary: ItineraryResponse) {
+    const regenerationIntent =
+      itinerary.trip_intent?.current_intent ??
+      itinerary.planning_assumptions?.regeneration_intent ??
+      null;
+    if (!regenerationIntent) {
+      return;
+    }
+    setGenerationContext(buildGenerationContextFromRegenerationIntent(regenerationIntent));
+    syncFormStateWithRegenerationIntent(regenerationIntent);
+    setUserIntentState((current) => ({
+      ...current,
+      original_scenic: regenerationIntent.flexible_scenic_spots,
+      original_restaurants: regenerationIntent.flexible_restaurants,
+      confirmed_scenic: current.confirmed_scenic.filter((name) =>
+        regenerationIntent.carry_forward_scenic_spots.some(
+          (candidate) => normalizeComparisonName(candidate) === normalizeComparisonName(name),
+        ),
+      ),
+      confirmed_restaurants: current.confirmed_restaurants.filter((name) =>
+        regenerationIntent.carry_forward_restaurants.some(
+          (candidate) => normalizeComparisonName(candidate) === normalizeComparisonName(name),
+        ),
+      ),
+    }));
+  }
+
   function handleEditLatestFollowUp() {
     if (!activeFollowUpInterpretation?.raw_text) {
       return;
@@ -2623,7 +2742,7 @@ function buildRegenerationSemanticsViewModel(
 
     if (typeof window !== "undefined") {
       window.requestAnimationFrame(() => {
-        const input = document.getElementById("follow-up-replan-textarea") as
+        const input = document.getElementById("constraint-replan-textarea") as
           | HTMLTextAreaElement
           | null;
         input?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -4128,32 +4247,15 @@ function buildRegenerationSemanticsViewModel(
                   ) : null}
                 </div>
               ) : activeRouteSheet === "adjust" ? (
-                <div style={{ display: "grid", gap: 12 }}>
-                  <textarea
-                    id="follow-up-replan-textarea"
-                    rows={4}
-                    value={followUpText}
-                    onChange={(event) => setFollowUpText(event.target.value)}
-                    placeholder="例：第二天下午轻一点，晚上想留给吃饭和夜景。"
-                    style={textareaStyle}
-                  />
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-                    <button
-                      type="button"
-                      onClick={handleFollowUpReplan}
-                      disabled={replanning}
-                      style={secondaryButtonStyle}
-                    >
-                      {replanning ? "重新规划中…" : "按这句话重新规划"}
-                    </button>
-                    <span style={{ color: "#7b8794", fontSize: 13 }}>
-                      只合并新增约束，不会把当前计划清空重来。
-                    </span>
-                  </div>
-                  {activeFollowUpInterpretation ? (
-                    <FollowUpInterpretationCard interpretation={activeFollowUpInterpretation} />
-                  ) : null}
-                </div>
+                <ConversationalReplanPanel
+                  itinerary={result}
+                  initialText={followUpText}
+                  backendInterpretationLines={activeFollowUpInterpretation?.summary_lines ?? []}
+                  executing={replanning}
+                  onDraftChange={setFollowUpText}
+                  onExecutePlan={handleConversationalReplanExecute}
+                  onUndoSnapshot={handleUndoConversationalReplan}
+                />
               ) : activeRouteSheet === "share" ? (
                 <div style={{ display: "grid", gap: 12 }}>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
