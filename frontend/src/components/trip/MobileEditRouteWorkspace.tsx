@@ -6,17 +6,23 @@ import {
   type RouteEditorSheetSnap,
 } from "./RouteEditorSheet";
 import { RouteMapPane, type RoutePreviewMode } from "./RouteMapPane";
+import { PlaceDetailPanel } from "./place-intelligence/PlaceDetailPanel";
+import {
+  buildNeighborStopIds,
+  buildPlaceDetailViewModel,
+  buildRelatedRouteSegmentKeys,
+} from "./place-intelligence/placeDetailViewModel";
 import { postTripJson } from "./tripApiClient";
 
-type TimelineItemType = "scenic" | "restaurant" | "hotel";
-type TimelineBlockType = "morning" | "afternoon" | "evening";
+export type TimelineItemType = "scenic" | "restaurant" | "hotel";
+export type TimelineBlockType = "morning" | "afternoon" | "evening";
 
 type CompletionCandidateTraceLike = {
   name: string;
   reason: string;
 };
 
-type ScheduledItemLike = {
+export type ScheduledItemLike = {
   name: string;
   type: TimelineItemType;
   city?: string | null;
@@ -117,6 +123,8 @@ type MobileEditRouteWorkspaceProps = {
   mode?: "browse" | "edit";
   routePreviewEndpoint?: string;
   poiDetailEndpoint?: string;
+  initialRoutePreviewMap?: RoutePreviewMap;
+  poiDetailFixtures?: Record<string, POIDetailPreview>;
   desktopLeftRail?: ReactNode;
   onApplyEdits?: (
     days: EditableRouteDay[],
@@ -157,37 +165,6 @@ type RightPanelMode =
   | { type: "timeline"; dayIndex: number }
   | { type: "place-detail"; dayIndex: number; stopId: string };
 
-type PoiDetailCardViewModel = {
-  title: string;
-  subtitle: string;
-  typeLabel: string;
-  heroInitial: string;
-  heroImageUrl: string | null;
-  trustChips: string[];
-  routeLine: string;
-  liveFacts: PoiLiveFactsViewModel | null;
-  introduction: string;
-  research: PoiResearchCardViewModel;
-  fitBullets: string[];
-  cautionBullets: string[];
-};
-
-type PoiResearchCardViewModel = {
-  sourceLabel: string;
-  overview: string;
-  accessTip: string;
-  practicalTip: string;
-  bestFor: string;
-};
-
-type PoiLiveFactsViewModel = {
-  sourceLabel: string;
-  facts: Array<{
-    label: string;
-    value: string;
-  }>;
-};
-
 type RouteSegmentViewModel = {
   label: string;
   status: "confirmed" | "previewed" | "estimated" | "pending";
@@ -206,7 +183,7 @@ type RouteSegmentPreviewInput = {
   to_city?: string | null;
 };
 
-type RouteSegmentPreviewResult = {
+export type RouteSegmentPreviewResult = {
   segment_key: string;
   from_name: string;
   to_name: string;
@@ -222,7 +199,7 @@ type RouteSegmentPreviewResult = {
 
 export type RoutePreviewMap = Record<string, RouteSegmentPreviewResult>;
 
-type POIDetailPreview = {
+export type POIDetailPreview = {
   found: boolean;
   name: string;
   address: string | null;
@@ -253,9 +230,11 @@ const poiDetailPreviewCache = new Map<
 export function useEditableRouteWorkspaceState({
   itinerary,
   routePreviewEndpoint,
+  initialRoutePreviewMap,
 }: {
   itinerary: ItineraryLike;
   routePreviewEndpoint?: string;
+  initialRoutePreviewMap?: RoutePreviewMap;
 }) {
   const [editableDays, setEditableDays] = useState<EditableRouteDay[]>(() =>
     buildEditableRouteDays(itinerary),
@@ -273,7 +252,9 @@ export function useEditableRouteWorkspaceState({
   );
   const [undoStack, setUndoStack] = useState<RouteWorkspaceSnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<RouteWorkspaceSnapshot[]>([]);
-  const [routePreviewMap, setRoutePreviewMap] = useState<RoutePreviewMap>({});
+  const [routePreviewMap, setRoutePreviewMap] = useState<RoutePreviewMap>(
+    () => initialRoutePreviewMap ?? {},
+  );
   const [routePreviewState, setRoutePreviewState] = useState<
     "idle" | "loading" | "partial" | "failed"
   >("idle");
@@ -311,14 +292,14 @@ export function useEditableRouteWorkspaceState({
     );
     setDraggingStop(null);
     setRightPanelMode({ type: "timeline", dayIndex: nextDays[0]?.day ?? 1 });
-    setRoutePreviewMap({});
+    setRoutePreviewMap(initialRoutePreviewMap ?? {});
     setRoutePreviewState("idle");
     setVisibleMapDays(nextDays.map((day) => day.day));
     setUnplannedStops([]);
     setShowUnplanned(false);
     setUndoStack([]);
     setRedoStack([]);
-  }, [itinerary]);
+  }, [initialRoutePreviewMap, itinerary]);
 
   useEffect(() => {
     if (!routePreviewEndpoint) {
@@ -665,12 +646,18 @@ export function MobileEditRouteWorkspace({
   mode = "edit",
   routePreviewEndpoint,
   poiDetailEndpoint,
+  initialRoutePreviewMap,
+  poiDetailFixtures,
   desktopLeftRail,
   onApplyEdits,
   onClose,
 }: MobileEditRouteWorkspaceProps) {
   const editing = mode === "edit";
-  const workspace = useEditableRouteWorkspaceState({ itinerary, routePreviewEndpoint });
+  const workspace = useEditableRouteWorkspaceState({
+    itinerary,
+    routePreviewEndpoint,
+    initialRoutePreviewMap,
+  });
   const [sheetSnap, setSheetSnap] = useState<RouteEditorSheetSnap>(68);
   const [showOverview, setShowOverview] = useState(false);
   useEffect(() => {
@@ -725,6 +712,33 @@ export function MobileEditRouteWorkspace({
   } = workspace;
   const [isPanelLayout, setIsPanelLayout] = useState(false);
   const workspaceRef = useRef<HTMLElement | null>(null);
+  const lastActiveStopIdRef = useRef<string | null>(null);
+  const selectedNeighborStopIds = activeStop
+    ? buildNeighborStopIds(activeStop, editableDays)
+    : [];
+  const selectedRouteSegmentKeys = activeStop
+    ? buildRelatedRouteSegmentKeys(activeStop, editableDays)
+    : [];
+  const selectedRouteContext = activeStop
+    ? buildSelectedRouteContext(activeStop, editableDays, routePreviewMap, routeMode)
+    : null;
+
+  useEffect(() => {
+    if (activeStopId) {
+      lastActiveStopIdRef.current = activeStopId;
+      return;
+    }
+    const lastActiveStopId = lastActiveStopIdRef.current;
+    if (!lastActiveStopId || typeof document === "undefined") {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const target = document.querySelector<HTMLElement>(buildRouteStopSelector(lastActiveStopId));
+      target?.focus();
+      lastActiveStopIdRef.current = null;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeStopId]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(min-width: 1120px)");
@@ -780,6 +794,9 @@ export function MobileEditRouteWorkspace({
               .filter((day) => visibleMapDays.includes(day.day))
               .flatMap((day) => day.stops)}
             selectedStopId={activeStopId}
+            neighborStopIds={selectedNeighborStopIds}
+            highlightedRouteSegmentKeys={selectedRouteSegmentKeys}
+            selectedRouteContext={selectedRouteContext}
             routeSegments={selectedDaySegments}
             allDays={editableDays.map((day) => day.day)}
             selectedDay={selectedDay}
@@ -803,7 +820,7 @@ export function MobileEditRouteWorkspace({
         onSnapChange={setSheetSnap}
       >
       {isPanelLayout && rightPanelMode.type === "place-detail" && activeStop ? (
-        <StopDetailDrawer
+        <PlaceDetailPanelContainer
           variant="panel"
           stop={activeStop}
           allDays={editableDays}
@@ -813,6 +830,9 @@ export function MobileEditRouteWorkspace({
             activeStop.day,
             itinerary.planning_anchor_source.source_name,
           )}
+          routePreviewMap={routePreviewMap}
+          routeMode={routeMode}
+          poiDetailFixtures={poiDetailFixtures}
           poiDetailEndpoint={poiDetailEndpoint}
           editing={editing}
           onClose={() => setActiveStopId(null)}
@@ -881,6 +901,7 @@ export function MobileEditRouteWorkspace({
           onClick={() => {
             setShowOverview(true);
             setShowUnplanned(false);
+            setActiveStopId(null);
           }}
           className="ec-interactive-pill"
           style={buildDayTabStyle(showOverview)}
@@ -897,6 +918,7 @@ export function MobileEditRouteWorkspace({
                 setSelectedDay(day.day);
                 setShowUnplanned(false);
                 setShowOverview(false);
+                setActiveStopId(null);
               }}
               onDragOver={(event) => {
                 if (!editing) {
@@ -937,6 +959,7 @@ export function MobileEditRouteWorkspace({
           onClick={() => {
             setShowUnplanned(true);
             setShowOverview(false);
+            setActiveStopId(null);
           }}
           className="ec-interactive-pill"
           style={buildDayTabStyle(showUnplanned)}
@@ -966,6 +989,7 @@ export function MobileEditRouteWorkspace({
           onSelectDay={(dayNumber) => {
             setSelectedDay(dayNumber);
             setShowOverview(false);
+            setActiveStopId(null);
           }}
         />
       ) : showUnplanned ? (
@@ -1055,6 +1079,7 @@ export function MobileEditRouteWorkspace({
                   <article
                     role="button"
                     tabIndex={0}
+                    data-route-stop-id={stop.id}
                     onClick={() => setActiveStopId(stop.id)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
@@ -1241,7 +1266,7 @@ export function MobileEditRouteWorkspace({
       </RouteEditorSheet>
 
       {!isPanelLayout && activeStop ? (
-        <StopDetailDrawer
+        <PlaceDetailPanelContainer
           stop={activeStop}
           allDays={editableDays}
           parsedIntent={parsedIntent}
@@ -1250,6 +1275,9 @@ export function MobileEditRouteWorkspace({
             activeStop.day,
             itinerary.planning_anchor_source.source_name,
           )}
+          routePreviewMap={routePreviewMap}
+          routeMode={routeMode}
+          poiDetailFixtures={poiDetailFixtures}
           poiDetailEndpoint={poiDetailEndpoint}
           editing={editing}
           onClose={() => setActiveStopId(null)}
@@ -2013,12 +2041,15 @@ function RouteSummaryCard({
   );
 }
 
-function StopDetailDrawer({
+function PlaceDetailPanelContainer({
   variant = "drawer",
   stop,
   allDays,
   parsedIntent,
   originLabel,
+  routePreviewMap,
+  routeMode,
+  poiDetailFixtures,
   poiDetailEndpoint,
   editing,
   onClose,
@@ -2032,6 +2063,9 @@ function StopDetailDrawer({
   allDays: EditableRouteDay[];
   parsedIntent?: ParsedTripIntentLike | null;
   originLabel: string;
+  routePreviewMap: RoutePreviewMap;
+  routeMode: RoutePreviewMode;
+  poiDetailFixtures?: Record<string, POIDetailPreview>;
   poiDetailEndpoint?: string;
   editing: boolean;
   onClose: () => void;
@@ -2042,25 +2076,15 @@ function StopDetailDrawer({
 }) {
   const [poiDetail, setPoiDetail] = useState<POIDetailPreview | null>(null);
   const [poiDetailState, setPoiDetailState] = useState<"idle" | "loading" | "failed">("idle");
-  const [showPlannerDetails, setShowPlannerDetails] = useState(false);
   const resolution = findPlaceResolution(parsedIntent, stop.item.name);
-  const day = allDays.find((entry) => entry.day === stop.day) ?? null;
-  const stopIndex = day?.stops.findIndex((candidate) => candidate.id === stop.id) ?? -1;
-  const previousStop = day && stopIndex > 0 ? day.stops[stopIndex - 1] : null;
-  const nextStop =
-    day && stopIndex >= 0 && stopIndex < day.stops.length - 1 ? day.stops[stopIndex + 1] : null;
-  const routeState = describeStopRouteState(stop);
-  const detailCard = buildPoiDetailCardViewModel({
-    stop,
-    previousStop,
-    nextStop,
-    resolution,
-    originLabel,
-    routeState,
-    poiDetail,
-  });
+  const fixtureDetail = poiDetailFixtures?.[stop.id] ?? poiDetailFixtures?.[stop.item.name] ?? null;
 
   useEffect(() => {
+    if (fixtureDetail) {
+      setPoiDetail(fixtureDetail);
+      setPoiDetailState("idle");
+      return;
+    }
     if (!poiDetailEndpoint) {
       setPoiDetail(null);
       setPoiDetailState("idle");
@@ -2120,6 +2144,7 @@ function StopDetailDrawer({
     return () => controller.abort();
   }, [
     poiDetailEndpoint,
+    fixtureDetail,
     resolution?.city,
     stop.id,
     stop.item.city,
@@ -2128,6 +2153,15 @@ function StopDetailDrawer({
     stop.item.name,
   ]);
 
+  const viewModel = buildPlaceDetailViewModel({
+    stop,
+    allDays,
+    originLabel,
+    routePreviewMap,
+    routeMode,
+    poiDetail,
+    poiDetailState,
+  });
   const panel = variant === "panel";
   const content = (
       <div
@@ -2135,255 +2169,27 @@ function StopDetailDrawer({
         style={variant === "drawer" ? drawerSheetStyle : detailPanelStyle}
         onClick={(event) => event.stopPropagation()}
       >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 12,
-            alignItems: "start",
-          }}
-        >
-          <div style={{ display: "grid", gap: 8 }}>
-            <p
-              style={{
-                margin: 0,
-                color: itemTone(stop.item.type),
-                fontSize: 11,
-                fontWeight: 900,
-                letterSpacing: "0.12em",
-                textTransform: "uppercase",
-              }}
-            >
-              {formatStopType(stop.item.type)} · {formatBlockLabel(stop.blockType)}
-            </p>
-            <h4
-              style={{
-                margin: 0,
-                color: "var(--ec-ink)",
-                fontFamily: '"Iowan Old Style", Georgia, "Times New Roman", serif',
-                fontSize: panel ? 22 : 30,
-                lineHeight: 1.08,
-              }}
-            >
-              {stop.item.name}
-            </h4>
-            <p style={{ margin: 0, color: "var(--ec-slate)", fontSize: 14 }}>
-              {formatTimeRange(stop.item.start_time, stop.item.end_time)}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ec-interactive-pill"
-            style={drawerCloseButtonStyle}
-          >
-            关闭
-          </button>
-        </div>
-
-        {panel ? (
-          <PlaceInspectorCard
-            viewModel={detailCard}
-            routeState={routeState}
-            travelLine={buildDrawerTravelLine(stop, originLabel)}
-            compact
-          />
-        ) : (
-          <PoiDetailCard viewModel={detailCard} compact={false} />
-        )}
-
-        {poiDetailState === "loading" ? (
-          <p style={poiDetailStatusStyle}>正在加载真实地点信息...</p>
-        ) : poiDetailState === "failed" ? (
-          <p style={poiDetailStatusStyle}>暂时没有拿到实时地点卡片，当前展示路线语境信息。</p>
-        ) : null}
-
-        {panel ? (
-          <div style={detailPanelFooterStyle}>
-            <button
-              type="button"
-              onClick={onClose}
-              className="ec-interactive-pill"
-              style={drawerSecondaryActionStyle}
-            >
-              返回时间线
-            </button>
-            {editing ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => onToggleLockStop(stop.id)}
-                  className="ec-interactive-pill"
-                  style={drawerSecondaryActionStyle}
-                >
-                  {isRouteEditLockedStop(stop) ? "取消锁定" : "锁定"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (stop.item.is_fixed) {
-                      return;
-                    }
-                    onMoveToUnplanned(stop.id);
-                    onClose();
-                  }}
-                  disabled={stop.item.is_fixed}
-                  className="ec-interactive-pill"
-                  style={{
-                    ...drawerSecondaryActionStyle,
-                    opacity: stop.item.is_fixed ? 0.45 : 1,
-                  }}
-                >
-                  移到待规划
-                </button>
-              </>
-            ) : null}
-          </div>
-        ) : null}
-
-        {!panel ? (
-          <>
-            <section style={detailDecisionSummaryStyle}>
-              <DetailRow label="当前路线状态" value={routeState} />
-              <DetailRow label="这段怎么接" value={buildDrawerTravelLine(stop, originLabel)} />
-              {stop.item.local_edit ? (
-	                <DetailRow
-	                  label="你的编辑"
-	                  value={`你把 ${stop.item.local_edit.previous_name} 换成了 ${stop.item.name}。${formatPlannerCopy(stop.item.local_edit.reasoning_summary)}`}
-	                />
-              ) : null}
-            </section>
-
-            <button
-              type="button"
-              onClick={() => setShowPlannerDetails((current) => !current)}
-              className="ec-interactive-pill"
-              style={plannerDetailToggleStyle}
-            >
-              {showPlannerDetails ? "收起规划细节" : "查看规划细节"}
-            </button>
-          </>
-        ) : null}
-
-        {showPlannerDetails ? (
-          <section style={plannerDetailPanelStyle}>
-	            <DetailRow
-	              label="放在这里的原因"
-	              value={formatPlannerCopy(stop.item.placement_reason ?? "当前版本还没有补出更细的理由。")}
-	            />
-            {stop.item.source_reason ? (
-              <DetailRow label="来源说明" value={formatPlannerCopy(stop.item.source_reason)} />
-            ) : null}
-            {resolution ? (
-              <>
-                <DetailRow
-                  label="地点解析"
-                  value={formatPlaceResolutionLine(resolution)}
-                />
-                {resolution.candidate_names.length > 0 ? (
-                  <DetailRow
-                    label="候选名"
-                    value={resolution.candidate_names.slice(0, 4).join(" / ")}
-                  />
-                ) : null}
-              </>
-            ) : null}
-            {stop.item.local_edit ? (
-	              <DetailRow
-	                label="完整编辑理由"
-	                value={formatPlannerCopy(stop.item.local_edit.itinerary_relation_summary)}
-	              />
-            ) : null}
-          </section>
-        ) : null}
-
-        {editing && !panel ? (
-        <div style={{ display: "grid", gap: 12 }}>
-          <p style={miniLabelStyle}>移动到别的时间段</p>
-          <div style={blockRailStyle}>
-            {BLOCK_ORDER.map((blockType) => (
-              <button
-                key={`drawer-block-${blockType}`}
-                type="button"
-                onClick={() => onMoveStop(stop.id, stop.day, blockType)}
-                className="ec-interactive-pill"
-                style={buildBlockTargetStyle(blockType)}
-              >
-                {formatBlockLabel(blockType)}
-              </button>
-            ))}
-          </div>
-        </div>
-        ) : null}
-
-        {editing && !panel ? (
-          <>
-            <div style={{ display: "grid", gap: 12 }}>
-              <p style={miniLabelStyle}>移动到别的天</p>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {allDays.map((day) => (
-                  <button
-                    key={`drawer-day-${day.day}`}
-                    type="button"
-                    onClick={() => onMoveStop(stop.id, day.day, stop.blockType)}
-                    className="ec-interactive-pill"
-                    style={buildDayTabStyle(day.day === stop.day)}
-                  >
-                    {day.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div style={drawerActionGridStyle}>
-              <button
-                type="button"
-                onClick={() => onToggleLockStop(stop.id)}
-                className="ec-interactive-pill"
-                style={drawerSecondaryActionStyle}
-              >
-                {isRouteEditLockedStop(stop) ? "取消锁定" : "锁定这个地点"}
-              </button>
-              <button
-                type="button"
-                onClick={() => onMoveToUnplanned(stop.id)}
-                disabled={stop.item.is_fixed}
-                className="ec-interactive-pill"
-                style={{
-                  ...drawerSecondaryActionStyle,
-                  opacity: stop.item.is_fixed ? 0.45 : 1,
-                }}
-              >
-                移到待规划
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (stop.item.is_fixed) {
-                    return;
-                  }
+        <PlaceDetailPanel
+          viewModel={viewModel}
+          onBack={onClose}
+          onMoveToUnplanned={
+            editing && !stop.item.is_fixed
+              ? () => {
+                  onMoveToUnplanned(stop.id);
+                  onClose();
+                }
+              : undefined
+          }
+          onRemove={
+            editing && !stop.item.is_fixed
+              ? () => {
                   onDeleteStop(stop.id);
                   onClose();
-                }}
-                disabled={stop.item.is_fixed}
-                className="ec-interactive-pill"
-                style={{
-                  ...drawerDangerActionStyle,
-                  opacity: stop.item.is_fixed ? 0.45 : 1,
-                }}
-              >
-                删除这个地点
-              </button>
-            </div>
-          </>
-        ) : !panel ? (
-          <section style={detailReadOnlyHintStyle}>
-            <p style={miniLabelStyle}>编辑提示</p>
-            <span>
-              当前先作为地点信任卡查看。进入编辑路线后，可以把它跨天移动、锁定或移到待规划池。
-            </span>
-          </section>
-        ) : null}
+                }
+              : undefined
+          }
+        />
+
       </div>
   );
 
@@ -2394,210 +2200,6 @@ function StopDetailDrawer({
   return (
     <div style={drawerOverlayStyle} onClick={onClose}>
       {content}
-    </div>
-  );
-}
-
-function PoiDetailCard({
-  viewModel,
-  compact = false,
-}: {
-  viewModel: PoiDetailCardViewModel;
-  compact?: boolean;
-}) {
-  return (
-    <section style={poiCardStyle(compact)}>
-      <div aria-hidden="true" style={poiFieldNoteRuleStyle} />
-      <div style={poiHeroRowStyle(compact)}>
-        <div
-          style={{
-            ...poiThumbStyle(compact),
-            ...(viewModel.heroImageUrl
-              ? {
-                  backgroundImage: `url(${viewModel.heroImageUrl})`,
-                  backgroundSize: "cover",
-                  backgroundPosition: "center",
-                  color: "transparent",
-                }
-              : null),
-          }}
-        >
-          {viewModel.heroInitial}
-        </div>
-        <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
-          <p style={poiTypeLabelStyle}>{viewModel.typeLabel}</p>
-          <h5 style={poiCardTitleStyle(compact)}>{viewModel.title}</h5>
-          <p style={poiSubtitleStyle}>{viewModel.subtitle}</p>
-        </div>
-      </div>
-
-      <div style={poiChipRowStyle}>
-        {viewModel.trustChips.map((chip) => (
-          <span key={chip} style={poiChipStyle}>
-            {chip}
-          </span>
-        ))}
-      </div>
-
-      {viewModel.liveFacts ? <PoiLiveFactsCard facts={viewModel.liveFacts} /> : null}
-
-      <div style={poiRouteStripStyle}>
-        <span style={{ color: "var(--ec-ochre)", fontWeight: 900 }}>为什么放这里</span>
-        <span>{viewModel.routeLine}</span>
-      </div>
-
-      <div style={{ display: "grid", gap: 8 }}>
-        <p style={poiSectionTitleStyle}>值不值得去</p>
-        <p style={poiBodyTextStyle}>{viewModel.introduction}</p>
-      </div>
-
-      <PoiResearchCard research={viewModel.research} compact={compact} />
-
-      <div style={poiTwoColumnStyle(compact)}>
-        <PoiBulletBox title="适合这趟路线" bullets={viewModel.fitBullets} tone="fit" />
-        <PoiBulletBox title="出行避坑" bullets={viewModel.cautionBullets} tone="caution" />
-      </div>
-    </section>
-  );
-}
-
-function PlaceInspectorCard({
-  viewModel,
-  routeState,
-  travelLine,
-  compact = false,
-}: {
-  viewModel: PoiDetailCardViewModel;
-  routeState: string;
-  travelLine: string;
-  compact?: boolean;
-}) {
-  const primaryFacts = [
-    ...viewModel.trustChips.slice(0, 3),
-    viewModel.liveFacts?.facts.find((fact) => fact.label === "开放")?.value ?? null,
-  ].filter((fact): fact is string => Boolean(fact));
-  const visibleFacts = compact ? primaryFacts.slice(0, 3) : primaryFacts;
-
-  return (
-    <section style={placeInspectorCardStyle(compact)}>
-      <div style={placeInspectorRouteStyle(compact)}>
-        <span style={placeInspectorLabelStyle}>为什么放这里</span>
-        <strong style={placeInspectorRouteTextStyle(compact)}>
-          {shortenText(viewModel.routeLine, compact ? 62 : 84)}
-        </strong>
-      </div>
-      {visibleFacts.length > 0 ? (
-        <div style={placeInspectorFactsStyle}>
-          {visibleFacts.map((fact) => (
-            <span key={fact} style={placeInspectorFactStyle(compact)}>
-              {fact}
-            </span>
-          ))}
-        </div>
-      ) : null}
-      <div style={placeInspectorGridStyle(compact)}>
-        <div style={placeInspectorNoteStyle("fit", compact)}>
-          <span style={placeInspectorLabelStyle}>路线价值</span>
-          <p style={placeInspectorNoteTextStyle(compact)}>
-            {shortenText(viewModel.introduction, compact ? 56 : 92)}
-          </p>
-        </div>
-        <div style={placeInspectorNoteStyle("caution", compact)}>
-          <span style={placeInspectorLabelStyle}>注意事项</span>
-          <p style={placeInspectorNoteTextStyle(compact)}>
-            {shortenText(viewModel.cautionBullets[0] ?? routeState, compact ? 52 : 80)}
-          </p>
-        </div>
-      </div>
-      {!compact ? (
-        <p style={placeInspectorTravelStyle}>{shortenText(travelLine, 86)}</p>
-      ) : null}
-    </section>
-  );
-}
-
-function PoiLiveFactsCard({ facts }: { facts: PoiLiveFactsViewModel }) {
-  return (
-    <section style={poiLiveFactsCardStyle}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <p style={poiSectionTitleStyle}>真实信息</p>
-        <span style={poiLiveFactsSourceStyle}>{facts.sourceLabel}</span>
-      </div>
-      <div style={poiLiveFactsGridStyle}>
-        {facts.facts.map((fact) => (
-          <div key={fact.label} style={poiLiveFactItemStyle}>
-            <p style={researchLabelStyle}>{fact.label}</p>
-            <p style={poiLiveFactValueStyle}>{fact.value}</p>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function PoiResearchCard({
-  research,
-  compact = false,
-}: {
-  research: PoiResearchCardViewModel;
-  compact?: boolean;
-}) {
-  return (
-    <div style={researchCardStyle}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-        <p style={poiSectionTitleStyle}>到达与判断</p>
-        <span style={researchSourceStyle}>{research.sourceLabel}</span>
-      </div>
-      <div style={researchGridStyle(compact)}>
-        <ResearchItem label="到达" value={research.accessTip} />
-        <ResearchItem label="注意" value={research.practicalTip} />
-        <ResearchItem label="适合" value={research.bestFor} />
-      </div>
-      <div style={researchOverviewStyle}>
-        <p style={researchLabelStyle}>高频评价</p>
-        <p style={researchValueStyle}>{research.overview}</p>
-      </div>
-    </div>
-  );
-}
-
-function ResearchItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={{ display: "grid", gap: 4 }}>
-      <p style={researchLabelStyle}>{label}</p>
-      <p style={researchValueStyle}>{value}</p>
-    </div>
-  );
-}
-
-function PoiBulletBox({
-  title,
-  bullets,
-  tone,
-}: {
-  title: string;
-  bullets: string[];
-  tone: "fit" | "caution";
-}) {
-  return (
-    <div style={poiBulletBoxStyle(tone)}>
-      <p style={poiSectionTitleStyle}>{title}</p>
-      <div style={{ display: "grid", gap: 6 }}>
-        {bullets.map((bullet) => (
-          <p key={bullet} style={poiBulletTextStyle}>
-            {bullet}
-          </p>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function DetailRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div style={{ display: "grid", gap: 6 }}>
-      <p style={miniLabelStyle}>{label}</p>
-      <p style={{ margin: 0, color: "var(--ec-ink-soft)", fontSize: 14, lineHeight: 1.7 }}>{value}</p>
     </div>
   );
 }
@@ -3311,56 +2913,56 @@ function findActiveStop(days: EditableRouteDay[], stopId: string | null): Editab
   return null;
 }
 
-function buildPoiDetailCardViewModel({
-  stop,
-  previousStop,
-  nextStop,
-  resolution,
-  originLabel,
-  routeState,
-  poiDetail,
-}: {
-  stop: EditableRouteStop;
-  previousStop: EditableRouteStop | null;
-  nextStop: EditableRouteStop | null;
-  resolution: PlaceDisambiguationResolutionLike | null;
-  originLabel: string;
-  routeState: string;
-  poiDetail: POIDetailPreview | null;
-}): PoiDetailCardViewModel {
-  const resolvedName = poiDetail?.name || resolution?.resolved_name || stop.item.name;
-  const trustChips = uniqueText([
-    poiDetail?.rating ? `评分 ${poiDetail.rating}` : null,
-    poiDetail?.business_area ?? null,
-    poiDetail?.category ? formatAmapCategory(poiDetail.category) : null,
-    resolution?.city ? resolution.city : stop.item.city ?? null,
-    resolution?.confidence ? `解析 ${resolution.confidence}` : null,
-    resolution?.source ? `来源 ${formatResolutionSource(resolution.source)}` : null,
-    stop.item.source_label,
-    isRouteEditLockedStop(stop) ? "已锁定" : null,
-    stop.originalDay < 0 ? "手动插入" : null,
-  ]).slice(0, 5);
+function buildSelectedRouteContext(
+  stop: EditableRouteStop,
+  days: EditableRouteDay[],
+  routePreviewMap: RoutePreviewMap,
+  routeMode: RoutePreviewMode,
+): string {
+  const day = days.find((entry) => entry.day === stop.day) ?? null;
+  const stopIndex = day?.stops.findIndex((candidate) => candidate.id === stop.id) ?? -1;
+  if (!day || stopIndex < 0) {
+    return routePreviewModeLabel(routeMode);
+  }
+  const previousStop = stopIndex > 0 ? day.stops[stopIndex - 1] : null;
+  const nextStop = stopIndex < day.stops.length - 1 ? day.stops[stopIndex + 1] : null;
+  const inboundSeconds =
+    previousStop && routePreviewMap[buildRouteSegmentKey(previousStop, stop)]
+      ? routePreviewMap[buildRouteSegmentKey(previousStop, stop)].duration_s
+      : stop.item.travel_duration_s;
+  const outboundSeconds =
+    nextStop && routePreviewMap[buildRouteSegmentKey(stop, nextStop)]
+      ? routePreviewMap[buildRouteSegmentKey(stop, nextStop)].duration_s
+      : nextStop?.item.travel_from_name === stop.item.name
+        ? nextStop.item.travel_duration_s
+        : null;
+  const routeParts = [
+    inboundSeconds !== null && inboundSeconds !== undefined
+      ? `${formatDurationZh(inboundSeconds)} from previous`
+      : null,
+    outboundSeconds !== null && outboundSeconds !== undefined
+      ? `${formatDurationZh(outboundSeconds)} to next`
+      : null,
+  ].filter((part): part is string => part !== null);
+  return routeParts.length ? routeParts.join(" · ") : routePreviewModeLabel(routeMode);
+}
 
-  return {
-    title: stop.item.name,
-    subtitle: poiDetail?.address
-      ? poiDetail.address
-      : poiDetail?.business_area
-        ? `${poiDetail.business_area}一带`
-        : resolvedName !== stop.item.name
-          ? `已匹配到 ${resolvedName}`
-          : buildPoiSubtitle(stop, resolution),
-    typeLabel: `${formatStopType(stop.item.type)} · 第 ${stop.day} 天 · ${formatBlockLabel(stop.blockType)}`,
-    heroInitial: stop.item.name.slice(0, 1),
-    heroImageUrl: poiDetail?.photo_url ?? null,
-    trustChips: trustChips.length > 0 ? trustChips : ["当前路线点"],
-    routeLine: buildPoiRouteLine(stop, previousStop, nextStop, originLabel),
-    liveFacts: buildPoiLiveFactsViewModel(poiDetail),
-    introduction: buildPoiIntroduction(stop, resolution, poiDetail),
-    research: buildPoiResearchCardViewModel(stop, previousStop, nextStop, resolution, originLabel, poiDetail),
-    fitBullets: buildPoiFitBullets(stop, previousStop, nextStop),
-    cautionBullets: buildPoiCautionBullets(stop, previousStop, routeState),
-  };
+function buildRouteStopSelector(stopId: string): string {
+  const escape =
+    typeof window !== "undefined" && window.CSS && typeof window.CSS.escape === "function"
+      ? window.CSS.escape
+      : (value: string) => value.replace(/["\\]/g, "\\$&");
+  return `[data-route-stop-id="${escape(stopId)}"]`;
+}
+
+function routePreviewModeLabel(mode: RoutePreviewMode): string {
+  if (mode === "transit") {
+    return "公交地铁预览";
+  }
+  if (mode === "drive") {
+    return "驾车预览";
+  }
+  return "步行预览";
 }
 
 function buildPoiDetailCacheKey({
@@ -3399,355 +3001,6 @@ function cachePoiDetailPreview(cacheKey: string, value: POIDetailPreview): void 
     expiresAt: Date.now() + POI_DETAIL_CACHE_TTL_MS,
     value,
   });
-}
-
-function buildPoiResearchCardViewModel(
-  stop: EditableRouteStop,
-  previousStop: EditableRouteStop | null,
-  nextStop: EditableRouteStop | null,
-  resolution: PlaceDisambiguationResolutionLike | null,
-  originLabel: string,
-  poiDetail: POIDetailPreview | null,
-): PoiResearchCardViewModel {
-  if (poiDetail) {
-    return {
-      sourceLabel: "来自高德地点信息",
-      overview: buildAmapDetailOverview(poiDetail, stop),
-      accessTip: buildResearchAccessTip(stop, previousStop, originLabel),
-      practicalTip: buildAmapDetailPracticalTip(poiDetail, stop),
-      bestFor: buildResearchBestFor(stop, nextStop),
-    };
-  }
-
-  if (stop.item.poi_research) {
-    return {
-      sourceLabel: formatResearchSource(stop.item.poi_research.source),
-      overview: formatPlannerCopy(stop.item.poi_research.overview),
-      accessTip: formatPlannerCopy(stop.item.poi_research.access_tip),
-      practicalTip: formatPlannerCopy(stop.item.poi_research.practical_tip),
-      bestFor: formatPlannerCopy(stop.item.poi_research.best_for),
-    };
-  }
-
-  const sourceLabel = resolution?.source
-    ? `来自${formatResolutionSource(resolution.source)}解析`
-    : stop.item.source_reason
-      ? "来自规划理由"
-      : "来自当前路线";
-  const overview = buildResearchOverview(stop, resolution);
-  const accessTip = buildResearchAccessTip(stop, previousStop, originLabel);
-  const practicalTip = buildResearchPracticalTip(stop);
-  const bestFor = buildResearchBestFor(stop, nextStop);
-
-  return {
-    sourceLabel,
-    overview,
-    accessTip,
-    practicalTip,
-    bestFor,
-  };
-}
-
-function formatResearchSource(source: string): string {
-  if (source === "planner_completion") {
-    return "来自补全逻辑";
-  }
-  if (source === "fixed_route_context") {
-    return "来自固定安排";
-  }
-  if (source === "route_context") {
-    return "来自路线上下文";
-  }
-  return source;
-}
-
-function buildAmapDetailOverview(
-  detail: POIDetailPreview,
-  stop: EditableRouteStop,
-): string {
-  const parts = uniqueText([
-    detail.category ? `真实地点类型：${formatAmapCategory(detail.category)}` : null,
-    detail.business_area ? `所在区域：${detail.business_area}` : null,
-    detail.address ? `可定位地址：${detail.address}` : null,
-  ]);
-  if (parts.length > 0) {
-    return parts.join("。");
-  }
-  return stop.item.type === "restaurant"
-    ? "已匹配到真实餐饮地点，可作为当天餐食锚点继续调整。"
-    : "已匹配到真实地点，可继续查看路线衔接或移动到更合适的时间段。";
-}
-
-function buildAmapDetailPracticalTip(
-  detail: POIDetailPreview,
-  stop: EditableRouteStop,
-): string {
-  const parts = uniqueText([
-    detail.open_time ? `营业/开放参考：${detail.open_time}` : null,
-    detail.tel ? `可提前电话确认：${detail.tel}` : null,
-    detail.cost ? `人均/费用参考：${detail.cost}` : null,
-  ]);
-  if (parts.length > 0) {
-    return parts.join("。");
-  }
-  if (stop.item.type === "restaurant") {
-    return "餐食点建议留出排队和点餐缓冲，避免压缩后面的路线。";
-  }
-  return "真实地点信息已匹配，但开放时间/费用仍建议出行前再确认一次。";
-}
-
-function buildPoiLiveFactsViewModel(
-  detail: POIDetailPreview | null,
-): PoiLiveFactsViewModel | null {
-  if (!detail) {
-    return null;
-  }
-
-  const facts = [
-    detail.rating ? { label: "评分", value: detail.rating } : null,
-    detail.business_area ? { label: "区域", value: detail.business_area } : null,
-    detail.address ? { label: "地址", value: detail.address } : null,
-    detail.open_time ? { label: "开放", value: detail.open_time } : null,
-    detail.cost ? { label: "费用", value: formatPoiCost(detail.cost) } : null,
-    detail.tel ? { label: "电话", value: detail.tel } : null,
-  ].filter((fact): fact is { label: string; value: string } => fact !== null);
-
-  if (facts.length === 0) {
-    return null;
-  }
-
-  return {
-    sourceLabel: "高德实时",
-    facts,
-  };
-}
-
-function formatPoiCost(cost: string): string {
-  const normalized = cost.trim();
-  if (!normalized) {
-    return normalized;
-  }
-  if (/^[0-9]+(?:\.[0-9]+)?$/.test(normalized)) {
-    return `约 ¥${normalized}`;
-  }
-  return normalized;
-}
-
-function formatAmapCategory(category: string): string {
-  return category
-    .split(";")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .slice(0, 2)
-    .join(" / ");
-}
-
-function buildResearchOverview(
-  stop: EditableRouteStop,
-  resolution: PlaceDisambiguationResolutionLike | null,
-): string {
-  if (resolution?.reason) {
-    return shortenText(formatPlannerCopy(resolution.reason), 76);
-  }
-  if (stop.item.type === "restaurant") {
-    return "这类地点更适合作为午餐或晚餐锚点，用来让当天路线有真实停顿。";
-  }
-  if (stop.item.type === "hotel") {
-    return "住宿点会影响每天起收口和跨天移动，适合在路线骨架稳定后再确认。";
-  }
-  if (stop.originalDay < 0) {
-    return "这是你手动插入的待规划点，下一次生成会优先尝试解析它的位置并放回路线。";
-  }
-  return "这是当前旅行骨架里的停留点，已经参与当天路线顺序和后续补全判断。";
-}
-
-function buildResearchAccessTip(
-  stop: EditableRouteStop,
-  previousStop: EditableRouteStop | null,
-  originLabel: string,
-): string {
-  const fromName = previousStop?.item.name ?? stop.item.travel_from_name ?? originLabel;
-  if (stop.item.travel_duration_s !== null && stop.item.travel_duration_s > 0) {
-    const duration = formatDurationZh(stop.item.travel_duration_s);
-    const distance =
-      stop.item.travel_distance_m !== null && stop.item.travel_distance_m > 0
-        ? `，约 ${formatDistanceZh(stop.item.travel_distance_m)}`
-        : "";
-    return `从 ${fromName} 过来约 ${duration}${distance}。`;
-  }
-  if (stop.day !== stop.originalDay || stop.blockType !== stop.originalBlockType || stop.originalDay < 0) {
-    return `当前从 ${fromName} 到这里的路段需要下一次规划重算。`;
-  }
-  return `从 ${fromName} 进入这一站，当前没有更细的路段数据。`;
-}
-
-function buildResearchPracticalTip(stop: EditableRouteStop): string {
-  if (stop.item.is_fixed) {
-    return "已锁定，后续自动规划会尽量围绕它调整，不适合频繁移动。";
-  }
-  if (stop.item.type === "restaurant") {
-    return "餐食点建议保留一定缓冲，不要把前后景点排得太紧。";
-  }
-  if (stop.blockType === "evening") {
-    return "晚间点更适合作为收口，后面最好少接长距离转场。";
-  }
-  if (stop.day !== stop.originalDay || stop.blockType !== stop.originalBlockType) {
-    return "已被手动调整，保存后下一次生成会重新校验距离和顺路性。";
-  }
-  return "如果这里感觉不顺，可以先移动到别的时间段，再让系统重新生成确认路段。";
-}
-
-function buildResearchBestFor(
-  stop: EditableRouteStop,
-  nextStop: EditableRouteStop | null,
-): string {
-  if (stop.item.type === "restaurant") {
-    return nextStop
-      ? `适合在去 ${nextStop.item.name} 前作为补给和休息。`
-      : "适合作为当天后半段的餐食收口。";
-  }
-  if (stop.blockType === "morning") {
-    return "适合放在上午作为当天的主要游玩起点。";
-  }
-  if (stop.blockType === "evening") {
-    return "适合放在晚上作为轻量散步、夜景或收尾安排。";
-  }
-  if (nextStop) {
-    return `适合和 ${nextStop.item.name} 串成同一段路线。`;
-  }
-  return "适合作为这一日的自由调整点。";
-}
-
-function buildPoiSubtitle(
-  stop: EditableRouteStop,
-  resolution: PlaceDisambiguationResolutionLike | null,
-): string {
-  if (resolution?.poi_type) {
-    return `${resolution.poi_type}${resolution.city ? ` · ${resolution.city}` : ""}`;
-  }
-  if (stop.item.type === "restaurant") {
-    return "餐食锚点";
-  }
-  if (stop.item.type === "hotel") {
-    return "住宿锚点";
-  }
-  return "行程停留点";
-}
-
-function buildPoiIntroduction(
-  stop: EditableRouteStop,
-  resolution: PlaceDisambiguationResolutionLike | null,
-  poiDetail: POIDetailPreview | null,
-): string {
-  if (poiDetail) {
-    return buildAmapDetailOverview(poiDetail, stop);
-  }
-  if (resolution?.reason) {
-    return formatPlannerCopy(resolution.reason);
-  }
-  if (stop.item.source_reason) {
-    return formatPlannerCopy(stop.item.source_reason);
-  }
-  if (stop.item.placement_reason) {
-    return formatPlannerCopy(stop.item.placement_reason);
-  }
-  if (stop.item.type === "restaurant") {
-    return "这一站更适合作为餐食锚点，用来支撑当天的节奏，而不是和景点争抢普通游玩时段。";
-  }
-  return "这一站已经进入当前旅行骨架，后续可以继续查看路线衔接、锁定或移动到更合适的时间段。";
-}
-
-function buildPoiRouteLine(
-  stop: EditableRouteStop,
-  previousStop: EditableRouteStop | null,
-  nextStop: EditableRouteStop | null,
-  originLabel: string,
-): string {
-  const fromLabel = previousStop?.item.name ?? stop.item.travel_from_name ?? originLabel;
-  const duration =
-    stop.item.travel_duration_s !== null && stop.item.travel_duration_s > 0
-      ? ` · ${formatDurationZh(stop.item.travel_duration_s)}`
-      : "";
-  const distance =
-    stop.item.travel_distance_m !== null && stop.item.travel_distance_m > 0
-      ? ` · ${formatDistanceZh(stop.item.travel_distance_m)}`
-      : "";
-  const nextLabel = nextStop ? `，下一站 ${nextStop.item.name}` : "，这是当天最后一站";
-  return `从 ${fromLabel} 到这里${duration}${distance}${nextLabel}`;
-}
-
-function buildPoiFitBullets(
-  stop: EditableRouteStop,
-  previousStop: EditableRouteStop | null,
-  nextStop: EditableRouteStop | null,
-): string[] {
-  const bullets: string[] = [];
-  if (stop.item.placement_reason) {
-    bullets.push(shortenText(formatPlannerCopy(stop.item.placement_reason), 54));
-  }
-  if (previousStop) {
-    bullets.push(`接在 ${previousStop.item.name} 后面，当前路线顺序更清楚。`);
-  } else {
-    bullets.push(`作为第 ${stop.day} 天的开头，从当天始发地进入。`);
-  }
-  if (nextStop) {
-    bullets.push(`后面接 ${nextStop.item.name}，方便继续调整这一段。`);
-  }
-  if (stop.item.type === "restaurant") {
-    bullets.push("作为餐食点能让这一天更像真实出行节奏。");
-  }
-  return uniqueText(bullets).slice(0, 3);
-}
-
-function buildPoiCautionBullets(
-  stop: EditableRouteStop,
-  previousStop: EditableRouteStop | null,
-  routeState: string,
-): string[] {
-  const bullets: string[] = [];
-  if (stop.day !== stop.originalDay || stop.blockType !== stop.originalBlockType) {
-    bullets.push("这站被手动移动过，距离和时长需要下一次规划重算。");
-  }
-  if (previousStop && stop.item.travel_duration_s === null) {
-    bullets.push("当前没有可确认路段时间，保存后会作为待确认衔接。");
-  }
-  if (stop.item.is_fixed) {
-    bullets.push("已锁定的地点会减少后续自动调整空间。");
-  }
-  if (stop.originalDay < 0) {
-    bullets.push("这是手动插入点，下一次生成前需要后端重新解析位置。");
-  }
-  if (bullets.length === 0) {
-    bullets.push(shortenText(routeState, 56));
-  }
-  return uniqueText(bullets).slice(0, 3);
-}
-
-function formatResolutionSource(source: string): string {
-  if (/amap/i.test(source)) {
-    return "高德";
-  }
-  if (/llm/i.test(source)) {
-    return "智能解析";
-  }
-  if (/rule/i.test(source)) {
-    return "规则";
-  }
-  return source;
-}
-
-function formatPlaceResolutionLine(resolution: PlaceDisambiguationResolutionLike): string {
-  const source = formatResolutionSource(resolution.source);
-  const city = resolution.city ? ` · ${resolution.city}` : "";
-  const confidence =
-    resolution.confidence === "high"
-      ? "高置信"
-      : resolution.confidence === "medium"
-        ? "中置信"
-        : resolution.confidence === "low"
-          ? "低置信"
-          : resolution.confidence;
-  return `${resolution.input_name} 已解析为 ${resolution.resolved_name}${city} · ${source} · ${confidence}。`;
 }
 
 function shortenText(value: string, maxLength: number): string {
@@ -3867,20 +3120,6 @@ function formatPlannerCopy(value: string): string {
     return "系统已把这个地点纳入当前路线判断，后续可以结合真实地点详情继续调整。";
   }
   return trimmed;
-}
-
-function uniqueText(values: Array<string | null | undefined>): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const value of values) {
-    const trimmed = value?.trim();
-    if (!trimmed || seen.has(trimmed)) {
-      continue;
-    }
-    seen.add(trimmed);
-    result.push(trimmed);
-  }
-  return result;
 }
 
 function formatStopType(type: TimelineItemType): string {
@@ -4188,49 +3427,6 @@ const overviewDayArrowStyle: CSSProperties = {
   color: "var(--ec-clay)",
   fontSize: 24,
   fontWeight: 700,
-};
-
-const detailDecisionSummaryStyle: CSSProperties = {
-  display: "grid",
-  gap: 14,
-  padding: 16,
-  borderRadius: 22,
-  background:
-    "linear-gradient(135deg, rgba(244,241,235,0.9), rgba(255,253,249,0.96))",
-  border: "1px solid var(--ec-line)",
-};
-
-const plannerDetailToggleStyle: CSSProperties = {
-  justifySelf: "start",
-  border: "1px solid var(--ec-line)",
-  borderRadius: 999,
-  padding: "9px 12px",
-  background: "rgba(255,253,249,0.9)",
-  color: "var(--ec-slate)",
-  fontWeight: 800,
-  cursor: "pointer",
-};
-
-const plannerDetailPanelStyle: CSSProperties = {
-  display: "grid",
-  gap: 14,
-  padding: 16,
-  borderRadius: 22,
-  background: "rgba(255,253,249,0.94)",
-  border: "1px dashed rgba(21, 21, 21, 0.16)",
-};
-
-const detailReadOnlyHintStyle: CSSProperties = {
-  display: "grid",
-  gap: 6,
-  padding: 14,
-  borderRadius: 20,
-  background:
-    "linear-gradient(135deg, rgba(37,99,235,0.06), rgba(255,253,249,0.94))",
-  border: "1px solid rgba(37,99,235,0.12)",
-  color: "var(--ec-slate)",
-  fontSize: 13,
-  lineHeight: 1.55,
 };
 
 const doneButtonStyle: CSSProperties = {
@@ -4674,364 +3870,6 @@ const tinyMoveButtonStyle: CSSProperties = {
   color: "var(--ec-ink-soft)",
   fontWeight: 800,
   cursor: "pointer",
-};
-
-const drawerActionGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-  gap: 10,
-};
-
-const drawerSecondaryActionStyle: CSSProperties = {
-  border: "1px solid var(--ec-line)",
-  borderRadius: 18,
-  padding: "13px 16px",
-  background: "rgba(255,253,249,0.96)",
-  color: "var(--ec-ink)",
-  fontWeight: 900,
-  cursor: "pointer",
-};
-
-const drawerDangerActionStyle: CSSProperties = {
-  border: "1px solid rgba(185, 28, 28, 0.14)",
-  borderRadius: 18,
-  padding: "13px 16px",
-  background: "rgba(254, 242, 242, 0.96)",
-  color: "#991b1b",
-  fontWeight: 900,
-  cursor: "pointer",
-};
-
-function poiCardStyle(compact: boolean): CSSProperties {
-  return {
-    position: "relative",
-    overflow: "hidden",
-    display: "grid",
-    gap: compact ? 14 : 20,
-    padding: compact ? "20px 16px 16px" : "24px 20px 20px",
-    borderRadius: compact ? 24 : 30,
-    background:
-      "linear-gradient(180deg, rgba(255,253,249,0.99) 0%, rgba(247,244,238,0.96) 100%)",
-    border: "1px solid var(--ec-line)",
-    boxShadow: compact ? "0 12px 30px rgba(21,21,21,0.055)" : "var(--ec-shadow-2)",
-  };
-}
-
-const poiFieldNoteRuleStyle: CSSProperties = {
-  position: "absolute",
-  top: 0,
-  right: 0,
-  left: 0,
-  height: 6,
-  background:
-    "linear-gradient(90deg, var(--ec-night) 0 24%, var(--ec-ochre) 24% 56%, var(--ec-moss) 56% 100%)",
-};
-
-function poiHeroRowStyle(compact: boolean): CSSProperties {
-  return {
-    display: "grid",
-    gridTemplateColumns: compact ? "56px minmax(0, 1fr)" : "72px minmax(0, 1fr)",
-    gap: compact ? 12 : 16,
-    alignItems: "center",
-  };
-}
-
-function poiThumbStyle(compact: boolean): CSSProperties {
-  return {
-    width: compact ? 56 : 72,
-    height: compact ? 56 : 72,
-    borderRadius: compact ? 16 : 20,
-    display: "grid",
-    placeItems: "center",
-    background:
-      "linear-gradient(135deg, rgba(239,229,214,0.96) 0%, rgba(231,236,232,0.94) 100%)",
-    color: "var(--ec-clay)",
-    fontSize: compact ? 24 : 30,
-    fontWeight: 900,
-  };
-}
-
-const poiTypeLabelStyle: CSSProperties = {
-  margin: 0,
-  color: "var(--ec-slate)",
-  fontSize: 11,
-  fontWeight: 900,
-  letterSpacing: "0.1em",
-  textTransform: "uppercase",
-};
-
-function poiCardTitleStyle(compact: boolean): CSSProperties {
-  return {
-    margin: 0,
-    color: "var(--ec-ink)",
-    fontFamily: '"Iowan Old Style", Georgia, "Times New Roman", serif',
-    fontSize: compact ? 23 : 29,
-    lineHeight: 1.12,
-  };
-}
-
-const poiSubtitleStyle: CSSProperties = {
-  margin: 0,
-  color: "var(--ec-slate)",
-  fontSize: 14,
-  lineHeight: 1.6,
-};
-
-const poiChipRowStyle: CSSProperties = {
-  display: "flex",
-  gap: 8,
-  flexWrap: "wrap",
-};
-
-const poiChipStyle: CSSProperties = {
-  padding: "6px 9px",
-  borderRadius: 999,
-  background: "rgba(231,236,232,0.96)",
-  color: "var(--ec-moss)",
-  fontSize: 12,
-  fontWeight: 850,
-};
-
-function placeInspectorCardStyle(compact: boolean): CSSProperties {
-  return {
-    display: "grid",
-    gap: compact ? 6 : 12,
-    minHeight: 0,
-  };
-}
-
-function placeInspectorRouteStyle(compact: boolean): CSSProperties {
-  return {
-    display: "grid",
-    gap: compact ? 3 : 6,
-    padding: compact ? "8px 10px" : "13px 14px",
-    borderRadius: compact ? 16 : 18,
-    background:
-      "linear-gradient(135deg, rgba(37,99,235,0.08), rgba(255,253,249,0.92))",
-    border: "1px solid rgba(37,99,235,0.13)",
-    borderLeft: "4px solid var(--ec-route-blue)",
-  };
-}
-
-const placeInspectorFactsStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 7,
-};
-
-function placeInspectorFactStyle(compact: boolean): CSSProperties {
-  return {
-    padding: compact ? "4px 7px" : "6px 9px",
-    borderRadius: 999,
-    background: "rgba(231,236,232,0.88)",
-    color: "var(--ec-moss)",
-    fontSize: compact ? 11 : 12,
-    fontWeight: 850,
-  };
-}
-
-function placeInspectorGridStyle(compact: boolean): CSSProperties {
-  return {
-    display: "grid",
-    gridTemplateColumns: compact ? "repeat(2, minmax(0, 1fr))" : "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: compact ? 6 : 10,
-  };
-}
-
-function placeInspectorNoteStyle(tone: "fit" | "caution", compact = false): CSSProperties {
-  return {
-    display: "grid",
-    gap: compact ? 3 : 6,
-    padding: compact ? "7px 9px" : "12px 13px",
-    borderRadius: compact ? 15 : 18,
-    background: tone === "fit" ? "rgba(231,236,232,0.66)" : "rgba(239,229,214,0.64)",
-    border:
-      tone === "fit"
-        ? "1px solid rgba(102,113,95,0.12)"
-        : "1px solid rgba(177,138,88,0.14)",
-  };
-}
-
-const placeInspectorTravelStyle: CSSProperties = {
-  margin: 0,
-  color: "var(--ec-slate)",
-  fontSize: 13,
-  lineHeight: 1.55,
-};
-
-const placeInspectorLabelStyle: CSSProperties = {
-  color: "var(--ec-slate)",
-  fontSize: 10,
-  fontWeight: 900,
-  letterSpacing: "0.12em",
-  textTransform: "uppercase",
-};
-
-function placeInspectorRouteTextStyle(compact: boolean): CSSProperties {
-  return {
-    color: "var(--ec-ink-soft)",
-    fontSize: compact ? 12.5 : 14,
-    lineHeight: compact ? 1.3 : 1.45,
-  };
-}
-
-function placeInspectorNoteTextStyle(compact: boolean): CSSProperties {
-  return {
-    margin: 0,
-    color: "var(--ec-ink-soft)",
-    fontSize: compact ? 11.5 : 13,
-    lineHeight: compact ? 1.34 : 1.52,
-  };
-}
-
-const poiRouteStripStyle: CSSProperties = {
-  display: "grid",
-  gap: 8,
-  padding: "16px 18px",
-  borderRadius: 22,
-  background:
-    "linear-gradient(135deg, rgba(239,229,214,0.76) 0%, rgba(255,253,249,0.92) 100%)",
-  border: "1px solid rgba(177,138,88,0.18)",
-  borderLeft: "4px solid var(--ec-ochre)",
-  color: "var(--ec-ink-soft)",
-  lineHeight: 1.55,
-};
-
-const poiLiveFactsCardStyle: CSSProperties = {
-  display: "grid",
-  gap: 14,
-  padding: 16,
-  borderRadius: 22,
-  background: "rgba(231,236,232,0.7)",
-  border: "1px solid rgba(102, 113, 95, 0.14)",
-};
-
-const poiLiveFactsSourceStyle: CSSProperties = {
-  padding: "4px 8px",
-  borderRadius: 999,
-  background: "rgba(231,236,232,0.96)",
-  color: "var(--ec-moss)",
-  fontSize: 12,
-  fontWeight: 800,
-};
-
-const poiLiveFactsGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))",
-  gap: 10,
-};
-
-const poiLiveFactItemStyle: CSSProperties = {
-  display: "grid",
-  gap: 5,
-  padding: 12,
-  borderRadius: 16,
-  background: "rgba(255,255,255,0.76)",
-};
-
-const poiLiveFactValueStyle: CSSProperties = {
-  margin: 0,
-  color: "var(--ec-ink-soft)",
-  fontSize: 13,
-  lineHeight: 1.55,
-  fontWeight: 750,
-};
-
-const poiSectionTitleStyle: CSSProperties = {
-  margin: 0,
-  color: "var(--ec-ink)",
-  fontSize: 15,
-  fontWeight: 900,
-};
-
-const poiBodyTextStyle: CSSProperties = {
-  margin: 0,
-  color: "var(--ec-ink-soft)",
-  lineHeight: 1.7,
-};
-
-const researchCardStyle: CSSProperties = {
-  display: "grid",
-  gap: 14,
-  padding: 16,
-  borderRadius: 22,
-  background: "rgba(255,253,249,0.92)",
-  border: "1px solid var(--ec-line)",
-};
-
-const researchSourceStyle: CSSProperties = {
-  padding: "4px 8px",
-  borderRadius: 999,
-  background: "rgba(255,253,249,0.92)",
-  color: "var(--ec-slate)",
-  fontSize: 12,
-  fontWeight: 800,
-};
-
-function researchGridStyle(compact: boolean): CSSProperties {
-  return {
-    display: "grid",
-    gridTemplateColumns: compact ? "minmax(0, 1fr)" : "repeat(auto-fit, minmax(150px, 1fr))",
-    gap: compact ? 10 : 12,
-  };
-}
-
-const researchOverviewStyle: CSSProperties = {
-  display: "grid",
-  gap: 6,
-  paddingTop: 12,
-  borderTop: "1px solid var(--ec-line)",
-};
-
-const researchLabelStyle: CSSProperties = {
-  margin: 0,
-  color: "var(--ec-slate)",
-  fontSize: 12,
-  fontWeight: 850,
-};
-
-const researchValueStyle: CSSProperties = {
-  margin: 0,
-  color: "var(--ec-ink-soft)",
-  fontSize: 13,
-  lineHeight: 1.55,
-};
-
-function poiTwoColumnStyle(compact: boolean): CSSProperties {
-  return {
-    display: "grid",
-    gridTemplateColumns: compact ? "minmax(0, 1fr)" : "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: 12,
-  };
-}
-
-function poiBulletBoxStyle(tone: "fit" | "caution"): CSSProperties {
-  return {
-    display: "grid",
-    gap: 10,
-    padding: 14,
-    borderRadius: 20,
-    background: tone === "fit" ? "rgba(231,236,232,0.72)" : "rgba(239,229,214,0.72)",
-    border:
-      tone === "fit"
-        ? "1px solid rgba(102, 113, 95, 0.14)"
-        : "1px solid rgba(177, 138, 88, 0.16)",
-  };
-}
-
-const poiBulletTextStyle: CSSProperties = {
-  margin: 0,
-  color: "var(--ec-ink-soft)",
-  lineHeight: 1.55,
-  fontSize: 13,
-};
-
-const poiDetailStatusStyle: CSSProperties = {
-  margin: 0,
-  color: "var(--ec-slate)",
-  fontSize: 13,
-  lineHeight: 1.55,
-  padding: "0 2px",
 };
 
 const dragHandleStyle: CSSProperties = {

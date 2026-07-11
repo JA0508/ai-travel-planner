@@ -37,6 +37,12 @@ type GhostDayPathGroup = {
 export type RoutePreviewMode = "walk" | "transit" | "drive";
 
 type RouteMapSegmentLike = {
+  segment_key?: string;
+  from_name?: string;
+  to_name?: string;
+  duration_s?: number;
+  distance_m?: number;
+  mode?: RoutePreviewMode;
   path_points?: RoutePathPoint[];
 };
 
@@ -49,6 +55,9 @@ type RouteMapPaneProps = {
   stops: EditableRouteStop[];
   ghostStops?: EditableRouteStop[];
   selectedStopId: string | null;
+  neighborStopIds?: string[];
+  highlightedRouteSegmentKeys?: string[];
+  selectedRouteContext?: string | null;
   routeSegments: RouteMapSegmentLike[];
   allDays: number[];
   selectedDay: number;
@@ -95,6 +104,9 @@ export function RouteMapPane({
   stops,
   ghostStops = [],
   selectedStopId,
+  neighborStopIds = [],
+  highlightedRouteSegmentKeys = [],
+  selectedRouteContext,
   routeSegments,
   allDays,
   selectedDay,
@@ -117,6 +129,11 @@ export function RouteMapPane({
   const [compactLayout, setCompactLayout] = useState(false);
   const [state, setState] = useState<"loading" | "ready" | "missing-key" | "failed">(
     key ? "loading" : "missing-key",
+  );
+  const neighborStopIdSet = useMemo(() => new Set(neighborStopIds), [neighborStopIds]);
+  const highlightedRouteSegmentKeySet = useMemo(
+    () => new Set(highlightedRouteSegmentKeys),
+    [highlightedRouteSegmentKeys],
   );
 
   const stopPoints = useMemo(
@@ -167,6 +184,21 @@ export function RouteMapPane({
         (segment.path_points ?? []).map((point) => [point.longitude, point.latitude]),
       ),
     [routeSegments],
+  );
+  const highlightedPathGroups = useMemo(
+    () =>
+      routeSegments
+        .filter(
+          (segment) =>
+            segment.segment_key &&
+            highlightedRouteSegmentKeySet.has(segment.segment_key) &&
+            (segment.path_points?.length ?? 0) >= 2,
+        )
+        .map((segment) => ({
+          key: segment.segment_key ?? "",
+          path: (segment.path_points ?? []).map((point) => [point.longitude, point.latitude] as [number, number]),
+        })),
+    [highlightedRouteSegmentKeySet, routeSegments],
   );
 
   const selectedFallbackPathPoints = useMemo(() => {
@@ -326,11 +358,12 @@ export function RouteMapPane({
       const marker = new amap.Marker({
         position: [stop.visualLongitude, stop.visualLatitude],
         title: stop.name,
-        content: buildStopMarkerContent({
-          active: stop.id === selectedStopId,
-          label: `D${stop.day}.${stop.order}`,
-          overlapped: stop.overlapTotal > 1,
-        }),
+          content: buildStopMarkerContent({
+            active: stop.id === selectedStopId,
+            neighbor: neighborStopIdSet.has(stop.id),
+            label: `D${stop.day}.${stop.order}`,
+            overlapped: stop.overlapTotal > 1,
+          }),
         offset: new amap.Pixel(-28, -18),
       });
       marker.on("click", () => onSelectStop(stop.id));
@@ -342,13 +375,24 @@ export function RouteMapPane({
       const realPolyline = new amap.Polyline({
         path: activePathPoints,
         strokeColor: ROUTE_SPINE_BLUE,
-        strokeOpacity: activePathIsEstimated ? 0.78 : 0.96,
-        strokeWeight: 6,
+        strokeOpacity: selectedStopId ? 0.36 : activePathIsEstimated ? 0.78 : 0.96,
+        strokeWeight: selectedStopId ? 4 : 6,
         strokeStyle: activePathIsEstimated ? "dashed" : "solid",
         lineJoin: "round",
       });
       overlays.push(realPolyline);
       fitOverlays.push(realPolyline);
+    }
+
+    for (const group of highlightedPathGroups) {
+      const highlightPolyline = new amap.Polyline({
+        path: group.path,
+        strokeColor: ROUTE_SPINE_BLUE,
+        strokeOpacity: 0.98,
+        strokeWeight: 7,
+        lineJoin: "round",
+      });
+      overlays.push(highlightPolyline);
     }
 
     try {
@@ -377,6 +421,8 @@ export function RouteMapPane({
     amap,
     fitSignature,
     ghostDayPathGroups,
+    highlightedPathGroups,
+    neighborStopIdSet,
     onSelectStop,
     origin.latitude,
     origin.longitude,
@@ -433,6 +479,7 @@ export function RouteMapPane({
             routeMode={routeMode}
             routePreviewState={routePreviewState}
             selectedStopName={selectedStopPoint?.name ?? null}
+            selectedRouteContext={selectedRouteContext}
             onToggleDayVisibility={onToggleDayVisibility}
             onShowAllDays={onShowAllDays}
             onRouteModeChange={onRouteModeChange}
@@ -563,15 +610,17 @@ function distanceMeters(
 
 function buildStopMarkerContent({
   active,
+  neighbor,
   label,
   overlapped,
 }: {
   active: boolean;
+  neighbor: boolean;
   label: string;
   overlapped: boolean;
 }): string {
-  const background = active ? ROUTE_SPINE_BLUE : "#5f7895";
-  const width = active ? 58 : 50;
+  const background = active ? ROUTE_SPINE_BLUE : neighbor ? "#b18a58" : "#5f7895";
+  const width = active ? 62 : neighbor ? 54 : 50;
   return `<div style="
     min-width:${width}px;
     height:36px;
@@ -586,7 +635,7 @@ function buildStopMarkerContent({
     font:800 12px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     letter-spacing:.03em;
     box-shadow:0 ${active ? 12 : 8}px ${active ? 24 : 18}px rgba(37,99,235,.24);
-    outline:${overlapped ? "2px solid rgba(177,138,88,.48)" : "none"};
+    outline:${active ? "3px solid rgba(37,99,235,.22)" : neighbor ? "2px solid rgba(177,138,88,.34)" : overlapped ? "2px solid rgba(177,138,88,.48)" : "none"};
   ">${label}</div>`;
 }
 

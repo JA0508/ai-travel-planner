@@ -10,6 +10,7 @@ type RouteControlBarProps = {
   routeMode: RoutePreviewMode;
   routePreviewState: "idle" | "loading" | "partial" | "failed";
   selectedStopName?: string | null;
+  selectedRouteContext?: string | null;
   onToggleDayVisibility: (day: number) => void;
   onShowAllDays: () => void;
   onRouteModeChange: (mode: RoutePreviewMode) => void;
@@ -30,6 +31,7 @@ export function RouteControlBar({
   routeMode,
   routePreviewState,
   selectedStopName,
+  selectedRouteContext,
   onToggleDayVisibility,
   onShowAllDays,
   onRouteModeChange,
@@ -40,7 +42,11 @@ export function RouteControlBar({
       <div className="route-control-bar__status">
         <span>Map reasoning</span>
         <strong>Day {selectedDay}</strong>
-        <p>{selectedStopName ? `已选中：${selectedStopName}` : routePreviewStateLabel(routePreviewState)}</p>
+        <p>
+          {selectedStopName
+            ? `${selectedStopName}${selectedRouteContext ? ` · ${selectedRouteContext}` : ""}`
+            : routePreviewStateLabel(routePreviewState)}
+        </p>
       </div>
 
       <div className="route-control-bar__group">
