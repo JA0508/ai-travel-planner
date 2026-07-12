@@ -1,196 +1,580 @@
-## 🧠 Project Title
+# AI Travel Planner
 
-**AI Travel Itinerary Planner (Full-Stack MVP)**
+> **Source-to-Executable Trip Workspace**
+> Compile guides, screenshots, preferences, time boundaries, fixed reservations,
+> and verified place facts into an explainable, constraint-safe, executable trip.
 
----
+<!--
+Optional badges can be added after CI is stable.
 
-## 📌 Overview
+Example:
+Frontend CI badge
+Backend CI badge
+-->
 
-This project is a full-stack AI-powered travel itinerary planning system.
+## Overview
 
-It lets users start from interesting places, food, activities, fixed events, and time constraints first, then generates a structured multi-day travel plan based on deterministic scheduling logic and spatial heuristics.
+AI Travel Planner is a full-stack travel planning system built around a strict
+separation of responsibilities:
 
-Hotel is optional:
-- if the user already knows it, it can be used as a planning anchor
-- if not, the product can still build an itinerary skeleton first and suggest a stay area afterward
+- **LLMs understand, classify, propose, summarize, and explain.**
+- **Deterministic systems resolve, validate, schedule, version, and execute.**
 
-The system focuses on **planning efficiency, interpretability, and user-friendly output**, rather than generic recommendations.
+The project is intentionally different from generic “prompt in, itinerary out”
+travel demos.
 
----
-
-## 🚀 Key Features
-
-### 1. Intelligent Itinerary Generation
-
-* Multi-day travel planning
-* Morning / Afternoon / Evening time blocks
-* Automatic day estimation if not provided
-* Interest-first planning without requiring a hotel up front
-
-### 2. Constraint-Aware Scheduling
-
-* Supports fixed day and fixed time constraints
-* Supports semi-fixed availability windows for boundary days and one explicit indexed day
-* Prioritizes user-defined constraints before filling remaining slots
-
-### 3. Distance-Aware Heuristic
-
-* Greedy scheduling based on proximity
-* Reduces unnecessary travel between locations
-
-### 4. Human-Readable Output
-
-* Timeline-style UI
-* Structured by day and time blocks
-* Includes explanation layer for each block
-* Shows availability trimming, fixed-event placement, and boundary-anchor influence when meaningful
-
-### 5. Stay Recommendation After Itinerary
-
-* If a hotel is not provided, the product can suggest a stay area after itinerary generation
-* Stay recommendation is derived from the itinerary skeleton, not from a huge hotel-search subsystem
-* Recommendation explains why the area fits the current trip and whether it is best for Day 1, balanced across days, or convenient for departure
+Its long-term product direction is a **Source-to-Executable Trip Workspace**:
+users should be able to bring fragmented travel material into the system, review
+what was extracted, confirm places and constraints, generate a realistic route,
+understand why it was arranged that way, and apply safe, reversible repairs when
+the trip changes.
 
 ---
 
-## 🏗 System Architecture
+## Product vision
 
 ```text
-User Input (Frontend)
-        ↓
-API Request (Next.js → FastAPI)
-        ↓
-POI / Optional Anchor Normalization
-        ↓
-Scheduling Engine (core logic)
-        ↓
-Itinerary JSON + Stay Recommendation
-        ↓
-Frontend Rendering (timeline UI)
+Guides / screenshots / notes / bookings / preferences
+                         ↓
+                  Source extraction
+                         ↓
+             Place and constraint review
+                         ↓
+                 Intent compilation
+                         ↓
+              Deterministic planning
+                         ↓
+        Readiness + route + place evidence
+                         ↓
+          Versioned patches and safe repair
+                         ↓
+                  Executable trip
+```
+
+The core product object is not a chat transcript. It is a **versioned trip** with
+traceable sources, protected constraints, and reviewable revisions.
+
+---
+
+## Why this project is different
+
+### Constraint-safe planning
+
+Fixed events, availability windows, arrival/departure boundaries, and explicit
+user protections are treated as first-class planning constraints.
+
+### Explainable execution
+
+The system does not only show where to go. It surfaces:
+
+- readiness state
+- primary risks
+- protected boundaries
+- route context
+- place fit
+- supporting evidence
+- missing or uncertain data
+
+### Place Intelligence
+
+Place details are structured around:
+
+- identity
+- trust
+- route fit
+- visit context
+- caveats
+- evidence
+- available actions
+
+### Repair instead of silent regeneration
+
+The product direction favors structured patches:
+
+```text
+interpretation
+→ constraint check
+→ impact preview
+→ confirmation
+→ deterministic execution
+→ before/after review
+→ undo
+```
+
+### Source-to-plan compilation
+
+The next major product line is **Import-to-Executable v1**:
+
+- import text, screenshots, URLs, and documents
+- review extracted mentions
+- resolve canonical places
+- compile hard/soft/assumed constraints
+- generate a deterministic plan
+- preserve provenance through execution
+
+---
+
+## Current capabilities
+
+The repository currently contains a substantial planning foundation:
+
+- natural-language trip intent parsing
+- structured planning-state parsing
+- deterministic multi-day scheduling
+- morning / afternoon / evening blocks
+- fixed day and fixed time handling
+- flexible availability windows
+- optional hotel-anchor planning
+- route-aware POI ordering
+- Completion Intelligence
+- Planner Realism analysis
+- Trip Readiness
+- desktop map/timeline workspace
+- mobile route-editing workspace
+- Day layers and route controls
+- Place Intelligence and evidence presentation
+- provider fallback behavior
+- request IDs and process-time observability
+- idempotency support for selected mutation paths
+- fixture-driven product verification
+
+> Development branches may contain additional in-review capabilities. Required CI
+> checks must be green before those capabilities are considered part of the stable
+> baseline.
+
+---
+
+## Product interface
+
+### Result workspace
+
+The desktop result experience follows a stable decision-workspace structure:
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│ Trip Readiness │ Route Map and Controls │ Timeline / Place Detail  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+- **Left:** readiness, primary issues, protected boundaries, next actions
+- **Center:** route map, Day layers, selected stop, route context
+- **Right:** Day timeline or Place Intelligence
+
+### Screenshot placeholders
+
+#### Desktop workspace
+
+> **Screenshot placeholder:** desktop three-column trip workspace
+> Suggested file: `docs/assets/desktop-trip-workspace.png`
+
+#### Place Intelligence
+
+> **Screenshot placeholder:** place trust, route fit, caveats, and evidence
+> Suggested file: `docs/assets/place-intelligence.png`
+
+#### Mobile route workspace
+
+> **Screenshot placeholder:** mobile map + timeline/bottom-sheet workflow
+> Suggested file: `docs/assets/mobile-route-workspace.png`
+
+#### Constraint-preserving adjustment flow
+
+> **Screenshot placeholder:** interpretation → impact preview → change review
+> Suggested file: `docs/assets/replanning-flow.png`
+
+---
+
+## Architecture
+
+```text
+Frontend
+  Next.js App Router + TypeScript
+        │
+        │ typed JSON contracts
+        ▼
+Backend
+  FastAPI + Pydantic
+        │
+        ├── LLM interaction services
+        │     intent parsing
+        │     ambiguity detection
+        │     explanation
+        │
+        ├── Deterministic planning services
+        │     constraint validation
+        │     scheduling
+        │     readiness
+        │     patch application
+        │
+        └── Provider adapters
+              geocoding
+              POI lookup
+              route preview
+              stay/departure context
+```
+
+### Required architecture boundary
+
+LLMs must not directly overwrite final itinerary state.
+
+The safe execution path is:
+
+```text
+natural-language request
+→ schema-valid interpretation
+→ deterministic validation
+→ impact preview
+→ confirmed execution
+→ refreshed itinerary surfaces
 ```
 
 ---
 
-## ⚙️ Tech Stack
+## Tech stack
 
 ### Frontend
 
-* Next.js (App Router, TypeScript)
-* React (hooks)
-* Minimal CSS / inline styling
-
-Create `frontend/.env.local` from `frontend/.env.example` when testing the mobile route editor map.
-
-* `NEXT_PUBLIC_AMAP_WEB_KEY` enables the browser-side Amap route workspace.
-* `NEXT_PUBLIC_AMAP_SECURITY_JS_CODE` sets Amap JSAPI `securityJsCode` before the browser script loads.
-* `NEXT_PUBLIC_API_BASE_URL` points the frontend at the FastAPI backend and defaults to `http://localhost:8000`.
-* Without `NEXT_PUBLIC_AMAP_WEB_KEY`, the route editor safely falls back to the list-first experience and remains editable.
-* Without `NEXT_PUBLIC_AMAP_SECURITY_JS_CODE`, the previous no-security-code behavior is preserved for environments that do not require it.
+- Next.js
+- React
+- TypeScript
+- App Router
+- browser-side Amap integration
+- typed view-model and fixture-driven UI patterns
 
 ### Backend
 
-* FastAPI
-* Pydantic (data validation)
-* Modular architecture (api / core / schemas / services)
+- FastAPI
+- Pydantic
+- Python
+- modular API / schema / service / core structure
+- deterministic scheduler
+- Amap provider integrations
+- OpenAI-compatible intent and disambiguation layer
 
-### Backend Environment
+### Infrastructure and quality
 
-Create `backend/.env` from `backend/.env.example` for local configuration.
-
-* `APP_ENV=development` keeps local development permissive.
-* `POI_DISCOVERY_MODE=fallback` allows local/demo fallback to curated safety-net candidates.
-* `CORS_ALLOW_ORIGINS=*` keeps local browser development permissive; production should set explicit origins such as `https://your-domain.com`.
-* `APP_ENV=production` defaults `POI_DISCOVERY_MODE` to `required`.
-* `AMAP_API_KEY` is required for production geocoding, walking routes, stay/departure advice, and realtime Completion Task candidate discovery.
-* `AMAP_REQUEST_TIMEOUT_SECONDS` controls Amap geocoding/search/route request timeouts and defaults to `10`.
-* `OPENAI_INTENT_MODEL`, `OPENAI_INTENT_TIMEOUT_SECONDS`, and `OPENAI_DISAMBIGUATION_TIMEOUT_SECONDS` control the LLM interaction layer without changing deterministic scheduling.
-* `LOG_LEVEL` controls backend logging verbosity and defaults to `INFO`.
-* Without `AMAP_API_KEY`, the backend still runs in development/fallback mode, but POI discovery degrades to the built-in curated safety-net catalog and session candidate history.
-* In production required mode, missing `AMAP_API_KEY` fails startup instead of silently serving incomplete POI discovery.
-
-You can check runtime capability at:
-
-```text
-GET /readiness
-```
-
-If production is missing `AMAP_API_KEY`, readiness reports a failed POI discovery state; startup also fails unless `POI_DISCOVERY_MODE=fallback` is explicitly set for demo deployments. Readiness also reports non-secret runtime configuration such as configured provider timeouts and whether API keys are present.
-
-### Backend Observability
-
-Every backend response includes:
-
-* `X-Request-ID`, using the incoming request id when supplied or generating one server-side.
-* `X-Process-Time-Ms`, reporting request handling time for lightweight local debugging.
-
-The frontend sends `X-Request-ID` automatically on JSON API calls. `/apply-completion-task` also accepts `X-Idempotency-Key`, which the frontend uses to prevent duplicate inserts when a Completion Intelligence action is retried or double-clicked.
+- GitHub Actions
+- frontend type checking and production build
+- backend unit/integration tests
+- request IDs
+- process-time headers
+- provider-readiness endpoint
+- idempotency on supported operations
 
 ---
 
-## ✅ Local Verification
+## Repository structure
 
-Run these commands from the repository root before shipping product changes:
+```text
+.
+├── backend/                 FastAPI application and deterministic services
+├── frontend/                Next.js application
+├── infra/                   deployment and infrastructure configuration
+├── skills/                  project-local agent skills
+├── docs/
+│   ├── product/             canonical product direction and implementation spec
+│   ├── research/            dated product and competitor research
+│   ├── decisions/           architecture decision records
+│   └── assets/              README and documentation images
+├── .github/                 CI workflows
+├── AGENTS.md                coding-agent operating rules
+└── README.md
+```
+
+---
+
+## Local setup
+
+### Prerequisites
+
+- Node.js compatible with the repository lockfile and CI
+- npm
+- Python compatible with the backend test environment
+- an isolated Python virtual environment
+
+### 1. Clone and enter the repository
+
+```bash
+git clone <repository-url>
+cd ai-travel-planner
+```
+
+### 2. Configure the backend
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+Important backend settings include:
+
+- `APP_ENV`
+- `POI_DISCOVERY_MODE`
+- `CORS_ALLOW_ORIGINS`
+- `AMAP_API_KEY`
+- `AMAP_REQUEST_TIMEOUT_SECONDS`
+- `OPENAI_API_KEY`
+- `OPENAI_INTENT_MODEL`
+- `OPENAI_INTENT_TIMEOUT_SECONDS`
+- `OPENAI_DISAMBIGUATION_TIMEOUT_SECONDS`
+- `LOG_LEVEL`
+
+Do not commit `backend/.env`.
+
+Development can run with fallback POI discovery when provider credentials are not
+available. Production should use explicit provider configuration and strict
+readiness behavior.
+
+### 3. Configure the frontend
+
+```bash
+cp frontend/.env.example frontend/.env.local
+```
+
+Important frontend settings include:
+
+- `NEXT_PUBLIC_API_BASE_URL`
+- `NEXT_PUBLIC_AMAP_WEB_KEY`
+- `NEXT_PUBLIC_AMAP_SECURITY_JS_CODE`
+
+Without a browser-side Amap key, the application should degrade to its supported
+list-first/fallback experience rather than failing the entire workspace.
+
+### 4. Install dependencies
 
 ```bash
 cd frontend
+npm ci
+```
+
+```bash
+cd ../backend
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### 5. Run the backend
+
+From `backend/` with the virtual environment activated:
+
+```bash
+python -m uvicorn app.main:app --reload --port 8000
+```
+
+Backend readiness:
+
+```text
+GET http://localhost:8000/readiness
+```
+
+### 6. Run the frontend
+
+In a second terminal:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open:
+
+```text
+http://localhost:3000
+```
+
+---
+
+## Verification
+
+Run clean, reproducible checks before marking a feature ready for review.
+
+### Frontend
+
+```bash
+cd frontend
+npm ci
 npm run typecheck
 npm run build
 ```
+
+Run any feature-specific frontend tests defined by the current branch or task.
+
+### Backend
+
+From the repository root:
 
 ```bash
 backend/.venv/bin/python -m unittest discover -s backend/tests -t backend
 ```
 
-If backend dependencies are freshly installed, `pytest` also works from the backend directory:
+Or, with the backend virtual environment activated:
 
 ```bash
 cd backend
 python -m pytest
 ```
 
----
+### Git hygiene
 
-## 🧠 Core Logic (Scheduler)
+```bash
+git diff --check
+git status --short
+```
 
-The scheduling engine is built with:
-
-* Time-block-based allocation (morning / afternoon / evening)
-* Greedy heuristic for POI selection
-* Constraint prioritization
-* Simple rule-based preference:
-
-  * Daytime → scenic spots
-  * Evening → restaurants
+A feature is not ready for review while required GitHub Actions checks are failing.
 
 ---
 
-## 🔍 Design Philosophy
+## Runtime behavior and resilience
 
-* **LLM is used for interaction, parsing, and explanation**
-* Final scheduling remains deterministic and explainable
-* The main planning flow is itinerary-first, not hotel-first
-* Focus on **interpretability over black-box AI**
+### Provider fallback
+
+When Amap credentials are unavailable in an allowed development/fallback mode:
+
+- the backend remains runnable
+- provider-backed discovery may degrade
+- curated fallback candidates may be used
+- the UI must not claim provider-confirmed facts
+
+In production-required mode, missing provider credentials should fail readiness or
+startup according to the backend configuration.
+
+### Observability
+
+Backend responses expose:
+
+- `X-Request-ID`
+- `X-Process-Time-Ms`
+
+The frontend sends request IDs for JSON API operations.
+
+Supported mutation paths may use `X-Idempotency-Key` to prevent duplicate execution.
+
+### Uncertainty semantics
+
+The product distinguishes:
+
+- provider facts
+- user constraints
+- deterministic calculations
+- heuristics
+- missing data
+
+Missing or stale data must not be presented as confirmed.
 
 ---
 
-## 📸 Demo
+## Product roadmap
 
-（你可以放截图）
+### Foundation
+
+- reproducible CI
+- characterization fixtures
+- page-level orchestration decomposition
+- Trip and TripRevision persistence
+- planner trace and deterministic evaluation corpus
+
+### Import-to-Executable v1
+
+- Universal Import
+- Import Review Inbox
+- canonical POI resolution
+- Trip Intent Compiler
+- explainable planner trace
+- source and freshness-aware Place Intelligence
+- explainable route optimization
+- read-only sharing and export
+
+### Later product layers
+
+- collaboration and permissions
+- booking/document inbox
+- multi-city trip boundaries
+- during-trip mode and offline pack
+- disruption repair
+- place library and collections
+- planned-versus-actual recap
+
+See:
+
+- `docs/product/PRODUCT_DIRECTION.md`
+- `docs/product/CODEX_AI_TRAVEL_PLANNER_PRODUCT_SPEC.md`
 
 ---
 
-## ⚠️ Limitations (Honest & Professional)
+## Engineering principles
 
-* Exact hotel search / booking is out of scope
-* Stay recommendation is area-oriented, not a full accommodation marketplace
-* No user authentication
-* POI discovery is provider-backed when `AMAP_API_KEY` is configured; the curated catalog is only a safety net, not a full POI data platform
+- LLMs interpret and propose; deterministic systems validate and execute.
+- Fixed events and hard boundaries must not be silently changed.
+- Prefer patches over full itinerary rewrites.
+- Unknown data is not equivalent to zero or safe.
+- Real-world facts require provenance and freshness.
+- Do not expand `frontend/src/app/page.tsx`.
+- Do not duplicate scheduler, patch, constraint, or diff logic.
+- Build reviewable vertical slices.
+- Preserve rollback, idempotency, and stale-version safety.
+- Keep UI claims aligned with evidence strength.
+- Keep `main` releasable and CI green.
+
+Agent-specific rules are defined in `AGENTS.md`.
 
 ---
 
-## 🔮 Future Improvements
+## Known limitations
 
-* Improve stay-area recommendation quality
-* Add richer POI discovery and cleanup
-* Expand conversational planning and replanning
-* Improve route quality without losing explainability
+The project is still evolving from a strong planning prototype into a durable trip
+workspace.
+
+Current limitations include:
+
+- no production-grade user authentication and multi-user persistence
+- no complete TripRevision cloud store
+- limited source-import pipeline
+- incomplete canonical place/provenance graph
+- no full booking inbox
+- no production disruption-monitoring infrastructure
+- no offline travel pack
+- no OTA search, payment, or booking modification
+- provider coverage depends on configuration and availability
+- some advanced mutation capabilities may remain branch-specific or under review
+
+These limitations are intentionally visible rather than hidden behind generated copy.
+
+---
+
+## Security and privacy
+
+Travel plans, locations, bookings, and uploaded artifacts should be treated as private.
+
+- never commit real API keys
+- keep `.env` files out of Git
+- redact sensitive fixture and log data
+- validate uploaded files before processing
+- protect URL fetching from SSRF
+- do not expose provider credentials to the browser unless they are explicitly
+  browser-safe public configuration values
+- default future trip sharing and collaboration features to least privilege
+
+---
+
+## Documentation
+
+- Product direction: `docs/product/PRODUCT_DIRECTION.md`
+- Full implementation specification:
+  `docs/product/CODEX_AI_TRAVEL_PLANNER_PRODUCT_SPEC.md`
+- Research snapshot:
+  `docs/research/AI_TRAVEL_PLANNER_PRODUCT_RESEARCH_2026-07-12.docx`
+- Architecture decisions: `docs/decisions/`
+
+The Markdown product specification is the canonical engineering reference.
+The DOCX report is a dated human-facing research artifact.
+
+---
+
+## Project status
+
+This repository is under active product development.
+
+Changes should move the system toward an explainable, versioned, source-aware,
+constraint-safe trip workspace—not toward a generic AI chat experience.
