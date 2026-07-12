@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   getWorkspaceStateOwner,
   groupWorkspaceStateOwnership,
+  routeWorkspaceFeatureStateOwnership,
   routeWorkspacePageStateOwnership,
 } from "./routeWorkspaceStateOwnership.ts";
 
@@ -17,6 +18,17 @@ test("classifies every current page useState owner explicitly", () => {
   const classifiedNames = Object.keys(routeWorkspacePageStateOwnership).sort();
 
   assert.deepEqual(classifiedNames, stateNames);
+});
+
+test("keeps route workspace UI state owned by the feature boundary", () => {
+  const pageSource = readFileSync(new URL("../../app/page.tsx", import.meta.url), "utf8");
+  assert.equal(pageSource.includes("const [routeEditMode,"), false);
+  assert.equal(pageSource.includes("const [activeRouteSheet,"), false);
+
+  assert.deepEqual(routeWorkspaceFeatureStateOwnership, {
+    activeRouteSheet: "ui",
+    routeEditMode: "ui",
+  });
 });
 
 test("keeps the core workspace owners distinct", () => {
@@ -35,6 +47,6 @@ test("groups all expected state ownership buckets", () => {
   assert.ok(grouped.server.includes("completionTaskCandidatePreviews"));
   assert.ok(grouped.draft.includes("availabilityWindowsText"));
   assert.ok(grouped.selection.includes("activeSwapTarget"));
-  assert.ok(grouped.ui.includes("activeRouteSheet"));
+  assert.ok(groupWorkspaceStateOwnership(routeWorkspaceFeatureStateOwnership).ui.includes("activeRouteSheet"));
   assert.ok(grouped.async.includes("previewingCompletionTaskId"));
 });

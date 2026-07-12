@@ -7,7 +7,6 @@ export type WorkspaceStateOwner =
   | "async";
 
 export const routeWorkspacePageStateOwnership = {
-  activeRouteSheet: "ui",
   activeSwapTarget: "selection",
   advancedModeOpen: "ui",
   applyingCompletionTaskId: "async",
@@ -54,7 +53,6 @@ export const routeWorkspacePageStateOwnership = {
   replanning: "async",
   restaurants: "draft",
   result: "server",
-  routeEditMode: "ui",
   savedTripPromptOpen: "ui",
   scenicSpots: "draft",
   selectedCompletionOptionKeys: "selection",
@@ -71,10 +69,20 @@ export const routeWorkspacePageStateOwnership = {
   userIntentState: "durable",
 } as const satisfies Record<string, WorkspaceStateOwner>;
 
+export const routeWorkspaceFeatureStateOwnership = {
+  activeRouteSheet: "ui",
+  routeEditMode: "ui",
+} as const satisfies Record<string, WorkspaceStateOwner>;
+
 export type RouteWorkspacePageStateName = keyof typeof routeWorkspacePageStateOwnership;
+export type RouteWorkspaceFeatureStateName = keyof typeof routeWorkspaceFeatureStateOwnership;
 
 export function getWorkspaceStateOwner(stateName: string): WorkspaceStateOwner | null {
-  return routeWorkspacePageStateOwnership[stateName as RouteWorkspacePageStateName] ?? null;
+  return (
+    routeWorkspacePageStateOwnership[stateName as RouteWorkspacePageStateName] ??
+    routeWorkspaceFeatureStateOwnership[stateName as RouteWorkspaceFeatureStateName] ??
+    null
+  );
 }
 
 export function groupWorkspaceStateOwnership(

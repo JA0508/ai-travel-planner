@@ -13,8 +13,8 @@ import {
   DayTimeline,
 } from "@/components/trip/DayTimeline";
 import type { EditableRouteDay } from "@/components/trip/MobileEditRouteWorkspace";
-import type { RouteWorkspaceSheetKey } from "@/components/trip/RouteWorkspaceShell";
 import { RouteWorkspaceContainer } from "@/features/trip-workspace/RouteWorkspaceContainer";
+import { useRouteWorkspaceUiState } from "@/features/trip-workspace/routeWorkspaceUiState";
 import { ConversationalReplanPanel } from "@/components/trip/replanning/ConversationalReplanPanel";
 import type {
   ReplanExecutionResult,
@@ -1092,8 +1092,13 @@ export default function HomePage() {
     ItineraryCompletionOption[]
   >([]);
   const [completionTasksExpanded, setCompletionTasksExpanded] = useState(false);
-  const [routeEditMode, setRouteEditMode] = useState(false);
-  const [activeRouteSheet, setActiveRouteSheet] = useState<RouteWorkspaceSheetKey | null>(null);
+  const {
+    routeEditMode,
+    activeRouteSheet,
+    toggleRouteEditMode,
+    setRouteEditMode,
+    setActiveRouteSheet,
+  } = useRouteWorkspaceUiState();
   const [completionTaskCandidatePreviews, setCompletionTaskCandidatePreviews] =
     useState<Record<string, CompletionTaskCandidatePreviewResponse>>({});
   const [previewingCompletionTaskId, setPreviewingCompletionTaskId] = useState<string | null>(null);
@@ -3974,7 +3979,7 @@ function buildRegenerationSemanticsViewModel(
             weakestDay={buildRouteWorkspaceWeakestDay(result)}
             routePreviewEndpoint={PREVIEW_ROUTE_SEGMENTS_API_URL}
             poiDetailEndpoint={PREVIEW_POI_DETAIL_API_URL}
-            onToggleEditing={() => setRouteEditMode((current) => !current)}
+            onToggleEditing={toggleRouteEditMode}
             onSheetChange={setActiveRouteSheet}
             onApplyEdits={handleCommitRouteEdits}
             onClose={() => setRouteEditMode(false)}

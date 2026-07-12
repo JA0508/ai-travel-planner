@@ -1,7 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { RouteWorkspaceSheetKey } from "@/components/trip/RouteWorkspaceShell";
+import { useMemo } from "react";
 import {
   getResultWorkspaceFixture,
   resultWorkspaceFixtures,
@@ -9,10 +8,15 @@ import {
 import { TripReadinessPanel } from "@/components/trip/readiness/TripReadinessPanel";
 import { buildTripReadinessViewModel } from "@/components/trip/readiness/tripReadinessModel";
 import { RouteWorkspaceContainer } from "@/features/trip-workspace/RouteWorkspaceContainer";
+import { useRouteWorkspaceUiState } from "@/features/trip-workspace/routeWorkspaceUiState";
 
 export function FixtureResultWorkspace({ fixtureKey }: { fixtureKey: string }) {
-  const [activeSheet, setActiveSheet] = useState<RouteWorkspaceSheetKey | null>(null);
-  const [editing, setEditing] = useState(false);
+  const {
+    routeEditMode,
+    activeRouteSheet,
+    toggleRouteEditMode,
+    setActiveRouteSheet,
+  } = useRouteWorkspaceUiState();
   const fixture = getResultWorkspaceFixture(fixtureKey);
   const readiness = useMemo(
     () =>
@@ -49,10 +53,10 @@ export function FixtureResultWorkspace({ fixtureKey }: { fixtureKey: string }) {
           planner_realism: fixture.plannerRealism,
           completion_intelligence: fixture.completion,
         }}
-        editing={editing}
-        onToggleEditing={() => setEditing((current) => !current)}
-        activeSheet={activeSheet}
-        onSheetChange={setActiveSheet}
+        editing={routeEditMode}
+        onToggleEditing={toggleRouteEditMode}
+        activeSheet={activeRouteSheet}
+        onSheetChange={setActiveRouteSheet}
         autoFilledCount={fixture.completion?.auto_filled_scenic_count ?? 0}
         intentLine={fixture.planningAssumptions.summary_lines?.[0] ?? null}
         executionLine={fixture.plannerRealism?.headline ?? null}
@@ -66,7 +70,7 @@ export function FixtureResultWorkspace({ fixtureKey }: { fixtureKey: string }) {
             </p>
           </section>
         }
-        commandCenter={<TripReadinessPanel viewModel={readiness} onPrimaryAction={() => setActiveSheet("completion")} />}
+        commandCenter={<TripReadinessPanel viewModel={readiness} onPrimaryAction={() => setActiveRouteSheet("completion")} />}
         completionRail={
           <p style={{ margin: 0, color: "var(--ec-slate)", lineHeight: 1.55 }}>
             Fixture: {fixture.completion?.action_tasks?.[0]?.reason ?? "No urgent completion suggestion."}
