@@ -1,0 +1,18 @@
+{
+  "id": "soft_route_anchor",
+  "request": {
+    "city": "上海",
+    "trip_days": 1,
+    "scenic_spots": [{"name": "外滩"}, {"name": "思南公馆"}],
+    "restaurants": [{"name": "BFC 外滩枫径"}],
+    "preferences": ["没有酒店时用路线软锚点"]
+  },
+  "provider_snapshot": {
+    "default_route_availability": "known",
+    "places": [
+      {"query": "外滩", "poi_type": "scenic", "city": "上海", "canonical_name": "外滩", "latitude": 31.238235, "longitude": 121.497253, "resolution_status": "known"},
+      {"query": "思南公馆", "poi_type": "scenic", "city": "上海", "canonical_name": "思南公馆", "latitude": 31.21992, "longitude": 121.46753, "resolution_status": "known"},
+      {"query": "BFC 外滩枫径", "poi_type": "restaurant", "city": "上海", "canonical_name": "BFC 外滩枫径", "latitude": 31.23374, "longitude": 121.49759, "resolution_status": "known"}
+    ]
+  }
+}
