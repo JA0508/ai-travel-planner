@@ -1,0 +1,2 @@
+PLANNER_TRACE_SCHEMA_VERSION = "1.0"
+PLANNER_VERSION = "current-baseline"

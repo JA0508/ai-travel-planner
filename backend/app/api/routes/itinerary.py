@@ -10,6 +10,16 @@ from typing import Annotated
 from fastapi import APIRouter, Header, HTTPException, status
 
 from app.core.scheduler import Scheduler, SchedulingError
+from app.planner.trace import (
+    PlannerDecision,
+    PlannerDecisionStage,
+    PlannerInputSnapshot,
+    PlannerReasonCode,
+    PlannerResultSummary,
+    PlannerSubjectType,
+    PlannerTraceCollector,
+    stable_subject_id,
+)
 from app.schemas import (
     AvailabilityWindow,
     AvailabilityPreviewRequest,
@@ -948,6 +958,7 @@ def build_itinerary_response(
     parsed_intent: ParsedTripIntentResponse | None = None,
     planning_state=None,
     completion_candidate_history: list[ItineraryCompletionOption] | None = None,
+    trace_collector: PlannerTraceCollector | None = None,
 ) -> ItineraryResponse:
     scheduler = Scheduler()
     hotel_was_provided = payload.hotel is not None
@@ -957,11 +968,13 @@ def build_itinerary_response(
         raw_pois=payload.scenic_spots,
         poi_type=POIType.SCENIC,
         city=payload.city,
+        trace_collector=trace_collector,
     )
     restaurants = normalize_optional_pois(
         raw_pois=payload.restaurants,
         poi_type=POIType.RESTAURANT,
         city=payload.city,
+        trace_collector=trace_collector,
     )
     arrival_anchor = normalize_optional_anchor(payload.arrival_anchor, city=payload.city)
     departure_anchor = normalize_optional_anchor(payload.departure_anchor, city=payload.city)
@@ -974,6 +987,20 @@ def build_itinerary_response(
     )
     scenic_spots.extend(bootstrap_scenic)
     restaurants.extend(bootstrap_restaurants)
+    if trace_collector is not None:
+        for bootstrap_poi in [*bootstrap_scenic, *bootstrap_restaurants]:
+            trace_collector.record_decision(
+                stage=PlannerDecisionStage.CANDIDATE_DISCOVERY,
+                subject_type=PlannerSubjectType.CANDIDATE,
+                subject_id=stable_trace_candidate_id(bootstrap_poi),
+                decision=PlannerDecision.FALLBACK_USED,
+                reason_codes=[PlannerReasonCode.FALLBACK_CANDIDATE_USED],
+                metrics={
+                    "name": bootstrap_poi.name,
+                    "type": bootstrap_poi.type.value,
+                    "city": bootstrap_poi.city,
+                },
+            )
     if (
         provided_hotel is None
         and arrival_anchor is None
@@ -992,6 +1019,33 @@ def build_itinerary_response(
         departure_anchor=departure_anchor,
         city=payload.city,
     )
+    if trace_collector is not None:
+        anchor_reason = (
+            PlannerReasonCode.FALLBACK_SOFT_ROUTE_ANCHOR_USED
+            if planning_anchor_source.source_type in {"route_soft_anchor", "fallback_poi"}
+            else PlannerReasonCode.ACCEPTED_PLANNING_ANCHOR
+        )
+        trace_collector.record_decision(
+            stage=PlannerDecisionStage.IDENTITY_RESOLUTION,
+            subject_type=PlannerSubjectType.PLANNING_ANCHOR,
+            subject_id=stable_subject_id(
+                "planning_anchor",
+                planning_anchor_source.source_type,
+                planning_anchor.name.casefold(),
+                round(planning_anchor.latitude, 6),
+                round(planning_anchor.longitude, 6),
+            ),
+            decision=(
+                PlannerDecision.FALLBACK_USED
+                if anchor_reason == PlannerReasonCode.FALLBACK_SOFT_ROUTE_ANCHOR_USED
+                else PlannerDecision.ACCEPTED
+            ),
+            reason_codes=[anchor_reason],
+            metrics={
+                "source_type": planning_anchor_source.source_type,
+                "source_name": planning_anchor_source.source_name,
+            },
+        )
     preference_policy = build_preference_policy(payload.preferences)
     request_style_signal = build_style_preference_signal(
         preferences=payload.preferences,
@@ -1011,6 +1065,7 @@ def build_itinerary_response(
         availability_windows=payload.availability_windows,
         trip_days=payload.trip_days,
         preference_policy=preference_policy,
+        trace_collector=trace_collector,
     )
     annotate_bootstrap_items(
         itinerary=itinerary,
@@ -1851,12 +1906,28 @@ def normalize_optional_pois(
     raw_pois: Iterable[RawPOIInput],
     poi_type: POIType,
     city: str | None = None,
+    trace_collector: PlannerTraceCollector | None = None,
 ) -> list[NormalizedPOI]:
     normalized_pois: list[NormalizedPOI] = []
 
     for raw_poi in raw_pois:
         try:
-            normalized_pois.append(normalize_poi(raw_poi=raw_poi, poi_type=poi_type, city=city))
+            normalized_poi = normalize_poi(raw_poi=raw_poi, poi_type=poi_type, city=city)
+            normalized_pois.append(normalized_poi)
+            if trace_collector is not None:
+                trace_collector.mark_place_known()
+                trace_collector.record_decision(
+                    stage=PlannerDecisionStage.IDENTITY_RESOLUTION,
+                    subject_type=PlannerSubjectType.CANDIDATE,
+                    subject_id=stable_trace_candidate_id(normalized_poi),
+                    decision=PlannerDecision.ACCEPTED,
+                    reason_codes=[PlannerReasonCode.ACCEPTED_INPUT_CANDIDATE],
+                    metrics={
+                        "name": normalized_poi.name,
+                        "type": normalized_poi.type.value,
+                        "city": normalized_poi.city,
+                    },
+                )
         except GeocodingError as exc:
             fallback_poi = normalize_poi_from_local_catalog(
                 raw_poi=raw_poi,
@@ -1864,6 +1935,23 @@ def normalize_optional_pois(
                 city=city,
             )
             if fallback_poi is not None:
+                if trace_collector is not None:
+                    trace_collector.mark_place_missing()
+                    trace_collector.record_decision(
+                        stage=PlannerDecisionStage.IDENTITY_RESOLUTION,
+                        subject_type=PlannerSubjectType.CANDIDATE,
+                        subject_id=stable_trace_candidate_id(fallback_poi),
+                        decision=PlannerDecision.FALLBACK_USED,
+                        reason_codes=[
+                            PlannerReasonCode.REJECTED_GEOCODE_FAILED,
+                            PlannerReasonCode.FALLBACK_CANDIDATE_USED,
+                        ],
+                        metrics={
+                            "name": fallback_poi.name,
+                            "type": fallback_poi.type.value,
+                            "city": fallback_poi.city,
+                        },
+                    )
                 logger.info(
                     "Using local POI catalog fallback for %r after geocoding failure: %s",
                     raw_poi.name,
@@ -1871,9 +1959,108 @@ def normalize_optional_pois(
                 )
                 normalized_pois.append(fallback_poi)
             else:
+                if trace_collector is not None:
+                    trace_collector.mark_place_failed()
+                    trace_collector.record_decision(
+                        stage=PlannerDecisionStage.IDENTITY_RESOLUTION,
+                        subject_type=PlannerSubjectType.CANDIDATE,
+                        subject_id=stable_subject_id(
+                            "candidate",
+                            raw_poi.name.casefold(),
+                            poi_type.value,
+                            city or "",
+                        ),
+                        decision=PlannerDecision.SKIPPED,
+                        reason_codes=[
+                            PlannerReasonCode.REJECTED_GEOCODE_FAILED,
+                            PlannerReasonCode.SKIPPED_NON_CRITICAL_PROVIDER_FAILURE,
+                        ],
+                        metrics={
+                            "name": raw_poi.name,
+                            "type": poi_type.value,
+                            "city": city,
+                        },
+                    )
                 logger.info("Skipping optional POI %r after geocoding failure: %s", raw_poi.name, exc)
 
     return normalized_pois
+
+
+def stable_trace_candidate_id(poi: NormalizedPOI) -> str:
+    return stable_subject_id(
+        "candidate",
+        poi.name.strip().casefold(),
+        poi.type.value,
+        poi.city or "",
+        round(poi.latitude, 6),
+        round(poi.longitude, 6),
+    )
+
+
+def build_planner_input_snapshot(
+    payload: ItineraryRequest,
+    *,
+    raw_text_ref: str | None = None,
+) -> PlannerInputSnapshot:
+    fixed_event_count = sum(
+        1
+        for poi in [*payload.scenic_spots, *payload.restaurants]
+        if poi.fixed_day is not None or poi.fixed_time_start is not None
+    )
+    return PlannerInputSnapshot(
+        city=payload.city,
+        trip_days=payload.trip_days,
+        trip_days_source=payload.trip_days_source.value if payload.trip_days_source else None,
+        travel_mode=payload.travel_mode.value if payload.travel_mode else None,
+        scenic_seed_count=len(payload.scenic_spots),
+        restaurant_seed_count=len(payload.restaurants),
+        fixed_event_count=fixed_event_count,
+        availability_window_count=len(payload.availability_windows),
+        has_hotel=payload.hotel is not None,
+        has_arrival_anchor=payload.arrival_anchor is not None,
+        has_departure_anchor=payload.departure_anchor is not None,
+        preference_count=len(payload.preferences),
+        raw_text_ref=raw_text_ref,
+    )
+
+
+def build_planner_result_summary(itinerary: ItineraryResponse) -> PlannerResultSummary:
+    scheduled_items = [
+        item
+        for day in itinerary.days
+        for block in day.blocks
+        for item in block.items
+    ]
+    return PlannerResultSummary(
+        status=itinerary.planner_realism.status if itinerary.planner_realism else "completed",
+        trip_days=itinerary.trip_days,
+        scheduled_item_count=len(scheduled_items),
+        fixed_event_count=sum(1 for item in scheduled_items if item.is_fixed),
+        auto_seeded_count=sum(
+            1
+            for item in scheduled_items
+            if item.source_type
+            in {
+                ScheduledPOISourceType.AUTO_SEEDED_POI,
+                ScheduledPOISourceType.AUTO_SEEDED_MEAL,
+            }
+        ),
+        auto_filled_count=sum(
+            1
+            for item in scheduled_items
+            if item.source_type == ScheduledPOISourceType.AUTO_FILLED
+        ),
+        scheduled_item_refs=[
+            stable_subject_id(
+                "scheduled_item",
+                item.name.casefold(),
+                item.type.value,
+                item.day,
+                item.start_time.strftime("%H:%M"),
+            )
+            for item in scheduled_items
+        ],
+    )
 
 
 def normalize_poi_from_local_catalog(
