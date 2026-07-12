@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "typecheck": "tsc --noEmit --incremental false",
+    "test:workspace": "node --experimental-strip-types --test src/features/trip-workspace/*.test.ts",
     "start": "next start"
   },
   "dependencies": {

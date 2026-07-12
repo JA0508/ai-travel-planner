@@ -74,13 +74,48 @@ export const routeWorkspaceFeatureStateOwnership = {
   routeEditMode: "ui",
 } as const satisfies Record<string, WorkspaceStateOwner>;
 
+export const routeWorkspaceRuntimeStateOwnership = {
+  draggingStop: "selection",
+  editableDays: "draft",
+  isPanelLayout: "ui",
+  pendingStopBlock: "draft",
+  pendingStopName: "draft",
+  pendingStopType: "draft",
+  poiDetail: "server",
+  poiDetailState: "async",
+  redoStack: "durable",
+  rightPanelMode: "selection",
+  routeMode: "ui",
+  routePreviewMap: "server",
+  routePreviewState: "async",
+  selectedDay: "selection",
+  sheetSnap: "ui",
+  showOverview: "ui",
+  showUnplanned: "ui",
+  undoStack: "durable",
+  unplannedStops: "draft",
+  visibleMapDays: "selection",
+} as const satisfies Record<string, WorkspaceStateOwner>;
+
+export const routeWorkspaceDerivedStateOwnership = {
+  activeStop: "selection",
+  activeStopId: "selection",
+  selectedDaySegments: "server",
+  selectedDayView: "selection",
+  visibleDayNumbers: "selection",
+} as const satisfies Record<string, WorkspaceStateOwner>;
+
 export type RouteWorkspacePageStateName = keyof typeof routeWorkspacePageStateOwnership;
 export type RouteWorkspaceFeatureStateName = keyof typeof routeWorkspaceFeatureStateOwnership;
+export type RouteWorkspaceRuntimeStateName = keyof typeof routeWorkspaceRuntimeStateOwnership;
+export type RouteWorkspaceDerivedStateName = keyof typeof routeWorkspaceDerivedStateOwnership;
 
 export function getWorkspaceStateOwner(stateName: string): WorkspaceStateOwner | null {
   return (
     routeWorkspacePageStateOwnership[stateName as RouteWorkspacePageStateName] ??
     routeWorkspaceFeatureStateOwnership[stateName as RouteWorkspaceFeatureStateName] ??
+    routeWorkspaceRuntimeStateOwnership[stateName as RouteWorkspaceRuntimeStateName] ??
+    routeWorkspaceDerivedStateOwnership[stateName as RouteWorkspaceDerivedStateName] ??
     null
   );
 }

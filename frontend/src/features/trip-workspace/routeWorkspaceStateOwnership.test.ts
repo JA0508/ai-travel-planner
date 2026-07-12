@@ -5,8 +5,10 @@ import test from "node:test";
 import {
   getWorkspaceStateOwner,
   groupWorkspaceStateOwnership,
+  routeWorkspaceDerivedStateOwnership,
   routeWorkspaceFeatureStateOwnership,
   routeWorkspacePageStateOwnership,
+  routeWorkspaceRuntimeStateOwnership,
 } from "./routeWorkspaceStateOwnership.ts";
 
 test("classifies every current page useState owner explicitly", () => {
@@ -31,12 +33,31 @@ test("keeps route workspace UI state owned by the feature boundary", () => {
   });
 });
 
+test("classifies every route workspace runtime useState owner explicitly", () => {
+  const workspaceSource = readFileSync(
+    new URL("../../components/trip/MobileEditRouteWorkspace.tsx", import.meta.url),
+    "utf8",
+  );
+  const stateNames = Array.from(
+    workspaceSource.matchAll(/const\s+\[\s*([A-Za-z0-9_]+)\s*,/g),
+    (match) => match[1],
+  ).sort();
+  const classifiedNames = Object.keys(routeWorkspaceRuntimeStateOwnership).sort();
+
+  assert.deepEqual(classifiedNames, stateNames);
+});
+
 test("keeps the core workspace owners distinct", () => {
   assert.equal(getWorkspaceStateOwner("result"), "server");
   assert.equal(getWorkspaceStateOwner("generationContext"), "durable");
   assert.equal(getWorkspaceStateOwner("followUpText"), "draft");
   assert.equal(getWorkspaceStateOwner("selectedCompletionOptionKeys"), "selection");
   assert.equal(getWorkspaceStateOwner("routeEditMode"), "ui");
+  assert.equal(getWorkspaceStateOwner("selectedDay"), "selection");
+  assert.equal(getWorkspaceStateOwner("rightPanelMode"), "selection");
+  assert.equal(getWorkspaceStateOwner("activeStopId"), "selection");
+  assert.equal(getWorkspaceStateOwner("routePreviewState"), "async");
+  assert.equal(getWorkspaceStateOwner("poiDetailState"), "async");
   assert.equal(getWorkspaceStateOwner("replanning"), "async");
 });
 
@@ -48,5 +69,7 @@ test("groups all expected state ownership buckets", () => {
   assert.ok(grouped.draft.includes("availabilityWindowsText"));
   assert.ok(grouped.selection.includes("activeSwapTarget"));
   assert.ok(groupWorkspaceStateOwnership(routeWorkspaceFeatureStateOwnership).ui.includes("activeRouteSheet"));
+  assert.ok(groupWorkspaceStateOwnership(routeWorkspaceRuntimeStateOwnership).selection.includes("selectedDay"));
+  assert.ok(groupWorkspaceStateOwnership(routeWorkspaceDerivedStateOwnership).selection.includes("activeStopId"));
   assert.ok(grouped.async.includes("previewingCompletionTaskId"));
 });
