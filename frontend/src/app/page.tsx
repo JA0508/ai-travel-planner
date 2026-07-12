@@ -12,15 +12,9 @@ import {
 import {
   DayTimeline,
 } from "@/components/trip/DayTimeline";
-import {
-  MobileEditRouteWorkspace,
-  type EditableRouteDay,
-} from "@/components/trip/MobileEditRouteWorkspace";
-import {
-  RouteWorkspaceShell,
-  type RouteWorkspaceSheetKey,
-} from "@/components/trip/RouteWorkspaceShell";
-import { DesktopRouteLeftRail } from "@/components/trip/DesktopRouteLeftRail";
+import type { EditableRouteDay } from "@/components/trip/MobileEditRouteWorkspace";
+import { RouteWorkspaceContainer } from "@/features/trip-workspace/RouteWorkspaceContainer";
+import { useRouteWorkspaceUiState } from "@/features/trip-workspace/routeWorkspaceUiState";
 import { ConversationalReplanPanel } from "@/components/trip/replanning/ConversationalReplanPanel";
 import type {
   ReplanExecutionResult,
@@ -1098,8 +1092,13 @@ export default function HomePage() {
     ItineraryCompletionOption[]
   >([]);
   const [completionTasksExpanded, setCompletionTasksExpanded] = useState(false);
-  const [routeEditMode, setRouteEditMode] = useState(false);
-  const [activeRouteSheet, setActiveRouteSheet] = useState<RouteWorkspaceSheetKey | null>(null);
+  const {
+    routeEditMode,
+    activeRouteSheet,
+    toggleRouteEditMode,
+    setRouteEditMode,
+    setActiveRouteSheet,
+  } = useRouteWorkspaceUiState();
   const [completionTaskCandidatePreviews, setCompletionTaskCandidatePreviews] =
     useState<Record<string, CompletionTaskCandidatePreviewResponse>>({});
   const [previewingCompletionTaskId, setPreviewingCompletionTaskId] = useState<string | null>(null);
@@ -3968,26 +3967,22 @@ function buildRegenerationSemanticsViewModel(
       {result ? (
         <section ref={resultSectionRef} className="ec-result-entry">
           <SectionShell>
-            <RouteWorkspaceShell
+            <RouteWorkspaceContainer
             city={activeTripCity}
-            tripDays={result.trip_days}
-            statusLabel={
-              result.planner_realism?.status === "executable"
-                ? "骨架可走"
-                : result.planner_realism?.status === "unstable"
-                  ? "需要重排"
-                  : "还有空缺"
-            }
-            statusTone={result.planner_realism?.status === "executable" ? "stable" : "attention"}
-            subtitle={
-              routeEditMode
-                ? "拖动、锁定、删除或先放进待规划，完成后这版会成为当前计划。"
-                : "先顺着路线看一遍。想改顺序、删点或继续补全时，再进入编辑。"
-            }
+            itinerary={result}
+            parsedIntent={result.trip_intent?.parsed_intent ?? parsedIntent}
             editing={routeEditMode}
-            onToggleEditing={() => setRouteEditMode((current) => !current)}
             activeSheet={activeRouteSheet}
+            autoFilledCount={commandCenterAutoFilledCount}
+            intentLine={commandCenterIntentLines[0] ?? null}
+            executionLine={commandCenterSystemLines[0] ?? null}
+            weakestDay={buildRouteWorkspaceWeakestDay(result)}
+            routePreviewEndpoint={PREVIEW_ROUTE_SEGMENTS_API_URL}
+            poiDetailEndpoint={PREVIEW_POI_DETAIL_API_URL}
+            onToggleEditing={toggleRouteEditMode}
             onSheetChange={setActiveRouteSheet}
+            onApplyEdits={handleCommitRouteEdits}
+            onClose={() => setRouteEditMode(false)}
             headerUtility={
               <button
                 className="ec-interactive-pill"
@@ -4000,28 +3995,6 @@ function buildRegenerationSemanticsViewModel(
               >
                 新行程
               </button>
-            }
-            sheetTitle={
-              activeRouteSheet === "completion"
-                ? "补全这条路线"
-                : activeRouteSheet === "adjust"
-                  ? "继续调整"
-                  : activeRouteSheet === "share"
-                    ? "分享与导出"
-                    : activeRouteSheet === "more"
-                      ? "更多旅行信息"
-                      : undefined
-            }
-            sheetDescription={
-              activeRouteSheet === "completion"
-                ? "只看还缺什么、下一步怎么补，不把解释压在主路线前面。"
-                : activeRouteSheet === "adjust"
-                  ? "用一句话继续改当前计划，不需要重新填表。"
-                  : activeRouteSheet === "share"
-                    ? "把这条路线带出产品，发给朋友或留作出行参考。"
-                    : activeRouteSheet === "more"
-                      ? "查看系统理解、住宿离开建议和当前计划。"
-                      : undefined
             }
             sheetContent={
               activeRouteSheet === "completion" ? (
@@ -4428,93 +4401,65 @@ function buildRegenerationSemanticsViewModel(
                 </div>
               ) : null
             }
-          >
-            <MobileEditRouteWorkspace
-              mode={routeEditMode ? "edit" : "browse"}
-              itinerary={result}
-              parsedIntent={result.trip_intent?.parsed_intent ?? parsedIntent}
-              overview={{
-                completeness: result.completion_intelligence?.trip_completeness ?? null,
-                pendingTaskCount: result.completion_intelligence?.action_tasks?.length ?? 0,
-                autoFilledCount: commandCenterAutoFilledCount,
-                stayAreaLabel:
-                  result.stay_recommendation?.options[0]?.suggested_area_label ?? null,
-                departureLabel:
-                  result.departure_recommendation?.options[0]?.suggested_departure_label ?? null,
-                realismHeadline: result.planner_realism?.headline ?? null,
-                realismStatus: result.planner_realism?.status ?? null,
-                intentLine: commandCenterIntentLines[0] ?? null,
-                executionLine: commandCenterSystemLines[0] ?? null,
-                weakestDay: buildRouteWorkspaceWeakestDay(result),
-              }}
-              routePreviewEndpoint={PREVIEW_ROUTE_SEGMENTS_API_URL}
-              poiDetailEndpoint={PREVIEW_POI_DETAIL_API_URL}
-              desktopLeftRail={
-                <DesktopRouteLeftRail
-                  commandCenter={
-                    tripReadinessViewModel ? (
-                      <TripReadinessPanel
-                        viewModel={tripReadinessViewModel}
-                        onPrimaryAction={() => setActiveRouteSheet("completion")}
-                      />
-                    ) : null
-                  }
-                  completion={
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {result.completion_intelligence?.action_tasks?.length ? (
-                        <CompletionTaskActionList
-                          variant="rail"
-                          tasks={result.completion_intelligence.action_tasks}
-                          expanded={completionTasksExpanded}
-                          onExpandedChange={setCompletionTasksExpanded}
-                          getTaskInstanceKey={getCompletionTaskInstanceKey}
-                          completionTaskEdits={completionTaskEdits}
-                          candidatePreviews={completionTaskCandidatePreviews}
-                          previewingTaskId={previewingCompletionTaskId}
-                          applyingTaskId={applyingCompletionTaskId}
-                          disabled={replanning || applyingCompletionTaskId !== null}
-                          replanning={replanning}
-                          canPreviewTask={(task) => buildCompletionTaskActionRequest(task) !== null}
-                          onPreviewTask={handlePreviewCompletionTaskCandidates}
-                          onUndoTask={handleUndoCompletionTaskEdit}
-                          onUsePrompt={handleUseCompletionImprovementPrompt}
-                          onApplyOption={handleApplyCompletionTask}
-                          onRejectOption={handleRejectCompletionTaskCandidate}
-                        />
-                      ) : (
-                        <p style={{ margin: 0, color: "#617268", lineHeight: 1.6 }}>
-                          当前没有需要立即处理的补全任务。
-                        </p>
-                      )}
-                      {completionTaskStatus ? (
-                        <ExplainabilityCard title="刚刚完成" tone="olive" lines={[completionTaskStatus]} />
-                      ) : null}
-                    </div>
-                  }
-                  brief={
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {itineraryValueSummary ? (
-                        <ExplainabilityCard
-                          title="来自你的输入"
-                          tone="olive"
-                          lines={itineraryValueSummary.fromInputLines}
-                        />
-                      ) : null}
-                      {result.planning_assumptions?.summary_lines.length ? (
-                        <ExplainabilityCard
-                          title="当前计划"
-                          tone="sand"
-                          lines={buildPlannerAssumptionDisplayLines(result.planning_assumptions)}
-                        />
-                      ) : null}
-                    </div>
-                  }
+            commandCenter={
+              tripReadinessViewModel ? (
+                <TripReadinessPanel
+                  viewModel={tripReadinessViewModel}
+                  onPrimaryAction={() => setActiveRouteSheet("completion")}
                 />
-              }
-              onApplyEdits={handleCommitRouteEdits}
-              onClose={() => setRouteEditMode(false)}
-            />
-            </RouteWorkspaceShell>
+              ) : null
+            }
+            completionRail={
+              <div style={{ display: "grid", gap: 10 }}>
+                {result.completion_intelligence?.action_tasks?.length ? (
+                  <CompletionTaskActionList
+                    variant="rail"
+                    tasks={result.completion_intelligence.action_tasks}
+                    expanded={completionTasksExpanded}
+                    onExpandedChange={setCompletionTasksExpanded}
+                    getTaskInstanceKey={getCompletionTaskInstanceKey}
+                    completionTaskEdits={completionTaskEdits}
+                    candidatePreviews={completionTaskCandidatePreviews}
+                    previewingTaskId={previewingCompletionTaskId}
+                    applyingTaskId={applyingCompletionTaskId}
+                    disabled={replanning || applyingCompletionTaskId !== null}
+                    replanning={replanning}
+                    canPreviewTask={(task) => buildCompletionTaskActionRequest(task) !== null}
+                    onPreviewTask={handlePreviewCompletionTaskCandidates}
+                    onUndoTask={handleUndoCompletionTaskEdit}
+                    onUsePrompt={handleUseCompletionImprovementPrompt}
+                    onApplyOption={handleApplyCompletionTask}
+                    onRejectOption={handleRejectCompletionTaskCandidate}
+                  />
+                ) : (
+                  <p style={{ margin: 0, color: "#617268", lineHeight: 1.6 }}>
+                    当前没有需要立即处理的补全任务。
+                  </p>
+                )}
+                {completionTaskStatus ? (
+                  <ExplainabilityCard title="刚刚完成" tone="olive" lines={[completionTaskStatus]} />
+                ) : null}
+              </div>
+            }
+            briefRail={
+              <div style={{ display: "grid", gap: 10 }}>
+                {itineraryValueSummary ? (
+                  <ExplainabilityCard
+                    title="来自你的输入"
+                    tone="olive"
+                    lines={itineraryValueSummary.fromInputLines}
+                  />
+                ) : null}
+                {result.planning_assumptions?.summary_lines.length ? (
+                  <ExplainabilityCard
+                    title="当前计划"
+                    tone="sand"
+                    lines={buildPlannerAssumptionDisplayLines(result.planning_assumptions)}
+                  />
+                ) : null}
+              </div>
+            }
+          />
           </SectionShell>
         </section>
       ) : null}
