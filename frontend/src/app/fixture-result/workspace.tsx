@@ -1,15 +1,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { DesktopRouteLeftRail } from "@/components/trip/DesktopRouteLeftRail";
-import { MobileEditRouteWorkspace } from "@/components/trip/MobileEditRouteWorkspace";
-import { RouteWorkspaceShell, type RouteWorkspaceSheetKey } from "@/components/trip/RouteWorkspaceShell";
+import type { RouteWorkspaceSheetKey } from "@/components/trip/RouteWorkspaceShell";
 import {
   getResultWorkspaceFixture,
   resultWorkspaceFixtures,
 } from "@/components/trip/fixtures/resultWorkspaceFixtures";
 import { TripReadinessPanel } from "@/components/trip/readiness/TripReadinessPanel";
 import { buildTripReadinessViewModel } from "@/components/trip/readiness/tripReadinessModel";
+import { RouteWorkspaceContainer } from "@/features/trip-workspace/RouteWorkspaceContainer";
 
 export function FixtureResultWorkspace({ fixtureKey }: { fixtureKey: string }) {
   const [activeSheet, setActiveSheet] = useState<RouteWorkspaceSheetKey | null>(null);
@@ -42,18 +41,23 @@ export function FixtureResultWorkspace({ fixtureKey }: { fixtureKey: string }) {
           </a>
         ))}
       </div>
-      <RouteWorkspaceShell
+      <RouteWorkspaceContainer
         city={fixture.city}
-        tripDays={fixture.tripDays}
-        statusLabel={readiness.statusLabel}
-        statusTone={readiness.status === "ready" || readiness.status === "minor-gaps" ? "stable" : "attention"}
-        subtitle="Fixture QA workspace: no backend, no provider calls, stable place intelligence scenarios."
+        itinerary={{
+          ...fixture.itinerary,
+          trip_days: fixture.tripDays,
+          planner_realism: fixture.plannerRealism,
+          completion_intelligence: fixture.completion,
+        }}
         editing={editing}
         onToggleEditing={() => setEditing((current) => !current)}
         activeSheet={activeSheet}
         onSheetChange={setActiveSheet}
-        sheetTitle="Fixture notes"
-        sheetDescription="This route uses frontend fixture data only."
+        autoFilledCount={fixture.completion?.auto_filled_scenic_count ?? 0}
+        intentLine={fixture.planningAssumptions.summary_lines?.[0] ?? null}
+        executionLine={fixture.plannerRealism?.headline ?? null}
+        initialRoutePreviewMap={fixture.routePreviewMap}
+        poiDetailFixtures={fixture.poiDetailFixtures}
         sheetContent={
           <section style={{ display: "grid", gap: 10 }}>
             <strong>{fixture.label}</strong>
@@ -62,30 +66,19 @@ export function FixtureResultWorkspace({ fixtureKey }: { fixtureKey: string }) {
             </p>
           </section>
         }
-      >
-        <MobileEditRouteWorkspace
-          mode={editing ? "edit" : "browse"}
-          itinerary={fixture.itinerary}
-          initialRoutePreviewMap={fixture.routePreviewMap}
-          poiDetailFixtures={fixture.poiDetailFixtures}
-          desktopLeftRail={
-            <DesktopRouteLeftRail
-              commandCenter={<TripReadinessPanel viewModel={readiness} onPrimaryAction={() => setActiveSheet("completion")} />}
-              completion={
-                <p style={{ margin: 0, color: "var(--ec-slate)", lineHeight: 1.55 }}>
-                  Fixture: {fixture.completion?.action_tasks?.[0]?.reason ?? "No urgent completion suggestion."}
-                </p>
-              }
-              brief={
-                <p style={{ margin: 0, color: "var(--ec-slate)", lineHeight: 1.55 }}>
-                  {fixture.planningAssumptions.summary_lines?.[0] ?? "Fixture planning assumptions."}
-                </p>
-              }
-            />
-          }
-          onClose={() => undefined}
-        />
-      </RouteWorkspaceShell>
+        commandCenter={<TripReadinessPanel viewModel={readiness} onPrimaryAction={() => setActiveSheet("completion")} />}
+        completionRail={
+          <p style={{ margin: 0, color: "var(--ec-slate)", lineHeight: 1.55 }}>
+            Fixture: {fixture.completion?.action_tasks?.[0]?.reason ?? "No urgent completion suggestion."}
+          </p>
+        }
+        briefRail={
+          <p style={{ margin: 0, color: "var(--ec-slate)", lineHeight: 1.55 }}>
+            {fixture.planningAssumptions.summary_lines?.[0] ?? "Fixture planning assumptions."}
+          </p>
+        }
+        onClose={() => undefined}
+      />
       <style>{`
         .fixture-result-page {
           min-height: 100dvh;
