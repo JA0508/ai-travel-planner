@@ -26,3 +26,15 @@ out/
 .amap_geocode_cache.json
 *.log
 coverage/
+
+# Local TripRevision persistence stores
+backend/data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm

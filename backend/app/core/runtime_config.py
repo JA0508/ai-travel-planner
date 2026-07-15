@@ -9,6 +9,7 @@ DEFAULT_AMAP_REQUEST_TIMEOUT_SECONDS = 10.0
 DEFAULT_OPENAI_INTENT_TIMEOUT_SECONDS = 20.0
 DEFAULT_OPENAI_DISAMBIGUATION_TIMEOUT_SECONDS = 15.0
 DEFAULT_OPENAI_INTENT_MODEL = "gpt-4o-mini"
+DEFAULT_TRIP_STORE_BUSY_TIMEOUT_SECONDS = 5.0
 
 
 def parse_cors_allow_origins(raw_value: str | None) -> list[str]:
@@ -43,6 +44,24 @@ def get_openai_disambiguation_timeout_seconds() -> float:
 def get_openai_intent_model() -> str:
     configured_model = os.getenv("OPENAI_INTENT_MODEL", DEFAULT_OPENAI_INTENT_MODEL).strip()
     return configured_model or DEFAULT_OPENAI_INTENT_MODEL
+
+
+def get_trip_persistence_configuration_summary() -> dict[str, Any]:
+    return {
+        "mode": os.getenv("TRIP_STORE_MODE", "sqlite").strip().lower() or "sqlite",
+        "busy_timeout_seconds": parse_positive_float_env(
+            "TRIP_STORE_BUSY_TIMEOUT_SECONDS",
+            DEFAULT_TRIP_STORE_BUSY_TIMEOUT_SECONDS,
+        ),
+        "capability_cookie_secure": os.getenv(
+            "TRIP_CAPABILITY_COOKIE_SECURE",
+            "false",
+        ).strip().lower()
+        == "true",
+        "allowed_origins": parse_cors_allow_origins(
+            os.getenv("TRIP_ALLOWED_ORIGINS") or os.getenv("CORS_ALLOW_ORIGINS")
+        ),
+    }
 
 
 def parse_positive_float_env(name: str, default: float) -> float:
@@ -81,4 +100,5 @@ def get_runtime_configuration_summary() -> dict[str, Any]:
             "intent_timeout_seconds": get_openai_intent_timeout_seconds(),
             "disambiguation_timeout_seconds": get_openai_disambiguation_timeout_seconds(),
         },
+        "trip_persistence": get_trip_persistence_configuration_summary(),
     }
