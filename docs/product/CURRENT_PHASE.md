@@ -2,12 +2,13 @@
 
 ## Current phase
 
-Planner Trace and Deterministic Evaluation Baseline
+Trip + TripRevision Persistence Foundation
 
 ## Active objective
 
-Establish F-020a planner trace, deterministic replay fixtures, invariant-based
-evaluation, and CI regression gating.
+Establish F-001a Trip + TripRevision persistence with immutable revisions,
+optimistic concurrency, idempotent retry, anonymous capability access, and
+restart-safe workspace recovery.
 
 ## Current stable capabilities
 
@@ -22,14 +23,15 @@ evaluation, and CI regression gating.
 - reproducible frontend/backend CI
 - F-006 Route Workspace Architecture Decomposition
 - Source-to-Executable Governance Baseline
+- F-020a Planner Trace and Deterministic Evaluation Baseline
 
 ## In review
 
-- F-020a Planner Trace and Deterministic Evaluation Baseline
+- F-001a Trip + TripRevision Persistence Foundation
 
 ## Next approved work
 
-1. F-001a Trip + TripRevision Persistence
+1. F-001b migrate remaining high-value mutations to TripRevision
 2. F-002/F-003 Import-to-Executable
 
 ## Explicitly not in scope
