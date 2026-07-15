@@ -15,6 +15,30 @@ TARGET_TESTS = [
     "test_replan_apply_rejects_expired_proposal_without_new_revision",
     "tests.test_trip_persistence_api.TripPersistenceApiTests."
     "test_persisted_replan_rejects_stale_base_and_undo_compensates",
+    "tests.test_trip_persistence_api.TripPersistenceApiTests."
+    "test_route_edit_typed_mutation_preview_apply_reload_and_undo",
+    "tests.test_trip_persistence_api.TripPersistenceApiTests."
+    "test_swap_typed_mutation_is_idempotent_and_preserves_stable_identity",
+    "tests.test_trip_persistence_api.TripPersistenceApiTests."
+    "test_typed_mutation_rejects_fixed_item_and_stale_base_without_revision",
+    "tests.test_trip_mutation_commands.TripMutationCommandTests."
+    "test_stable_ids_are_added_deterministically_to_legacy_snapshots",
+    "tests.test_trip_mutation_commands.TripMutationCommandTests."
+    "test_move_stop_preview_preserves_identity_and_invalidates_derived_surfaces",
+    "tests.test_trip_mutation_commands.TripMutationCommandTests."
+    "test_reorder_day_preview_keeps_same_stop_set",
+    "tests.test_trip_mutation_commands.TripMutationCommandTests."
+    "test_remove_fixed_stop_is_rejected",
+    "tests.test_trip_mutation_commands.TripMutationCommandTests."
+    "test_swap_preview_exchanges_slots_without_reassigning_stable_ids",
+    "tests.test_trip_mutation_commands.TripMutationCommandTests."
+    "test_replace_stop_preview_preserves_slot_identity_for_completion_swap",
+    "tests.test_trip_mutation_commands.TripMutationCommandTests."
+    "test_no_effect_command_is_rejected_before_persistence",
+    "tests.test_trip_mutation_commands.TripMutationCommandTests."
+    "test_invalid_target_id_is_rejected_without_mutating_base_snapshot",
+    "tests.test_trip_mutation_commands.TripMutationCommandTests."
+    "test_command_batch_is_atomic_when_later_command_fails",
 ]
 
 
@@ -38,6 +62,18 @@ def main() -> int:
             "proposal_digest_mismatch_is_rejected",
             "expired_proposal_is_rejected_without_revision",
             "current_only_replan_undo_creates_compensating_revision",
+            "stable_scheduled_item_ids_are_command_authority",
+            "typed_route_edit_preview_runs_deterministic_invariants",
+            "route_edit_apply_creates_reloadable_revision",
+            "swap_replace_apply_is_idempotent",
+            "fixed_items_are_rejected_before_revision_creation",
+            "stale_base_rejects_preview_without_revision",
+            "route_edit_undo_creates_compensating_revision",
+            "swap_undo_creates_compensating_revision",
+            "invalid_target_creates_no_revision",
+            "failed_batch_has_no_partial_mutation",
+            "different_key_duplicate_proposal_apply_creates_one_revision",
+            "typed_mutations_invalidate_derived_workspace_surfaces",
         ],
     }
     if args.json:
