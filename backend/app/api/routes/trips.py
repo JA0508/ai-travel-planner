@@ -4,9 +4,18 @@ import os
 from typing import Annotated
 
 from fastapi import APIRouter, Header, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.core.runtime_config import parse_cors_allow_origins
+from app.imports.dependencies import get_text_import_service
+from app.imports.domain import (
+    ImportCommitRequest,
+    ImportCommitResponse,
+    ImportReviewDecisionRequest,
+    ImportReviewResponse,
+    TextImportCreateRequest,
+    TextImportCreateResponse,
+)
 from app.trips.access import capability_cookie_name
 from app.trips.dependencies import get_trip_persistence_service, get_trip_repository
 from app.trips.errors import TripError
@@ -155,6 +164,138 @@ def record_trip_candidate_decision(
         return get_trip_persistence_service().record_candidate_decision(
             trip_id=trip_id,
             candidate_id=candidate_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/imports/text",
+    response_model=TextImportCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_text_import(
+    trip_id: str,
+    payload: TextImportCreateRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> TextImportCreateResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_text_import_service().create_text_import(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get("/{trip_id}/imports/{import_job_id}", response_model=ImportReviewResponse)
+def get_text_import(
+    trip_id: str,
+    import_job_id: str,
+    request: Request,
+) -> ImportReviewResponse | JSONResponse:
+    try:
+        return get_text_import_service().get_import(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get("/{trip_id}/imports/{import_job_id}/artifact", response_model=None)
+def get_text_import_artifact(
+    trip_id: str,
+    import_job_id: str,
+    request: Request,
+) -> PlainTextResponse | JSONResponse:
+    try:
+        text = get_text_import_service().get_artifact_text(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+        )
+        return PlainTextResponse(
+            text,
+            media_type="text/plain; charset=utf-8",
+            headers={"Cache-Control": "private, no-store"},
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get("/{trip_id}/imports/{import_job_id}/mentions", response_model=ImportReviewResponse)
+def list_text_import_mentions(
+    trip_id: str,
+    import_job_id: str,
+    request: Request,
+) -> ImportReviewResponse | JSONResponse:
+    try:
+        return get_text_import_service().get_import(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/imports/{import_job_id}/mentions/{mention_id}/decisions",
+    response_model=ImportReviewResponse,
+)
+def record_text_import_decision(
+    trip_id: str,
+    import_job_id: str,
+    mention_id: str,
+    payload: ImportReviewDecisionRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> ImportReviewResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_text_import_service().record_decision(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+            mention_id=mention_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/imports/{import_job_id}/commit",
+    response_model=ImportCommitResponse,
+)
+def commit_text_import(
+    trip_id: str,
+    import_job_id: str,
+    payload: ImportCommitRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> ImportCommitResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_text_import_service().commit_import(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
             capability=get_trip_capability_from_request(request, trip_id),
             idempotency_key=x_idempotency_key,
             payload=payload,

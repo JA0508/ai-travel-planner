@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.runtime_config import (
     configure_logging,
+    get_import_configuration_summary,
     get_runtime_configuration_summary,
     parse_cors_allow_origins,
 )
@@ -73,4 +74,5 @@ def readiness() -> dict:
         "poi_discovery": poi_capability.to_dict(),
         "runtime": get_runtime_configuration_summary(),
         "persistence": persistence_readiness(),
+        "imports": get_import_configuration_summary(),
     }

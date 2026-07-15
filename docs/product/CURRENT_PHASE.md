@@ -2,14 +2,14 @@
 
 ## Current phase
 
-Server-Authoritative Trip Mutation Revisions
+F-002a/F-003a Text Import and Review Inbox Foundation
 
 ## Active objective
 
-Close the remaining high-risk dirty mutation paths by persisting candidate intake
-and workflow decisions, admitting candidates through typed server-authoritative
-Trip mutation proposals, returning repair-required state for missing execution
-facts, and creating compensating revisions for saved completion undo.
+Establish the first source-to-review import boundary for pasted text:
+persist private source artifacts, extract span-valid mentions, resolve place
+candidates deterministically, require human review, and commit confirmed places
+only into the existing TripCandidate pool.
 
 ## Current stable capabilities
 
@@ -29,14 +29,15 @@ facts, and creating compensating revisions for saved completion undo.
 - F-001b persisted server-authoritative replan
 - F-001b.1 Persisted Replan Proposal Integrity and Safe Undo Gate
 - F-001b.2 Typed Route Edit and Swap Mutation Revisions
+- F-001b.3 Candidate Admission, Completion Undo, and Mutation Closure
 
 ## In review
 
-- F-001b.3 Candidate Admission, Completion Undo, and Mutation Closure
+- F-002a/F-003a Text Import and Review Inbox Foundation
 
 ## Next approved work
 
-1. F-002/F-003 Import-to-Executable
+1. F-002b URL Import Adapter
 2. F-020b Planner Trace Review and Evaluation Expansion
 
 ## Explicitly not in scope
@@ -44,4 +45,5 @@ facts, and creating compensating revisions for saved completion undo.
 - Counterfactual scenario explorer
 - Collaboration
 - Booking inbox
-- Universal Import implementation
+- image/PDF/OCR import
+- F-004 Intent Compiler

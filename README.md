@@ -142,6 +142,9 @@ The repository currently contains a substantial planning foundation:
 - persisted TripCandidate intake and workflow decisions
 - typed candidate admission with repair-required semantics
 - saved completion undo as a compensating TripRevision
+- text SourceArtifact import with span-level mention provenance
+- Import Review Inbox for confirming imported place mentions into TripCandidate
+- import evaluation gate with fixture-driven invariants
 - fixture-driven product verification
 
 > Development branches may contain additional in-review capabilities. Required CI
@@ -328,6 +331,15 @@ Important backend settings include:
 - `TRIP_STORE_BUSY_TIMEOUT_SECONDS`
 - `TRIP_CAPABILITY_COOKIE_SECURE`
 - `TRIP_ALLOWED_ORIGINS`
+- `IMPORT_TEXT_ENABLED`
+- `IMPORT_TEXT_MAX_BYTES`
+- `IMPORT_ARTIFACT_STORE_MODE`
+- `IMPORT_ARTIFACT_ROOT`
+- `IMPORT_PROCESSING_MODE`
+- `IMPORT_EXTRACTOR_MODE`
+- `IMPORT_RESOLVER_MODE`
+- `IMPORT_MAX_MENTIONS`
+- `IMPORT_MAX_RESOLUTION_CANDIDATES`
 
 Do not commit `backend/.env`.
 
@@ -344,6 +356,11 @@ currentRevisionId}` in localStorage, never the capability or the full itinerary.
 Anonymous capability access protects private trip URLs from casual reads, but it
 is not a substitute for account authentication, formal authorization, or
 multi-user permissions.
+
+Text import stores pasted source as a private `SourceArtifact` and returns only
+metadata through normal JSON responses. Raw source text is retrieved through a
+capability-protected, private/no-store artifact endpoint for review display.
+The local artifact root is ignored by Git; do not commit imported source bytes.
 
 ### 3. Configure the frontend
 
@@ -420,8 +437,9 @@ npm run test:workspace
 npm run build
 ```
 
-`npm run test:workspace` covers the route workspace characterization tests and
-Trip persistence state/storage helpers.
+`npm run test:workspace` covers the route workspace characterization tests,
+Trip persistence state/storage helpers, and Import Review Inbox state/view-model
+tests.
 
 ### Backend
 
@@ -431,6 +449,7 @@ From the repository root:
 backend/.venv/bin/python -m unittest discover -s backend/tests -t backend
 backend/.venv/bin/python -m tools.run_planner_evaluation --ci
 backend/.venv/bin/python -m tools.run_trip_mutation_evaluation --ci
+backend/.venv/bin/python -m tools.run_import_evaluation --ci
 ```
 
 Or, with the backend virtual environment activated:
@@ -526,6 +545,28 @@ Saved completion undo is also server-authoritative: undoing a persisted
 completion patch creates a compensating revision and preserves lineage instead
 of treating the browser as the canonical saved state.
 
+Text import follows the same boundary discipline:
+
+```text
+POST /trips/{trip_id}/imports/text
+GET  /trips/{trip_id}/imports/{import_id}
+GET  /trips/{trip_id}/imports/{import_id}/artifact
+POST /trips/{trip_id}/imports/{import_id}/mentions/{mention_id}/decisions
+POST /trips/{trip_id}/imports/{import_id}/commit
+```
+
+Import creates `SourceArtifact`, `ImportJob`, `ExtractedMention`, and
+`ResolvedPlaceCandidate` records. Review decisions are append-only and protected
+by `base_review_version` plus `X-Idempotency-Key`. Commit only turns confirmed
+place mentions into `TripCandidate` records with evidence refs such as
+`artifact:{artifact_id}#mention:{mention_id}`. It does not create a
+`TripRevision`, schedule a stop, mutate TripIntent, or run the planner.
+
+The current extractor is intentionally deterministic and limited. It recognizes
+explicit text lists, known local-catalog places, fixed-event/time phrases, and
+instruction-like source text. URL, image, PDF, OCR, and full Intent Compiler
+flows are not implemented in this slice.
+
 ### Uncertainty semantics
 
 The product distinguishes:
@@ -554,8 +595,8 @@ Missing or stale data must not be presented as confirmed.
 
 ### Import-to-Executable v1
 
-- Universal Import
-- Import Review Inbox
+- Text Import Review Inbox
+- URL/image/PDF import adapters
 - canonical POI resolution
 - Trip Intent Compiler
 - explainable planner trace
@@ -607,10 +648,8 @@ Current limitations include:
 
 - no production-grade user authentication and multi-user persistence
 - TripRevision persistence is local SQLite, not a cloud Trip Library
-- limited source-import pipeline
-- incomplete canonical place/provenance graph
-- Completion Undo, manual pending-stop insertion, and selected candidate-reject
-  workflows remain to be classified or migrated
+- limited text-only source-import pipeline
+- incomplete canonical place/provenance graph beyond reviewed text evidence
 - no full booking inbox
 - no production disruption-monitoring infrastructure
 - no offline travel pack
