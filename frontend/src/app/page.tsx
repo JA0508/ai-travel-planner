@@ -15,6 +15,19 @@ import {
 import type { EditableRouteDay } from "@/components/trip/MobileEditRouteWorkspace";
 import { RouteWorkspaceContainer } from "@/features/trip-workspace/RouteWorkspaceContainer";
 import { useRouteWorkspaceUiState } from "@/features/trip-workspace/routeWorkspaceUiState";
+import {
+  LEGACY_FULL_SESSION_KEY,
+  PERSISTED_TRIP_REF_KEY,
+  buildPersistedTripRef,
+  describeTripPersistence,
+  markDirty,
+  markSavedFromRevision,
+  parsePersistedTripRef,
+  serializePersistedTripRef,
+  type TripMetadata,
+  type TripPersistenceState,
+  type TripRevisionMetadata,
+} from "@/features/trip-workspace/tripPersistence";
 import { ConversationalReplanPanel } from "@/components/trip/replanning/ConversationalReplanPanel";
 import type {
   ReplanExecutionResult,
@@ -105,7 +118,7 @@ import {
   parseFixedEventLines,
   splitLines,
 } from "@/components/trip/tripInputParsing";
-import { postTripJson } from "@/components/trip/tripApiClient";
+import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 
 const API_URL = TRIP_API_ENDPOINTS.generateItinerary;
@@ -118,10 +131,11 @@ const REFRESH_ITINERARY_SURFACES_API_URL = TRIP_API_ENDPOINTS.refreshItinerarySu
 const PREVIEW_ROUTE_SEGMENTS_API_URL = TRIP_API_ENDPOINTS.previewRouteSegments;
 const PREVIEW_POI_DETAIL_API_URL = TRIP_API_ENDPOINTS.previewPoiDetail;
 const PLAN_FROM_TEXT_API_URL = TRIP_API_ENDPOINTS.planFromText;
+const PLAN_TRIP_API_URL = TRIP_API_ENDPOINTS.planTrip;
 const PARSE_API_URL = TRIP_API_ENDPOINTS.parseTripIntent;
 const PLANNING_STATE_API_URL = TRIP_API_ENDPOINTS.parsePlanningState;
 const PREVIEW_AVAILABILITY_API_URL = TRIP_API_ENDPOINTS.previewAvailability;
-const SAVED_TRIP_SESSION_KEY = "travel-planner-saved-session-v1";
+const SAVED_TRIP_SESSION_KEY = LEGACY_FULL_SESSION_KEY;
 const SHARE_CARD_FEEDBACK_KEY = "travel-planner-share-card-feedback-v1";
 const RESULT_NAV_TARGETS = {
   completionSummary: "completion-intelligence-summary",
@@ -757,6 +771,53 @@ type PlanTripFromTextResponse = {
   itinerary: ItineraryResponse;
 };
 
+type TripPlanResponse = {
+  trip: TripMetadata;
+  current_revision: TripRevisionMetadata;
+  itinerary: ItineraryResponse;
+  trip_intent: TripIntentEnvelope | null;
+  parsed_intent: ParsedTripIntent | null;
+  planning_state: PlanningInputState | null;
+  persistence: {
+    status: "saved";
+    schema_version: string;
+    idempotent_replay: boolean;
+  };
+};
+
+type TripCurrentResponse = {
+  trip: TripMetadata;
+  current_revision: TripRevisionMetadata;
+  itinerary: ItineraryResponse;
+};
+
+type TripRevisionListResponse = {
+  trip: TripMetadata;
+  revisions: TripRevisionMetadata[];
+};
+
+type PersistedCompletionTaskActionResponse = {
+  trip: TripMetadata;
+  current_revision: TripRevisionMetadata;
+  task_result: CompletionTaskActionResponse;
+  persistence: {
+    status: "saved";
+    schema_version: string;
+    idempotent_replay: boolean;
+  };
+};
+
+type RestoreRevisionResponse = {
+  trip: TripMetadata;
+  current_revision: TripRevisionMetadata;
+  itinerary: ItineraryResponse;
+  persistence: {
+    status: "saved";
+    schema_version: string;
+    idempotent_replay: boolean;
+  };
+};
+
 type ReplanItineraryResponse = {
   trip_intent: TripIntentEnvelope;
   itinerary: ItineraryResponse;
@@ -1080,6 +1141,11 @@ export default function HomePage() {
   const [hasSavedSession, setHasSavedSession] = useState(false);
   const [sessionHydrated, setSessionHydrated] = useState(false);
   const [savedTripPromptOpen, setSavedTripPromptOpen] = useState(false);
+  const [tripPersistence, setTripPersistence] = useState<TripPersistenceState>({
+    status: "none",
+  });
+  const [revisionHistory, setRevisionHistory] = useState<TripRevisionMetadata[]>([]);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [quickPreviewMode, setQuickPreviewMode] = useState<QuickPreviewMode>("original_parse");
   const [dismissedFollowUpRawText, setDismissedFollowUpRawText] = useState<string | null>(null);
   const [highlightedResultTargetId, setHighlightedResultTargetId] = useState<string | null>(null);
@@ -1286,6 +1352,145 @@ export default function HomePage() {
     setError(null);
   }
 
+  function rememberPersistedTrip(trip: TripMetadata, revision: TripRevisionMetadata) {
+    const ref = buildPersistedTripRef(trip, revision);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(PERSISTED_TRIP_REF_KEY, serializePersistedTripRef(ref));
+      window.localStorage.removeItem(SAVED_TRIP_SESSION_KEY);
+    }
+    setTripPersistence(markSavedFromRevision(revision));
+    setHasSavedSession(true);
+  }
+
+  function clearPersistedTripRef() {
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(PERSISTED_TRIP_REF_KEY);
+      window.localStorage.removeItem(SAVED_TRIP_SESSION_KEY);
+    }
+    setTripPersistence({ status: "none" });
+    setRevisionHistory([]);
+    setHasSavedSession(false);
+  }
+
+  function markWorkspaceDirty(reason: string) {
+    setTripPersistence((current) => markDirty(current, reason));
+  }
+
+  async function restorePersistedTripRef() {
+    if (typeof window === "undefined") {
+      return false;
+    }
+    const ref = parsePersistedTripRef(window.localStorage.getItem(PERSISTED_TRIP_REF_KEY));
+    if (!ref) {
+      window.localStorage.removeItem(PERSISTED_TRIP_REF_KEY);
+      return false;
+    }
+
+    setTripPersistence({ status: "restoring", tripId: ref.tripId });
+    const response = await getTripJson<TripCurrentResponse>(
+      TRIP_API_ENDPOINTS.getTrip(ref.tripId),
+      "恢复保存行程失败",
+      "后端暂时不可用，当前页面不会重新生成行程。",
+    );
+
+    if (!response.ok) {
+      if (
+        response.message.includes("trip_not_found") ||
+        response.message.includes("trip_access_denied")
+      ) {
+        clearPersistedTripRef();
+      } else {
+        setTripPersistence({
+          status: "error",
+          message: response.message,
+          tripId: ref.tripId,
+          recoverable: true,
+        });
+      }
+      return false;
+    }
+
+    const current = response.data;
+    setResult(current.itinerary);
+    rememberPersistedTrip(current.trip, current.current_revision);
+    setGenerationContext(
+      current.itinerary.trip_intent?.current_intent
+        ? buildGenerationContextFromRegenerationIntent(
+            current.itinerary.trip_intent.current_intent,
+          )
+        : generationContext,
+    );
+    syncFormStateWithRegenerationIntent(
+      current.itinerary.trip_intent?.current_intent ??
+        current.itinerary.planning_assumptions?.regeneration_intent ??
+        null,
+    );
+    setSavedTripPromptOpen(false);
+    setError(null);
+    await refreshRevisionHistory(current.trip.id);
+    return true;
+  }
+
+  async function refreshRevisionHistory(tripId: string) {
+    const response = await getTripJson<TripRevisionListResponse>(
+      TRIP_API_ENDPOINTS.listTripRevisions(tripId),
+      "获取版本历史失败",
+    );
+    if (response.ok) {
+      setRevisionHistory(response.data.revisions);
+    }
+  }
+
+  async function handleRestoreRevision(revision: TripRevisionMetadata) {
+    if (tripPersistence.status !== "saved") {
+      setError("当前行程有未保存变更，先重新生成或刷新后再恢复历史版本。");
+      return;
+    }
+    setTripPersistence({ status: "restoring", tripId: tripPersistence.tripId });
+    const response = await postTripJson<RestoreRevisionResponse>(
+      TRIP_API_ENDPOINTS.restoreTripRevision(tripPersistence.tripId, revision.id),
+      {
+        base_revision_id: tripPersistence.currentRevisionId,
+      },
+      "恢复历史版本失败",
+      undefined,
+      {
+        headers: {
+          "X-Idempotency-Key": `restore:${revision.id}:${tripPersistence.currentRevisionId}`,
+        },
+      },
+    );
+
+    if (!response.ok) {
+      setError(response.message);
+      setTripPersistence({
+        status: "error",
+        message: response.message,
+        tripId: tripPersistence.tripId,
+        recoverable: true,
+      });
+      return;
+    }
+
+    setResult(response.data.itinerary);
+    rememberPersistedTrip(response.data.trip, response.data.current_revision);
+    setGenerationContext(
+      response.data.itinerary.trip_intent?.current_intent
+        ? buildGenerationContextFromRegenerationIntent(
+            response.data.itinerary.trip_intent.current_intent,
+          )
+        : generationContext,
+    );
+    syncFormStateWithRegenerationIntent(
+      response.data.itinerary.trip_intent?.current_intent ??
+        response.data.itinerary.planning_assumptions?.regeneration_intent ??
+        null,
+    );
+    await refreshRevisionHistory(response.data.trip.id);
+    setVersionHistoryOpen(false);
+    setError(null);
+  }
+
   function hasMeaningfulTripSession(session: PersistedTripSession): boolean {
     const { originalFormState } = session;
     return (
@@ -1361,38 +1566,17 @@ export default function HomePage() {
     setQuickPreviewMode("original_parse");
     setParseError(null);
     setError(null);
+    setTripPersistence({ status: "none" });
+    setRevisionHistory([]);
+    setVersionHistoryOpen(false);
   }
 
   function handleRestoreSavedSession() {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const raw = window.localStorage.getItem(SAVED_TRIP_SESSION_KEY);
-    if (!raw) {
-      setHasSavedSession(false);
-      return;
-    }
-
-    try {
-      const session = normalizeStoredTripSession(JSON.parse(raw));
-      if (!session) {
-        throw new Error("Invalid saved trip session.");
-      }
-      restoreSavedSession(session);
-      setHasSavedSession(true);
-      setSavedTripPromptOpen(false);
-    } catch {
-      window.localStorage.removeItem(SAVED_TRIP_SESSION_KEY);
-      setHasSavedSession(false);
-      setSavedTripPromptOpen(false);
-    }
+    void restorePersistedTripRef();
   }
 
   function handleStartNewTrip() {
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(SAVED_TRIP_SESSION_KEY);
-    }
+    clearPersistedTripRef();
     resetCurrentTripState();
     setHasSavedSession(false);
     setSavedTripPromptOpen(false);
@@ -1552,72 +1736,28 @@ export default function HomePage() {
       return;
     }
 
-    const raw = window.localStorage.getItem(SAVED_TRIP_SESSION_KEY);
-    if (!raw) {
+    window.localStorage.removeItem(SAVED_TRIP_SESSION_KEY);
+    const persistedRef = parsePersistedTripRef(window.localStorage.getItem(PERSISTED_TRIP_REF_KEY));
+    if (!persistedRef) {
+      window.localStorage.removeItem(PERSISTED_TRIP_REF_KEY);
       setSessionHydrated(true);
       return;
     }
 
-    try {
-      const session = normalizeStoredTripSession(JSON.parse(raw));
-      if (!session) {
-        throw new Error("Invalid saved trip session.");
-      }
-      setHasSavedSession(true);
-      setSavedTripPromptOpen(true);
-    } catch {
-      window.localStorage.removeItem(SAVED_TRIP_SESSION_KEY);
-      setHasSavedSession(false);
-    } finally {
+    setHasSavedSession(true);
+    setSavedTripPromptOpen(false);
+    void restorePersistedTripRef().finally(() => {
       setSessionHydrated(true);
-    }
+    });
   }, []);
 
   useEffect(() => {
-    if (!sessionHydrated || typeof window === "undefined" || savedTripPromptOpen) {
+    if (!sessionHydrated || typeof window === "undefined") {
       return;
     }
 
-    const session = buildCurrentTripSession();
-
-    if (!hasMeaningfulTripSession(session)) {
-      window.localStorage.removeItem(SAVED_TRIP_SESSION_KEY);
-      setHasSavedSession(false);
-      return;
-    }
-
-    window.localStorage.setItem(SAVED_TRIP_SESSION_KEY, JSON.stringify(session));
-    setHasSavedSession(true);
-  }, [
-    sessionHydrated,
-    savedTripPromptOpen,
-    tripText,
-    travelMode,
-    parsedIntent,
-    planningState,
-    scenicSpots,
-    restaurants,
-    hotel,
-    arrivalAnchor,
-    departureAnchor,
-    availabilityWindowsText,
-    preferencesText,
-    tripDays,
-    fixedEventsText,
-    availabilityPreview,
-    availabilityPreviewSignature,
-    result,
-    generationContext,
-    committedSwaps,
-    userIntentState,
-    preferenceSignals,
-    pacingProfile,
-    quickPreviewMode,
-    dismissedFollowUpRawText,
-    latestFollowUpBaseIntent,
-    completionTaskEdits,
-    completionCandidateHistory,
-  ]);
+    window.localStorage.removeItem(SAVED_TRIP_SESSION_KEY);
+  }, [sessionHydrated]);
 
   useEffect(() => {
     const envelopeHistory = result?.trip_intent?.completion_candidate_history ?? [];
@@ -2142,9 +2282,10 @@ function buildRegenerationSemanticsViewModel(
     };
   }
 
-  async function planTripFromText(text: string): Promise<PlanTripFromTextResponse | null> {
-    const result = await postTripJson<PlanTripFromTextResponse>(
-      PLAN_FROM_TEXT_API_URL,
+  async function planTripFromText(text: string): Promise<TripPlanResponse | null> {
+    setTripPersistence({ status: "creating" });
+    const result = await postTripJson<TripPlanResponse>(
+      PLAN_TRIP_API_URL,
       {
         text,
         travel_mode: travelMode ?? undefined,
@@ -2155,9 +2296,12 @@ function buildRegenerationSemanticsViewModel(
     );
     if (!result.ok) {
       setParseError(result.message);
+      setTripPersistence({ status: "error", message: result.message, recoverable: true });
       return null;
     }
 
+    rememberPersistedTrip(result.data.trip, result.data.current_revision);
+    await refreshRevisionHistory(result.data.trip.id);
     return result.data;
   }
 
@@ -2241,6 +2385,7 @@ function buildRegenerationSemanticsViewModel(
     );
     setActiveSwapTarget(null);
     setError(null);
+    markWorkspaceDirty("swap_apply");
   }
 
   function handleUndoSwap(target: SwapTarget) {
@@ -2269,6 +2414,7 @@ function buildRegenerationSemanticsViewModel(
     }
     setActiveSwapTarget(null);
     setError(null);
+    markWorkspaceDirty("swap_undo");
   }
 
   function handleCommitRouteEdits(
@@ -2316,6 +2462,7 @@ function buildRegenerationSemanticsViewModel(
       ),
     }));
     setError(null);
+    markWorkspaceDirty("route_edit_commit");
   }
 
   async function handleParseSubmit(event: FormEvent<HTMLFormElement>) {
@@ -2364,13 +2511,22 @@ function buildRegenerationSemanticsViewModel(
       pacingProfile,
     });
 
-    const result = await postTripJson<ItineraryResponse>(API_URL, payload, "Request failed");
+    setTripPersistence({ status: "creating" });
+    const result = await postTripJson<TripPlanResponse>(
+      PLAN_TRIP_API_URL,
+      {
+        itinerary_request: payload,
+        auto_fill_sparse_days: true,
+      },
+      "Request failed",
+    );
     if (!result.ok) {
       setError(result.message);
+      setTripPersistence({ status: "error", message: result.message, recoverable: true });
       return;
     }
 
-    const itinerary = result.data;
+    const itinerary = result.data.itinerary;
     const regenerationIntent =
       itinerary.trip_intent?.current_intent ??
       itinerary.planning_assumptions?.regeneration_intent ??
@@ -2390,6 +2546,8 @@ function buildRegenerationSemanticsViewModel(
     setQuickPreviewMode(regenerationIntent ? "current_brief" : "original_parse");
     setCompletionPickerOpen(false);
     setSelectedCompletionOptionKeys([]);
+    rememberPersistedTrip(result.data.trip, result.data.current_revision);
+    await refreshRevisionHistory(result.data.trip.id);
   }
 
   async function generateItineraryFromTripIntent(tripIntent: TripIntentEnvelope) {
@@ -2467,6 +2625,7 @@ function buildRegenerationSemanticsViewModel(
     setQuickPreviewMode(regenerationIntent ? "current_brief" : "original_parse");
     setCompletionPickerOpen(false);
     setSelectedCompletionOptionKeys([]);
+    markWorkspaceDirty("generate_from_trip_intent");
   }
 
   function buildGenerationContextFromRegenerationIntent(
@@ -2496,13 +2655,29 @@ function buildRegenerationSemanticsViewModel(
   }
 
   function buildGenerationContextFromPlanTextResponse(
-    response: PlanTripFromTextResponse,
+    response: PlanTripFromTextResponse | TripPlanResponse,
   ): GenerationContext {
     const regenerationIntent =
-      response.trip_intent.current_intent ??
+      response.trip_intent?.current_intent ??
       response.itinerary.trip_intent?.current_intent ??
       response.itinerary.planning_assumptions?.regeneration_intent ??
       null;
+    if (!regenerationIntent || !response.parsed_intent || !response.planning_state) {
+      return {
+        city: null,
+        scenic_spots: [],
+        restaurants: [],
+        fixed_events: [],
+        preferences: [],
+        pacing_profile: pacingProfile,
+        trip_days_source: "estimated",
+        trip_scope_estimate: null,
+        hotel: null,
+        arrival_anchor: null,
+        departure_anchor: null,
+        availability_windows: [],
+      };
+    }
     const tripDaysBasis = regenerationIntent?.trip_days_basis;
 
     return {
@@ -2604,6 +2779,7 @@ function buildRegenerationSemanticsViewModel(
       setCommittedSwaps([]);
       setQuickPreviewMode(regenerationIntent ? "current_brief" : "original_parse");
       setFollowUpText("");
+      markWorkspaceDirty("backend_replan");
       return itinerary;
     } catch {
       setError("无法连接后端接口继续补全这趟旅行。");
@@ -2666,6 +2842,7 @@ function buildRegenerationSemanticsViewModel(
     setRecentCompletionTaskItemKey(null);
     setCompletionTaskEdits([]);
     setCommittedSwaps([]);
+    markWorkspaceDirty("local_replan_mutation");
 
     const refreshedResult = await postTripJson<ItineraryResponse>(
       REFRESH_ITINERARY_SURFACES_API_URL,
@@ -2702,6 +2879,7 @@ function buildRegenerationSemanticsViewModel(
     setResult(entry.beforeItinerary);
     syncLocalReplanIntentState(entry.beforeItinerary);
     setError(null);
+    markWorkspaceDirty("replan_undo");
   }
 
   function syncLocalReplanIntentState(itinerary: ItineraryResponse) {
@@ -2854,32 +3032,68 @@ function buildRegenerationSemanticsViewModel(
     setActiveSwapTarget(null);
 
     try {
-      const apiResult = await postTripJson<CompletionTaskActionResponse>(
-        APPLY_COMPLETION_TASK_API_URL,
-        {
-          itinerary: result,
-          task_id: taskAction.task_id,
-          task_instance_key: taskAction.task_instance_key,
-          day: taskAction.day,
-          block_type: taskAction.block_type,
-          selected_candidate: selectedCandidate,
-          completion_candidate_history: completionCandidateHistory,
-        },
-        "应用补全任务失败",
-        undefined,
-        {
-          headers: {
-            "X-Idempotency-Key": `completion-task:${taskAction.task_instance_key}`,
-          },
-        },
-      );
+      const idempotencyKey = `completion-task:${taskAction.task_instance_key}`;
+      const persistedBase = tripPersistence.status === "saved" ? tripPersistence : null;
+      const apiResult = persistedBase
+        ? await postTripJson<PersistedCompletionTaskActionResponse>(
+            TRIP_API_ENDPOINTS.applyPersistedCompletionTask(persistedBase.tripId),
+            {
+              base_revision_id: persistedBase.currentRevisionId,
+              task_id: taskAction.task_id,
+              task_instance_key: taskAction.task_instance_key,
+              day: taskAction.day,
+              block_type: taskAction.block_type,
+              selected_candidate: selectedCandidate,
+              completion_candidate_history: completionCandidateHistory,
+            },
+            "应用补全任务失败",
+            undefined,
+            {
+              headers: {
+                "X-Idempotency-Key": idempotencyKey,
+              },
+            },
+          )
+        : await postTripJson<CompletionTaskActionResponse>(
+            APPLY_COMPLETION_TASK_API_URL,
+            {
+              itinerary: result,
+              task_id: taskAction.task_id,
+              task_instance_key: taskAction.task_instance_key,
+              day: taskAction.day,
+              block_type: taskAction.block_type,
+              selected_candidate: selectedCandidate,
+              completion_candidate_history: completionCandidateHistory,
+            },
+            "应用补全任务失败",
+            undefined,
+            {
+              headers: {
+                "X-Idempotency-Key": idempotencyKey,
+              },
+            },
+          );
 
       if (!apiResult.ok) {
+        if (apiResult.message.includes("stale_base_revision") && persistedBase) {
+          setTripPersistence({
+            status: "conflict",
+            tripId: persistedBase.tripId,
+            providedBaseRevisionId: persistedBase.currentRevisionId,
+            currentRevisionId: persistedBase.currentRevisionId,
+            message: apiResult.message,
+          });
+        }
         setError(apiResult.message);
         return;
       }
 
-      const taskResult = apiResult.data;
+      const taskResult =
+        "task_result" in apiResult.data ? apiResult.data.task_result : apiResult.data;
+      if ("current_revision" in apiResult.data) {
+        rememberPersistedTrip(apiResult.data.trip, apiResult.data.current_revision);
+        await refreshRevisionHistory(apiResult.data.trip.id);
+      }
       const promotedItinerary =
         taskResult.applied && taskResult.inserted_item
           ? applyCompletionTaskItemToTripIntentEnvelope(
@@ -2999,6 +3213,7 @@ function buildRegenerationSemanticsViewModel(
     });
     setCompletionTaskStatus(`已记住不再优先推荐：${option.name}`);
     setError(null);
+    markWorkspaceDirty("completion_candidate_reject");
   }
 
   async function handleUndoCompletionTaskEdit(taskInstanceKey: string) {
@@ -3039,6 +3254,7 @@ function buildRegenerationSemanticsViewModel(
     );
     setCompletionTaskStatus(`已撤销本次补全：${edit.inserted_item.name}`);
     setError(null);
+    markWorkspaceDirty("completion_task_undo");
 
     if (!localUndoResult) {
       return;
@@ -3137,6 +3353,10 @@ function buildRegenerationSemanticsViewModel(
     try {
       const plan = await planTripFromText(tripText);
       if (!plan) {
+        return;
+      }
+      if (!plan.parsed_intent || !plan.planning_state || !plan.trip_intent) {
+        setParseError("持久化规划结果缺少可恢复的意图信息。");
         return;
       }
 
@@ -3984,17 +4204,127 @@ function buildRegenerationSemanticsViewModel(
             onApplyEdits={handleCommitRouteEdits}
             onClose={() => setRouteEditMode(false)}
             headerUtility={
-              <button
-                className="ec-interactive-pill"
-                type="button"
-                onClick={handleStartNewTrip}
-                style={{
-                  ...miniGhostButtonStyle,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                新行程
-              </button>
+              <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    padding: "7px 10px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(21,21,21,0.1)",
+                    background:
+                      tripPersistence.status === "dirty"
+                        ? "rgba(247, 208, 138, 0.16)"
+                        : tripPersistence.status === "conflict" || tripPersistence.status === "error"
+                          ? "rgba(185, 78, 72, 0.12)"
+                          : "rgba(239,248,243,0.9)",
+                    color:
+                      tripPersistence.status === "dirty"
+                        ? "#7d5b32"
+                        : tripPersistence.status === "conflict" || tripPersistence.status === "error"
+                          ? "#9d302a"
+                          : "#48673f",
+                    fontSize: 12,
+                    fontWeight: 900,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {describeTripPersistence(tripPersistence)}
+                </span>
+                {tripPersistence.status === "saved" || tripPersistence.status === "dirty" ? (
+                  <button
+                    className="ec-interactive-pill"
+                    type="button"
+                    onClick={() => {
+                      setVersionHistoryOpen((current) => !current);
+                      void refreshRevisionHistory(tripPersistence.tripId);
+                    }}
+                    style={{
+                      ...miniGhostButtonStyle,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    Version history
+                  </button>
+                ) : null}
+                <button
+                  className="ec-interactive-pill"
+                  type="button"
+                  onClick={handleStartNewTrip}
+                  style={{
+                    ...miniGhostButtonStyle,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  新行程
+                </button>
+                {versionHistoryOpen ? (
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: "calc(100% + 8px)",
+                      right: 0,
+                      zIndex: 20,
+                      width: 320,
+                      maxWidth: "calc(100vw - 32px)",
+                      display: "grid",
+                      gap: 8,
+                      padding: 12,
+                      borderRadius: 18,
+                      border: "1px solid rgba(21,21,21,0.1)",
+                      background: "rgba(255,253,249,0.98)",
+                      boxShadow: "0 18px 44px rgba(21,21,21,0.14)",
+                    }}
+                  >
+                    <strong style={{ fontSize: 13, color: "var(--ec-ink)" }}>
+                      Version history
+                    </strong>
+                    {revisionHistory.length === 0 ? (
+                      <p style={{ margin: 0, fontSize: 12, color: "var(--ec-slate)" }}>
+                        No saved revisions yet.
+                      </p>
+                    ) : (
+                      revisionHistory.map((revision) => (
+                        <div
+                          key={revision.id}
+                          style={{
+                            display: "grid",
+                            gap: 6,
+                            padding: 10,
+                            borderRadius: 12,
+                            background:
+                              tripPersistence.status !== "none" &&
+                              "currentRevisionId" in tripPersistence &&
+                              tripPersistence.currentRevisionId === revision.id
+                                ? "rgba(239,248,243,0.94)"
+                                : "rgba(21,21,21,0.035)",
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                            <span style={{ fontSize: 12, fontWeight: 900, color: "var(--ec-ink)" }}>
+                              Revision {revision.revision_number}
+                            </span>
+                            <span style={{ fontSize: 11, color: "var(--ec-slate)" }}>
+                              {revision.source_type}
+                            </span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: 11, color: "var(--ec-slate)", lineHeight: 1.4 }}>
+                            {revision.planner_version ?? "no planner"} · {new Date(revision.created_at).toLocaleString()}
+                          </p>
+                          {tripPersistence.status === "saved" &&
+                          tripPersistence.currentRevisionId !== revision.id ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleRestoreRevision(revision)}
+                              style={{ ...miniGhostButtonStyle, justifySelf: "start" }}
+                            >
+                              Restore as new revision
+                            </button>
+                          ) : null}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </div>
             }
             sheetContent={
               activeRouteSheet === "completion" ? (

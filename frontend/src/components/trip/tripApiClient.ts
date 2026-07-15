@@ -30,6 +30,7 @@ export async function postTripJson<TData>(
       headers,
       body: JSON.stringify(payload),
       signal: options.signal,
+      credentials: "include",
     });
   } catch (error) {
     if (isAbortError(error)) {
@@ -49,7 +50,51 @@ export async function postTripJson<TData>(
   if (!response.ok) {
     return {
       ok: false,
-      message: extractApiDetail(data) ?? fallbackMessage,
+      message: extractApiDetail(data) ?? extractTripError(data) ?? fallbackMessage,
+    };
+  }
+
+  return {
+    ok: true,
+    data: data as TData,
+  };
+}
+
+export async function getTripJson<TData>(
+  url: string,
+  fallbackMessage: string,
+  networkMessage = "无法连接后端接口。",
+  options: { signal?: AbortSignal } = {},
+): Promise<TripApiResult<TData>> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      signal: options.signal,
+      credentials: "include",
+      headers: {
+        "X-Request-ID": buildClientRequestId(),
+      },
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      return {
+        ok: false,
+        message: "Request aborted.",
+        aborted: true,
+      };
+    }
+    return {
+      ok: false,
+      message: networkMessage,
+    };
+  }
+
+  const data = await readJsonSafely(response);
+  if (!response.ok) {
+    return {
+      ok: false,
+      message: extractApiDetail(data) ?? extractTripError(data) ?? fallbackMessage,
     };
   }
 
@@ -64,6 +109,21 @@ function extractApiDetail(data: unknown): string | null {
     return null;
   }
   return formatApiDetail((data as { detail?: unknown }).detail);
+}
+
+function extractTripError(data: unknown): string | null {
+  if (typeof data !== "object" || data === null || !("error" in data)) {
+    return null;
+  }
+  const error = (data as { error?: unknown }).error;
+  if (typeof error !== "object" || error === null) {
+    return null;
+  }
+  const code = "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+  const message = "message" in error
+    ? String((error as { message?: unknown }).message ?? "")
+    : "";
+  return [code, message].filter(Boolean).join(": ") || null;
 }
 
 async function readJsonSafely(response: Response): Promise<unknown> {
