@@ -9,6 +9,7 @@ from typing import Any
 
 
 TRIP_SNAPSHOT_SCHEMA_VERSION = "1.0"
+TRIP_MUTATION_PROPOSAL_SCHEMA_VERSION = "1.0"
 
 
 def canonicalize(value: Any) -> Any:
@@ -67,3 +68,44 @@ def lineage_digest(
         "content_digest": content_digest,
     }
     return sha256_digest(payload)
+
+
+def validation_report_digest(validation_report: dict[str, Any]) -> str:
+    return sha256_digest(validation_report)
+
+
+def mutation_proposal_digest(
+    *,
+    proposal_schema_version: str,
+    trip_id: str,
+    base_revision_id: str,
+    source_type: str,
+    operation_type: str,
+    request_digest: str,
+    preview_snapshot_schema_version: str,
+    preview_content_digest: str,
+    planner_run_id: str | None,
+    planner_version: str | None,
+    trace_schema_version: str | None,
+    trace_digest: str | None,
+    validation_report: dict[str, Any],
+    expires_at: str,
+) -> str:
+    return sha256_digest(
+        {
+            "proposal_schema_version": proposal_schema_version,
+            "trip_id": trip_id,
+            "base_revision_id": base_revision_id,
+            "source_type": source_type,
+            "operation_type": operation_type,
+            "request_digest": request_digest,
+            "preview_snapshot_schema_version": preview_snapshot_schema_version,
+            "preview_content_digest": preview_content_digest,
+            "planner_run_id": planner_run_id,
+            "planner_version": planner_version,
+            "trace_schema_version": trace_schema_version,
+            "trace_digest": trace_digest,
+            "validation_report_digest": validation_report_digest(validation_report),
+            "expires_at": expires_at,
+        }
+    )

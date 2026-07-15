@@ -43,6 +43,7 @@ export const routeWorkspacePageStateOwnership = {
   parseError: "async",
   parsedIntent: "server",
   parsing: "async",
+  persistedReplanProposal: "async",
   planningState: "server",
   preferencesText: "draft",
   preferenceSignals: "durable",

@@ -8,6 +8,8 @@ export type TripApiResult<TData> =
   | {
       ok: false;
       message: string;
+      code?: string;
+      recoverable?: boolean;
       aborted?: boolean;
     };
 
@@ -48,9 +50,12 @@ export async function postTripJson<TData>(
 
   const data = await readJsonSafely(response);
   if (!response.ok) {
+    const tripError = extractTripError(data);
     return {
       ok: false,
-      message: extractApiDetail(data) ?? extractTripError(data) ?? fallbackMessage,
+      message: extractApiDetail(data) ?? tripError?.message ?? fallbackMessage,
+      code: tripError?.code,
+      recoverable: tripError?.recoverable,
     };
   }
 
@@ -92,9 +97,12 @@ export async function getTripJson<TData>(
 
   const data = await readJsonSafely(response);
   if (!response.ok) {
+    const tripError = extractTripError(data);
     return {
       ok: false,
-      message: extractApiDetail(data) ?? extractTripError(data) ?? fallbackMessage,
+      message: extractApiDetail(data) ?? tripError?.message ?? fallbackMessage,
+      code: tripError?.code,
+      recoverable: tripError?.recoverable,
     };
   }
 
@@ -111,7 +119,11 @@ function extractApiDetail(data: unknown): string | null {
   return formatApiDetail((data as { detail?: unknown }).detail);
 }
 
-function extractTripError(data: unknown): string | null {
+function extractTripError(data: unknown): {
+  code?: string;
+  message: string;
+  recoverable?: boolean;
+} | null {
   if (typeof data !== "object" || data === null || !("error" in data)) {
     return null;
   }
@@ -123,7 +135,11 @@ function extractTripError(data: unknown): string | null {
   const message = "message" in error
     ? String((error as { message?: unknown }).message ?? "")
     : "";
-  return [code, message].filter(Boolean).join(": ") || null;
+  const recoverable = "recoverable" in error
+    ? Boolean((error as { recoverable?: unknown }).recoverable)
+    : undefined;
+  const formatted = [code, message].filter(Boolean).join(": ");
+  return formatted ? { code: code || undefined, message: formatted, recoverable } : null;
 }
 
 async function readJsonSafely(response: Response): Promise<unknown> {

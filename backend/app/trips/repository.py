@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from .models import CreateRevisionResult, TripAggregate, TripRecord, TripRevisionRecord
+from .models import (
+    CreateRevisionResult,
+    TripAggregate,
+    TripMutationProposalRecord,
+    TripRecord,
+    TripRevisionRecord,
+)
 
 
 class TripRepository(Protocol):
@@ -47,6 +53,37 @@ class TripRepository(Protocol):
         request_digest: str,
         idempotency_key_hash: str,
     ) -> CreateRevisionResult | None:
+        ...
+
+    def create_mutation_proposal(
+        self,
+        *,
+        proposal: TripMutationProposalRecord,
+    ) -> TripMutationProposalRecord:
+        ...
+
+    def get_mutation_proposal(
+        self,
+        *,
+        trip_id: str,
+        proposal_id: str,
+    ) -> TripMutationProposalRecord:
+        ...
+
+    def apply_mutation_proposal(
+        self,
+        *,
+        trip_id: str,
+        capability_hash: str,
+        proposal_id: str,
+        base_revision_id: str,
+        proposal_digest: str,
+        now: str,
+        operation_summary: str,
+        operation_metadata: dict[str, Any],
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CreateRevisionResult:
         ...
 
     def create_revision(

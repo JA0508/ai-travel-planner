@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import hashlib
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -16,6 +18,14 @@ from app.api.routes.itinerary import (
     resolve_replan_base_intent,
 )
 from app.planner.trace import PlannerTrace, PlannerTraceCollector, planner_trace_digest
+from app.core.runtime_config import get_trip_replan_proposal_ttl_seconds
+from app.evaluation.invariants import (
+    missing_route_not_zero,
+    no_duplicate_scheduled_place,
+    no_schedule_overlap,
+    within_arrival_departure_boundaries,
+    within_day_availability,
+)
 from app.schemas import (
     CompletionTaskActionRequest,
     CompletionTaskActionResponse,
@@ -29,15 +39,34 @@ from app.services.nl_parser import normalize_parsed_trip_intent, parse_trip_text
 from app.services.planning_state_transformer import build_planning_input_state
 from .access import (
     generate_capability,
+    generate_proposal_id,
     hash_capability,
     hash_idempotency_key,
     verify_capability,
 )
-from .digests import TRIP_SNAPSHOT_SCHEMA_VERSION, itinerary_content_digest, request_digest
-from .errors import MutationProposalMismatchError, SnapshotSchemaUnsupportedError, TripAccessDeniedError
-from .models import RevisionSourceType
+from .digests import (
+    TRIP_MUTATION_PROPOSAL_SCHEMA_VERSION,
+    TRIP_SNAPSHOT_SCHEMA_VERSION,
+    canonical_json,
+    itinerary_content_digest,
+    mutation_proposal_digest,
+    request_digest,
+)
+from .errors import (
+    InvalidRevisionOperationError,
+    PreviewApplyMismatchError,
+    ProposalDigestMismatchError,
+    ProposalIntegrityViolationError,
+    RevisionNotUndoableError,
+    SnapshotSchemaUnsupportedError,
+    StaleMutationProposalError,
+    TripAccessDeniedError,
+    UndoTargetNotCurrentError,
+)
+from .models import ProposalStatus, RevisionSourceType, TripMutationProposalRecord
 from .repository import TripRepository
 from .schemas import (
+    ApplyPersistedReplanProposalRequest,
     MutationProposalMetadata,
     PersistedCompletionTaskActionRequest,
     PersistedCompletionTaskActionResponse,
@@ -64,8 +93,9 @@ class CreatedTripResult:
 
 
 class TripPersistenceService:
-    def __init__(self, repository: TripRepository) -> None:
+    def __init__(self, repository: TripRepository, *, clock=None) -> None:
         self.repository = repository
+        self.clock = clock or utc_now_datetime
 
     def create_persisted_plan(self, payload: TripPlanRequest) -> CreatedTripResult:
         capability = generate_capability()
@@ -224,32 +254,92 @@ class TripPersistenceService:
     ) -> PersistedReplanPreviewResponse:
         trip = self._require_trip_access(trip_id, capability)
         base_revision = self.repository.get_revision(trip_id, payload.base_revision_id)
+        if trip.current_revision_id != payload.base_revision_id:
+            raise StaleMutationProposalError(
+                trip_id=trip_id,
+                proposal_id="pending",
+                base_revision_id=payload.base_revision_id,
+                current_revision_id=trip.current_revision_id,
+            )
         base_itinerary = deserialize_itinerary_snapshot(base_revision.itinerary_snapshot)
-        replan_result, _trace = execute_replan_from_itinerary(
+        replan_result, trace = execute_replan_from_itinerary(
             base_itinerary=base_itinerary,
             follow_up_text=payload.follow_up_text,
             auto_fill_sparse_days=payload.auto_fill_sparse_days,
         )
         req_digest = request_digest(build_replan_request_digest_payload(payload))
-        proposal = build_replan_proposal_metadata(
+        snapshot = sanitize_replan_preview_snapshot(
+            serialize_itinerary_snapshot(replan_result.itinerary)
+        )
+        stored_itinerary = deserialize_itinerary_snapshot(snapshot)
+        preview_content_digest = itinerary_content_digest(snapshot)
+        validation_report = build_mutation_validation_report(
+            itinerary=stored_itinerary,
+            trace=trace,
+        )
+        assert_mutation_validation_passed(validation_report)
+        now = self.clock()
+        expires_at = format_utc(now + timedelta(seconds=get_trip_replan_proposal_ttl_seconds()))
+        proposal_digest = mutation_proposal_digest(
+            proposal_schema_version=TRIP_MUTATION_PROPOSAL_SCHEMA_VERSION,
+            trip_id=trip_id,
             base_revision_id=payload.base_revision_id,
-            req_digest=req_digest,
-            itinerary_snapshot=serialize_itinerary_snapshot(replan_result.itinerary),
+            source_type=RevisionSourceType.REPLAN_PATCH.value,
+            operation_type="apply_replan_follow_up",
+            request_digest=req_digest,
+            preview_snapshot_schema_version=TRIP_SNAPSHOT_SCHEMA_VERSION,
+            preview_content_digest=preview_content_digest,
+            planner_run_id=trace.planner_run_id,
+            planner_version=trace.planner_version,
+            trace_schema_version=trace.schema_version,
+            trace_digest=trace.trace_digest,
+            validation_report=validation_report,
+            expires_at=expires_at,
+        )
+        proposal = self.repository.create_mutation_proposal(
+            proposal=TripMutationProposalRecord(
+                id=generate_proposal_id(),
+                trip_id=trip_id,
+                base_revision_id=payload.base_revision_id,
+                proposal_schema_version=TRIP_MUTATION_PROPOSAL_SCHEMA_VERSION,
+                source_type=RevisionSourceType.REPLAN_PATCH.value,
+                operation_type="apply_replan_follow_up",
+                request_digest=req_digest,
+                instruction_digest=hashlib.sha256(payload.follow_up_text.encode("utf-8")).hexdigest(),
+                preview_snapshot_schema_version=TRIP_SNAPSHOT_SCHEMA_VERSION,
+                preview_snapshot=snapshot,
+                preview_content_digest=preview_content_digest,
+                proposal_digest=proposal_digest,
+                planner_run_id=trace.planner_run_id,
+                planner_version=trace.planner_version,
+                trace_schema_version=trace.schema_version,
+                trace_digest=trace.trace_digest,
+                validation_report=validation_report,
+                status=ProposalStatus.PENDING.value,
+                expires_at=expires_at,
+                applied_revision_id=None,
+                created_at=format_utc(now),
+                updated_at=format_utc(now),
+            )
         )
         return PersistedReplanPreviewResponse(
             trip=TripMetadata.from_record(trip),
             current_revision=TripRevisionMetadata.from_record(base_revision),
-            proposal=proposal,
-            replan_result=replan_result,
+            proposal=MutationProposalMetadata.from_record(proposal),
+            replan_result=ReplanItineraryResponse(
+                trip_intent=require_trip_intent_envelope(stored_itinerary),
+                itinerary=stored_itinerary,
+            ),
         )
 
-    def apply_replan(
+    def apply_replan_proposal(
         self,
         *,
         trip_id: str,
+        proposal_id: str,
         capability: str | None,
         idempotency_key: str | None,
-        payload: PersistedReplanRequest,
+        payload: ApplyPersistedReplanProposalRequest,
     ) -> PersistedReplanResponse:
         if not idempotency_key or not idempotency_key.strip():
             from .errors import InvalidRevisionOperationError
@@ -257,77 +347,69 @@ class TripPersistenceService:
             raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
         trip = self._require_trip_access(trip_id, capability)
         idempotency_key_hash = hash_idempotency_key(idempotency_key.strip())
-        request_payload = build_replan_request_digest_payload(payload)
-        req_digest = request_digest(request_payload)
-        idempotent_revision = self.repository.get_idempotent_revision(
-            trip_id=trip_id,
-            capability_hash=trip.capability_hash,
-            request_digest=req_digest,
-            idempotency_key_hash=idempotency_key_hash,
-        )
-        if idempotent_revision is not None:
-            revision = idempotent_revision.revision
-            itinerary = deserialize_itinerary_snapshot(revision.itinerary_snapshot)
-            return PersistedReplanResponse(
-                trip=TripMetadata.from_record(self.repository.get_trip(trip_id)),
-                current_revision=TripRevisionMetadata.from_record(revision),
-                replan_result=ReplanItineraryResponse(
-                    trip_intent=require_trip_intent_envelope(itinerary),
-                    itinerary=itinerary,
-                ),
-                persistence=TripPersistenceInfo(idempotent_replay=True),
-            )
-        base_revision = self.repository.get_revision(trip_id, payload.base_revision_id)
-        base_itinerary = deserialize_itinerary_snapshot(base_revision.itinerary_snapshot)
-        replan_result, trace = execute_replan_from_itinerary(
-            base_itinerary=base_itinerary,
-            follow_up_text=payload.follow_up_text,
-            auto_fill_sparse_days=payload.auto_fill_sparse_days,
-        )
-        next_itinerary = replan_result.itinerary
-        proposal = build_replan_proposal_metadata(
-            base_revision_id=payload.base_revision_id,
-            req_digest=req_digest,
-            itinerary_snapshot=serialize_itinerary_snapshot(next_itinerary),
-        )
-        if (
-            payload.expected_preview_digest is not None
-            and payload.expected_preview_digest != proposal.proposal_digest
+        proposal = self.repository.get_mutation_proposal(trip_id=trip_id, proposal_id=proposal_id)
+        if payload.base_revision_id != proposal.base_revision_id:
+            raise ProposalDigestMismatchError()
+        if payload.proposal_digest != proposal.proposal_digest:
+            raise ProposalDigestMismatchError()
+        stored_itinerary = deserialize_itinerary_snapshot(proposal.preview_snapshot)
+        if itinerary_content_digest(proposal.preview_snapshot) != proposal.preview_content_digest:
+            raise ProposalIntegrityViolationError()
+        if proposal.preview_content_digest != itinerary_content_digest(
+            serialize_itinerary_snapshot(stored_itinerary)
         ):
-            raise MutationProposalMismatchError()
-        result = self.repository.create_revision(
+            raise PreviewApplyMismatchError()
+
+        req_digest = request_digest(
+            {
+                "operation": "apply_replan_proposal",
+                "proposal_id": proposal_id,
+                "base_revision_id": payload.base_revision_id,
+                "proposal_digest": payload.proposal_digest,
+            }
+        )
+        operation_metadata = {
+            "operation_type": "apply_replan_follow_up",
+            "proposal_id": proposal.id,
+            "proposal_schema_version": proposal.proposal_schema_version,
+            "proposal_digest": proposal.proposal_digest,
+            "preview_content_digest": proposal.preview_content_digest,
+            "base_revision_id": proposal.base_revision_id,
+            "source_type": proposal.source_type,
+            "request_digest": proposal.request_digest,
+            "instruction_digest": proposal.instruction_digest,
+            "planner_run_id": proposal.planner_run_id,
+            "planner_version": proposal.planner_version,
+            "trace_schema_version": proposal.trace_schema_version,
+            "trace_digest": proposal.trace_digest,
+            "validation_report_digest": hashlib.sha256(
+                canonical_json(proposal.validation_report).encode("utf-8")
+            ).hexdigest(),
+        }
+        result = self.repository.apply_mutation_proposal(
             trip_id=trip_id,
             capability_hash=trip.capability_hash,
+            proposal_id=proposal_id,
             base_revision_id=payload.base_revision_id,
-            itinerary_snapshot=serialize_itinerary_snapshot(next_itinerary),
-            source_type=RevisionSourceType.REPLAN_PATCH.value,
-            operation_type="apply_replan_follow_up",
-            operation_summary="Applied a server-authoritative conversational replan.",
-            operation_metadata={
-                "operation_type": "apply_replan_follow_up",
-                "follow_up_text_digest": request_payload["follow_up_text_digest"],
-                "auto_fill_sparse_days": payload.auto_fill_sparse_days,
-                "proposal_digest": proposal.proposal_digest,
-            },
+            proposal_digest=payload.proposal_digest,
+            now=format_utc(self.clock()),
+            operation_summary="Applied a persisted conversational replan proposal.",
+            operation_metadata=operation_metadata,
             request_digest=req_digest,
             idempotency_key_hash=idempotency_key_hash,
-            planner_run_id=trace.planner_run_id,
-            planner_version=trace.planner_version,
-            trace_schema_version=trace.schema_version,
-            trace_digest=trace.trace_digest,
         )
         current_trip = self.repository.get_trip(trip_id)
         revision = result.revision
-        if result.idempotent_replay:
-            itinerary = deserialize_itinerary_snapshot(revision.itinerary_snapshot)
-            replan_result = ReplanItineraryResponse(
-                trip_intent=require_trip_intent_envelope(itinerary),
-                itinerary=itinerary,
-            )
+        if revision.content_digest != proposal.preview_content_digest:
+            raise PreviewApplyMismatchError()
+        itinerary = deserialize_itinerary_snapshot(revision.itinerary_snapshot)
         return PersistedReplanResponse(
             trip=TripMetadata.from_record(current_trip),
             current_revision=TripRevisionMetadata.from_record(revision),
-            replan_result=replan_result,
+            replan_result=ReplanItineraryResponse(
+                trip_intent=require_trip_intent_envelope(itinerary),
+                itinerary=itinerary,
+            ),
             persistence=TripPersistenceInfo(idempotent_replay=result.idempotent_replay),
         )
 
@@ -368,6 +450,18 @@ class TripPersistenceService:
                 persistence=TripPersistenceInfo(idempotent_replay=True),
             )
         target_revision = self.repository.get_revision(trip_id, target_revision_id)
+        if target_revision.id != trip.current_revision_id:
+            raise UndoTargetNotCurrentError(
+                target_revision_id=target_revision_id,
+                current_revision_id=trip.current_revision_id,
+            )
+        if base_revision_id != trip.current_revision_id:
+            raise UndoTargetNotCurrentError(
+                target_revision_id=target_revision_id,
+                current_revision_id=trip.current_revision_id,
+            )
+        if target_revision.source_type != RevisionSourceType.REPLAN_PATCH.value:
+            raise RevisionNotUndoableError(target_revision_id)
         if target_revision.parent_revision_id is None:
             from .errors import InvalidRevisionOperationError
 
@@ -592,30 +686,77 @@ def build_replan_request_digest_payload(payload: PersistedReplanRequest) -> dict
     }
 
 
-def build_replan_proposal_metadata(
+def utc_now_datetime() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def format_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def sanitize_replan_preview_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    sanitized = copy.deepcopy(snapshot)
+    trip_intent = sanitized.get("trip_intent")
+    if isinstance(trip_intent, dict):
+        if trip_intent.get("latest_follow_up_text") is not None:
+            trip_intent["latest_follow_up_text"] = "[redacted]"
+        interpretation = trip_intent.get("follow_up_interpretation")
+        if isinstance(interpretation, dict):
+            interpretation["raw_text"] = "[redacted]"
+    assumptions = sanitized.get("planning_assumptions")
+    if isinstance(assumptions, dict):
+        interpretation = assumptions.get("follow_up_interpretation")
+        if isinstance(interpretation, dict):
+            interpretation["raw_text"] = "[redacted]"
+    return sanitized
+
+
+def build_mutation_validation_report(
     *,
-    base_revision_id: str,
-    req_digest: str,
-    itinerary_snapshot: dict[str, Any],
-) -> MutationProposalMetadata:
-    proposed_content_digest = itinerary_content_digest(itinerary_snapshot)
-    proposal_digest = request_digest(
-        {
-            "operation": "replan_follow_up_preview",
-            "source_type": RevisionSourceType.REPLAN_PATCH.value,
-            "base_revision_id": base_revision_id,
-            "request_digest": req_digest,
-            "proposed_content_digest": proposed_content_digest,
-        }
-    )
-    return MutationProposalMetadata(
-        operation_type="apply_replan_follow_up",
-        source_type=RevisionSourceType.REPLAN_PATCH.value,
-        base_revision_id=base_revision_id,
-        request_digest=req_digest,
-        proposed_content_digest=proposed_content_digest,
-        proposal_digest=proposal_digest,
-    )
+    itinerary: ItineraryResponse,
+    trace: PlannerTrace,
+) -> dict[str, Any]:
+    schema_valid = {"code": "RESULT_SCHEMA_VALID", "status": "pass", "evidence": {}}
+    fixed_events = {
+        "code": "FIXED_EVENTS_PRESERVED",
+        "status": "not_applicable",
+        "evidence": {"reason": "Preview is validated from the compiled itinerary snapshot."},
+    }
+    lineage_present = {
+        "code": "PLANNER_LINEAGE_PRESENT",
+        "status": "pass"
+        if trace.planner_run_id
+        and trace.planner_version
+        and trace.schema_version
+        and trace.trace_digest
+        else "fail",
+        "evidence": {
+            "planner_run_id": trace.planner_run_id,
+            "planner_version": trace.planner_version,
+            "trace_schema_version": trace.schema_version,
+            "trace_digest": trace.trace_digest,
+        },
+    }
+    invariant_results = [
+        schema_valid,
+        fixed_events,
+        no_schedule_overlap(itinerary).model_dump(mode="json"),
+        within_day_availability(itinerary).model_dump(mode="json"),
+        within_arrival_departure_boundaries(itinerary).model_dump(mode="json"),
+        no_duplicate_scheduled_place(itinerary).model_dump(mode="json"),
+        missing_route_not_zero(trace).model_dump(mode="json"),
+        lineage_present,
+    ]
+    return {
+        "schema_version": "1.0",
+        "critical_passed": all(item["status"] != "fail" for item in invariant_results),
+        "invariants": invariant_results,
+    }
+
+
+def assert_mutation_validation_passed(validation_report: dict[str, Any]) -> None:
+    if not validation_report.get("critical_passed"):
+        raise InvalidRevisionOperationError("Mutation proposal failed deterministic validation.")
 
 
 def serialize_itinerary_snapshot(itinerary: ItineraryResponse) -> dict[str, Any]:

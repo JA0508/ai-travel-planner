@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildPersistedTripRef,
-  buildReplanIdempotencyKey,
+  buildReplanProposalIdempotencyKey,
   describeTripPersistence,
   markDirty,
   parsePersistedTripRef,
@@ -71,13 +71,13 @@ test("saved and dirty states have stable user-facing labels", () => {
   assert.equal(describeTripPersistence(dirty), "Unsaved changes · Revision 1");
 });
 
-test("replan idempotency key is stable without leaking raw follow-up text", () => {
-  const first = buildReplanIdempotencyKey("rev_1", "第二天加一个轻松街区");
-  const second = buildReplanIdempotencyKey("rev_1", " 第二天加一个轻松街区 ");
-  const differentBase = buildReplanIdempotencyKey("rev_2", "第二天加一个轻松街区");
+test("replan proposal idempotency key is stable without leaking raw follow-up text", () => {
+  const first = buildReplanProposalIdempotencyKey("prop_1", "digest_abc");
+  const second = buildReplanProposalIdempotencyKey("prop_1", "digest_abc");
+  const differentProposal = buildReplanProposalIdempotencyKey("prop_2", "digest_abc");
 
   assert.equal(first, second);
-  assert.notEqual(first, differentBase);
+  assert.notEqual(first, differentProposal);
   assert.equal(first.includes("第二天"), false);
-  assert.match(first, /^replan:rev_1:[0-9a-f]+$/);
+  assert.match(first, /^replan-proposal:prop_1:[0-9a-f]+$/);
 });

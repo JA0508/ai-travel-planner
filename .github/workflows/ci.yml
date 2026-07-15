@@ -60,3 +60,6 @@ jobs:
 
       - name: Planner evaluation
         run: python -m tools.run_planner_evaluation --ci
+
+      - name: Trip mutation evaluation
+        run: python -m tools.run_trip_mutation_evaluation --ci

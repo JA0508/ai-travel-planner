@@ -12,7 +12,7 @@ export type RouteWorkspaceRefreshPolicy = {
   refreshEndpoint:
     | "refreshItinerarySurfaces"
     | "applyCompletionTask"
-    | "applyPersistedReplan"
+    | "applyPersistedReplanProposal"
     | "undoPersistedRevision"
     | null;
   refreshTiming: "none" | "after_local_patch" | "during_backend_mutation";
@@ -48,7 +48,7 @@ export const routeWorkspaceRefreshPolicies: Record<
   backend_replan_apply: {
     mutationKind: "backend_replan_apply",
     itineraryUpdate: "backend_authoritative",
-    refreshEndpoint: "applyPersistedReplan",
+    refreshEndpoint: "applyPersistedReplanProposal",
     refreshTiming: "during_backend_mutation",
     failureBehavior: "use_backend_error",
     refreshedSurfaces: [

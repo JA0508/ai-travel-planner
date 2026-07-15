@@ -37,12 +37,13 @@ test("saved backend replan apply is server-authoritative and idempotent", () => 
   const pageSource = readFileSync(new URL("../../app/page.tsx", import.meta.url), "utf8");
 
   assert.equal(policy.itineraryUpdate, "backend_authoritative");
-  assert.equal(policy.refreshEndpoint, "applyPersistedReplan");
+  assert.equal(policy.refreshEndpoint, "applyPersistedReplanProposal");
   assert.equal(policy.refreshTiming, "during_backend_mutation");
   assert.match(pageSource, /previewPersistedReplan/);
-  assert.match(pageSource, /applyPersistedReplan/);
-  assert.match(pageSource, /buildReplanIdempotencyKey/);
-  assert.match(pageSource, /expected_preview_digest/);
+  assert.match(pageSource, /applyPersistedReplanProposal/);
+  assert.match(pageSource, /buildReplanProposalIdempotencyKey/);
+  assert.match(pageSource, /proposal_digest/);
+  assert.doesNotMatch(pageSource, /expected_preview_digest/);
 });
 
 test("saved backend replan undo is a server-authoritative compensating revision", () => {

@@ -10,6 +10,7 @@ DEFAULT_OPENAI_INTENT_TIMEOUT_SECONDS = 20.0
 DEFAULT_OPENAI_DISAMBIGUATION_TIMEOUT_SECONDS = 15.0
 DEFAULT_OPENAI_INTENT_MODEL = "gpt-4o-mini"
 DEFAULT_TRIP_STORE_BUSY_TIMEOUT_SECONDS = 5.0
+DEFAULT_TRIP_REPLAN_PROPOSAL_TTL_SECONDS = 900.0
 
 
 def parse_cors_allow_origins(raw_value: str | None) -> list[str]:
@@ -61,7 +62,18 @@ def get_trip_persistence_configuration_summary() -> dict[str, Any]:
         "allowed_origins": parse_cors_allow_origins(
             os.getenv("TRIP_ALLOWED_ORIGINS") or os.getenv("CORS_ALLOW_ORIGINS")
         ),
+        "replan_proposal_ttl_seconds": parse_positive_float_env(
+            "TRIP_REPLAN_PROPOSAL_TTL_SECONDS",
+            DEFAULT_TRIP_REPLAN_PROPOSAL_TTL_SECONDS,
+        ),
     }
+
+
+def get_trip_replan_proposal_ttl_seconds() -> float:
+    return parse_positive_float_env(
+        "TRIP_REPLAN_PROPOSAL_TTL_SECONDS",
+        DEFAULT_TRIP_REPLAN_PROPOSAL_TTL_SECONDS,
+    )
 
 
 def parse_positive_float_env(name: str, default: float) -> float:

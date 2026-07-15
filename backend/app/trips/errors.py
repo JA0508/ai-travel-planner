@@ -99,12 +99,115 @@ class InvalidRevisionOperationError(TripError):
         )
 
 
-class MutationProposalMismatchError(TripError):
+class MutationProposalNotFoundError(TripError):
+    def __init__(self, proposal_id: str) -> None:
+        super().__init__(
+            code="mutation_proposal_not_found",
+            message="Mutation proposal was not found.",
+            status_code=404,
+            context={"proposal_id": proposal_id},
+        )
+
+
+class MutationProposalExpiredError(TripError):
+    def __init__(self, proposal_id: str) -> None:
+        super().__init__(
+            code="mutation_proposal_expired",
+            message="Mutation proposal has expired.",
+            status_code=409,
+            context={"proposal_id": proposal_id},
+        )
+
+
+class MutationProposalInvalidatedError(TripError):
+    def __init__(self, proposal_id: str) -> None:
+        super().__init__(
+            code="mutation_proposal_invalidated",
+            message="Mutation proposal is no longer valid.",
+            status_code=409,
+            context={"proposal_id": proposal_id},
+        )
+
+
+class MutationProposalCancelledError(TripError):
+    def __init__(self, proposal_id: str) -> None:
+        super().__init__(
+            code="mutation_proposal_cancelled",
+            message="Mutation proposal was cancelled.",
+            status_code=409,
+            context={"proposal_id": proposal_id},
+        )
+
+
+class StaleMutationProposalError(TripError):
+    def __init__(
+        self,
+        *,
+        trip_id: str,
+        proposal_id: str,
+        base_revision_id: str,
+        current_revision_id: str,
+    ) -> None:
+        super().__init__(
+            code="stale_mutation_proposal",
+            message="The mutation proposal is based on a stale revision.",
+            status_code=409,
+            context={
+                "trip_id": trip_id,
+                "proposal_id": proposal_id,
+                "base_revision_id": base_revision_id,
+                "current_revision_id": current_revision_id,
+            },
+        )
+
+
+class ProposalDigestMismatchError(TripError):
     def __init__(self) -> None:
         super().__init__(
-            code="mutation_proposal_mismatch",
-            message="The applied mutation no longer matches the previewed proposal.",
+            code="proposal_digest_mismatch",
+            message="Mutation proposal digest does not match.",
             status_code=409,
+        )
+
+
+class ProposalIntegrityViolationError(TripError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="proposal_integrity_violation",
+            message="Mutation proposal integrity check failed.",
+            status_code=409,
+        )
+
+
+class PreviewApplyMismatchError(TripError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="preview_apply_mismatch",
+            message="Applied revision content does not match preview content.",
+            status_code=409,
+        )
+
+
+class RevisionNotUndoableError(TripError):
+    def __init__(self, revision_id: str) -> None:
+        super().__init__(
+            code="revision_not_undoable",
+            message="Revision is not undoable.",
+            status_code=409,
+            context={"revision_id": revision_id},
+        )
+
+
+class UndoTargetNotCurrentError(TripError):
+    def __init__(self, *, target_revision_id: str, current_revision_id: str) -> None:
+        super().__init__(
+            code="undo_target_not_current",
+            message="Only the current undoable revision can be undone.",
+            status_code=409,
+            context={
+                "target_revision_id": target_revision_id,
+                "current_revision_id": current_revision_id,
+            },
         )
 
 

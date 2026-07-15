@@ -22,8 +22,10 @@ export const TRIP_API_ENDPOINTS = {
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/completion-task`),
   previewPersistedReplan: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/replan/preview`),
-  applyPersistedReplan: (tripId: string) =>
-    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/replan`),
+  applyPersistedReplanProposal: (tripId: string, proposalId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/replan/proposals/${encodeURIComponent(proposalId)}/apply`,
+    ),
   undoPersistedRevision: (tripId: string, revisionId: string) =>
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/revisions/${encodeURIComponent(revisionId)}/undo`,
