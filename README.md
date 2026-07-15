@@ -317,12 +317,27 @@ Important backend settings include:
 - `OPENAI_INTENT_TIMEOUT_SECONDS`
 - `OPENAI_DISAMBIGUATION_TIMEOUT_SECONDS`
 - `LOG_LEVEL`
+- `TRIP_STORE_MODE`
+- `TRIP_STORE_PATH`
+- `TRIP_STORE_BUSY_TIMEOUT_SECONDS`
+- `TRIP_CAPABILITY_COOKIE_SECURE`
+- `TRIP_ALLOWED_ORIGINS`
 
 Do not commit `backend/.env`.
 
 Development can run with fallback POI discovery when provider credentials are not
 available. Production should use explicit provider configuration and strict
 readiness behavior.
+
+TripRevision persistence defaults to SQLite in development. Local database,
+WAL, and SHM files are ignored by Git. The backend stores only a hash of the
+anonymous trip capability and sends the raw capability in an HttpOnly,
+SameSite=Strict cookie. The browser stores only `{schemaVersion, tripId,
+currentRevisionId}` in localStorage, never the capability or the full itinerary.
+
+Anonymous capability access protects private trip URLs from casual reads, but it
+is not a substitute for account authentication, formal authorization, or
+multi-user permissions.
 
 ### 3. Configure the frontend
 
@@ -395,10 +410,12 @@ Run clean, reproducible checks before marking a feature ready for review.
 cd frontend
 npm ci
 npm run typecheck
+npm run test:workspace
 npm run build
 ```
 
-Run any feature-specific frontend tests defined by the current branch or task.
+`npm run test:workspace` covers the route workspace characterization tests and
+Trip persistence state/storage helpers.
 
 ### Backend
 
@@ -450,6 +467,10 @@ Backend responses expose:
 The frontend sends request IDs for JSON API operations.
 
 Supported mutation paths may use `X-Idempotency-Key` to prevent duplicate execution.
+
+Persisted TripRevision write endpoints require `X-Idempotency-Key`. Safe retry is
+resolved before stale-base validation so a lost response can be retried without
+creating a duplicate revision.
 
 ### Uncertainty semantics
 
@@ -529,9 +550,11 @@ workspace.
 Current limitations include:
 
 - no production-grade user authentication and multi-user persistence
-- no complete TripRevision cloud store
+- TripRevision persistence is local SQLite, not a cloud Trip Library
 - limited source-import pipeline
 - incomplete canonical place/provenance graph
+- some local route edits, local replans, swaps, and undo paths remain Dirty until
+  they are migrated to server-authoritative TripRevision mutations
 - no full booking inbox
 - no production disruption-monitoring infrastructure
 - no offline travel pack

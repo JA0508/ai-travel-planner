@@ -30,6 +30,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Workspace tests
+        run: npm run test:workspace
+
       - name: Build
         run: npm run build
 

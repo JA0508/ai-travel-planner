@@ -551,6 +551,22 @@ def apply_completion_task(
         if cached_response is not None:
             return cached_response
 
+    response = execute_completion_task_action(payload)
+    if idempotency_cache_key is not None:
+        remember_apply_completion_idempotency_response(idempotency_cache_key, response)
+    return response
+
+
+def execute_completion_task_action(
+    payload: CompletionTaskActionRequest,
+) -> CompletionTaskActionResponse:
+    """
+    Execute the deterministic Completion Intelligence mutation once.
+
+    The legacy endpoint wraps this helper with an in-memory idempotency cache.
+    Persisted TripRevision endpoints wrap the same helper with durable
+    idempotency, stale-base checks, and immutable revision creation.
+    """
     intent = current_intent_from_itinerary(payload.itinerary)
     preference_policy = build_preference_policy(intent.preferences if intent is not None else [])
     request_style_signal = build_style_preference_signal(
@@ -588,8 +604,6 @@ def apply_completion_task(
         inserted_item=action_result.inserted_item,
         itinerary=refreshed_itinerary,
     )
-    if idempotency_cache_key is not None:
-        remember_apply_completion_idempotency_response(idempotency_cache_key, response)
     return response
 
 

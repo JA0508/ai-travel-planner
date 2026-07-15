@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+from typing import Any, Protocol
+
+from .models import CreateRevisionResult, TripAggregate, TripRecord, TripRevisionRecord
+
+
+class TripRepository(Protocol):
+    def health_check(self) -> dict[str, Any]:
+        ...
+
+    def create_trip_with_initial_revision(
+        self,
+        *,
+        itinerary_snapshot: dict[str, Any],
+        capability_hash: str,
+        operation_type: str,
+        operation_summary: str,
+        request_digest: str,
+        planner_run_id: str | None,
+        planner_version: str | None,
+        trace_schema_version: str | None,
+        trace_digest: str | None,
+    ) -> TripAggregate:
+        ...
+
+    def get_trip(self, trip_id: str) -> TripRecord:
+        ...
+
+    def get_trip_for_access(self, trip_id: str, capability_hash: str) -> TripRecord:
+        ...
+
+    def get_current_revision(self, trip_id: str) -> TripRevisionRecord:
+        ...
+
+    def get_revision(self, trip_id: str, revision_id: str) -> TripRevisionRecord:
+        ...
+
+    def list_revisions(self, trip_id: str) -> list[TripRevisionRecord]:
+        ...
+
+    def create_revision(
+        self,
+        *,
+        trip_id: str,
+        capability_hash: str,
+        base_revision_id: str,
+        itinerary_snapshot: dict[str, Any],
+        source_type: str,
+        operation_type: str,
+        operation_summary: str,
+        operation_metadata: dict[str, Any],
+        request_digest: str,
+        idempotency_key_hash: str,
+        planner_run_id: str | None = None,
+        planner_version: str | None = None,
+        trace_schema_version: str | None = None,
+        trace_digest: str | None = None,
+        restored_from_revision_id: str | None = None,
+    ) -> CreateRevisionResult:
+        ...

@@ -65,8 +65,11 @@ export const routeWorkspacePageStateOwnership = {
   travelMode: "draft",
   travelModeModalOpen: "ui",
   tripDays: "draft",
+  tripPersistence: "durable",
   tripText: "draft",
   userIntentState: "durable",
+  revisionHistory: "server",
+  versionHistoryOpen: "ui",
 } as const satisfies Record<string, WorkspaceStateOwner>;
 
 export const routeWorkspaceFeatureStateOwnership = {

@@ -10,6 +10,16 @@ export const TRIP_API_ENDPOINTS = {
   previewRouteSegments: buildApiUrl("/preview-route-segments"),
   previewPoiDetail: buildApiUrl("/preview-poi-detail"),
   planFromText: buildApiUrl("/plan-trip-from-text"),
+  planTrip: buildApiUrl("/trips/plan"),
+  getTrip: (tripId: string) => buildApiUrl(`/trips/${encodeURIComponent(tripId)}`),
+  listTripRevisions: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/revisions`),
+  restoreTripRevision: (tripId: string, revisionId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/revisions/${encodeURIComponent(revisionId)}/restore`,
+    ),
+  applyPersistedCompletionTask: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/completion-task`),
   parseTripIntent: buildApiUrl("/parse-trip-intent"),
   parsePlanningState: buildApiUrl("/parse-planning-state"),
   previewAvailability: buildApiUrl("/preview-availability"),

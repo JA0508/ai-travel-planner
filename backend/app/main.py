@@ -18,6 +18,7 @@ from app.services.poi_discovery_provider import (
     enforce_poi_discovery_configuration,
     get_poi_discovery_capability,
 )
+from app.api.routes.trips import persistence_readiness
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 configure_logging()
@@ -29,7 +30,7 @@ app = FastAPI(title="Travel Itinerary Planner API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=parse_cors_allow_origins(os.getenv("CORS_ALLOW_ORIGINS")),
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -71,4 +72,5 @@ def readiness() -> dict:
         "status": "ok" if poi_capability.production_ready else "failed",
         "poi_discovery": poi_capability.to_dict(),
         "runtime": get_runtime_configuration_summary(),
+        "persistence": persistence_readiness(),
     }
