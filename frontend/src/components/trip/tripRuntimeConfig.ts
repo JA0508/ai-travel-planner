@@ -40,6 +40,24 @@ export const TRIP_API_ENDPOINTS = {
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/candidates/${encodeURIComponent(candidateId)}/decisions`,
     ),
+  createTextImport: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/imports/text`),
+  getTextImport: (tripId: string, importJobId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}`,
+    ),
+  getTextImportArtifact: (tripId: string, importJobId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/artifact`,
+    ),
+  recordTextImportDecision: (tripId: string, importJobId: string, mentionId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/mentions/${encodeURIComponent(mentionId)}/decisions`,
+    ),
+  commitTextImport: (tripId: string, importJobId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/commit`,
+    ),
   undoPersistedRevision: (tripId: string, revisionId: string) =>
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/revisions/${encodeURIComponent(revisionId)}/undo`,

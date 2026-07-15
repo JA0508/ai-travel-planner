@@ -11,6 +11,9 @@ DEFAULT_OPENAI_DISAMBIGUATION_TIMEOUT_SECONDS = 15.0
 DEFAULT_OPENAI_INTENT_MODEL = "gpt-4o-mini"
 DEFAULT_TRIP_STORE_BUSY_TIMEOUT_SECONDS = 5.0
 DEFAULT_TRIP_REPLAN_PROPOSAL_TTL_SECONDS = 900.0
+DEFAULT_IMPORT_TEXT_MAX_BYTES = 100 * 1024
+DEFAULT_IMPORT_MAX_MENTIONS = 60
+DEFAULT_IMPORT_MAX_RESOLUTION_CANDIDATES = 5
 
 
 def parse_cors_allow_origins(raw_value: str | None) -> list[str]:
@@ -76,6 +79,62 @@ def get_trip_replan_proposal_ttl_seconds() -> float:
     )
 
 
+def get_import_text_enabled() -> bool:
+    return os.getenv("IMPORT_TEXT_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
+
+
+def get_import_text_max_bytes() -> int:
+    return parse_positive_int_env("IMPORT_TEXT_MAX_BYTES", DEFAULT_IMPORT_TEXT_MAX_BYTES)
+
+
+def get_import_artifact_store_mode() -> str:
+    return os.getenv("IMPORT_ARTIFACT_STORE_MODE", "local").strip().lower() or "local"
+
+
+def get_import_artifact_root() -> str:
+    return os.getenv("IMPORT_ARTIFACT_ROOT", "data/import-artifacts").strip() or "data/import-artifacts"
+
+
+def get_import_processing_mode() -> str:
+    return os.getenv("IMPORT_PROCESSING_MODE", "inline").strip().lower() or "inline"
+
+
+def get_import_extractor_mode() -> str:
+    return os.getenv("IMPORT_EXTRACTOR_MODE", "deterministic").strip().lower() or "deterministic"
+
+
+def get_import_resolver_mode() -> str:
+    return os.getenv("IMPORT_RESOLVER_MODE", "deterministic").strip().lower() or "deterministic"
+
+
+def get_import_max_mentions() -> int:
+    return parse_positive_int_env("IMPORT_MAX_MENTIONS", DEFAULT_IMPORT_MAX_MENTIONS)
+
+
+def get_import_max_resolution_candidates() -> int:
+    return parse_positive_int_env(
+        "IMPORT_MAX_RESOLUTION_CANDIDATES",
+        DEFAULT_IMPORT_MAX_RESOLUTION_CANDIDATES,
+    )
+
+
+def get_import_configuration_summary() -> dict[str, Any]:
+    from app.imports.domain import IMPORT_EXTRACTION_SCHEMA_VERSION
+
+    return {
+        "text_enabled": get_import_text_enabled(),
+        "processing_mode": get_import_processing_mode(),
+        "artifact_store": get_import_artifact_store_mode(),
+        "extraction_schema_version": IMPORT_EXTRACTION_SCHEMA_VERSION,
+        "extractor_mode": get_import_extractor_mode(),
+        "resolver_mode": get_import_resolver_mode(),
+        "max_text_bytes": get_import_text_max_bytes(),
+        "max_mentions": get_import_max_mentions(),
+        "max_resolution_candidates": get_import_max_resolution_candidates(),
+        "status": "healthy",
+    }
+
+
 def parse_positive_float_env(name: str, default: float) -> float:
     raw_value = os.getenv(name)
     if raw_value is None or not raw_value.strip():
@@ -83,6 +142,19 @@ def parse_positive_float_env(name: str, default: float) -> float:
 
     try:
         parsed = float(raw_value)
+    except ValueError:
+        return default
+
+    return parsed if parsed > 0 else default
+
+
+def parse_positive_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+
+    try:
+        parsed = int(raw_value)
     except ValueError:
         return default
 
@@ -113,4 +185,5 @@ def get_runtime_configuration_summary() -> dict[str, Any]:
             "disambiguation_timeout_seconds": get_openai_disambiguation_timeout_seconds(),
         },
         "trip_persistence": get_trip_persistence_configuration_summary(),
+        "imports": get_import_configuration_summary(),
     }

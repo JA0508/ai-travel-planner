@@ -63,3 +63,6 @@ jobs:
 
       - name: Trip mutation evaluation
         run: python -m tools.run_trip_mutation_evaluation --ci
+
+      - name: Import evaluation
+        run: python -m tools.run_import_evaluation --ci

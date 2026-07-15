@@ -48,6 +48,7 @@ import {
   type CandidateWorkspaceState,
   type TripCandidate,
 } from "@/features/trip-workspace/tripCandidates";
+import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
 import { ConversationalReplanPanel } from "@/components/trip/replanning/ConversationalReplanPanel";
 import type {
   ReplanExecutionResult,
@@ -5129,6 +5130,10 @@ function buildRegenerationSemanticsViewModel(
                         onReject={(candidate) => void recordCandidateDecision(candidate, "reject", "USER_REJECTED")}
                         onDefer={(candidate) => void recordCandidateDecision(candidate, "defer", "USER_DEFERRED")}
                         onRestore={(candidate) => void recordCandidateDecision(candidate, "restore_pending", "RESTORED_TO_PENDING")}
+                      />
+                      <ImportReviewWorkspace
+                        tripPersistence={tripPersistence}
+                        onCandidatesChanged={(tripId) => void refreshCandidates(tripId)}
                       />
                       {result.completion_intelligence.score_breakdown ? (
                         <details
