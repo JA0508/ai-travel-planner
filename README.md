@@ -136,6 +136,7 @@ The repository currently contains a substantial planning foundation:
 - provider fallback behavior
 - request IDs and process-time observability
 - idempotency support for selected mutation paths
+- persisted replan proposal preview/apply integrity
 - fixture-driven product verification
 
 > Development branches may contain additional in-review capabilities. Required CI
@@ -423,6 +424,7 @@ From the repository root:
 
 ```bash
 backend/.venv/bin/python -m unittest discover -s backend/tests -t backend
+backend/.venv/bin/python -m tools.run_trip_mutation_evaluation --ci
 ```
 
 Or, with the backend virtual environment activated:
@@ -472,6 +474,16 @@ Persisted TripRevision write endpoints require `X-Idempotency-Key`. Safe retry i
 resolved before stale-base validation so a lost response can be retried without
 creating a duplicate revision.
 
+Persisted conversational replan uses a two-step proposal contract:
+
+```text
+preview follow-up text -> persisted TripMutationProposal -> apply proposal digest
+```
+
+Apply does not receive raw follow-up text and does not rerun the planner. The
+server validates proposal lifecycle, expiry, base revision, digest integrity, and
+stored preview content before creating the immutable `TripRevision`.
+
 ### Uncertainty semantics
 
 The product distinguishes:
@@ -495,6 +507,7 @@ Missing or stale data must not be presented as confirmed.
 - page-level orchestration decomposition
 - Trip and TripRevision persistence
 - planner trace and deterministic evaluation corpus
+- persisted mutation proposal integrity for conversational replan
 
 ### Import-to-Executable v1
 
@@ -553,7 +566,7 @@ Current limitations include:
 - TripRevision persistence is local SQLite, not a cloud Trip Library
 - limited source-import pipeline
 - incomplete canonical place/provenance graph
-- some local route edits, local replans, swaps, and undo paths remain Dirty until
+- typed route edits, swaps, manual reorder, and selected undo paths remain Dirty until
   they are migrated to server-authoritative TripRevision mutations
 - no full booking inbox
 - no production disruption-monitoring infrastructure

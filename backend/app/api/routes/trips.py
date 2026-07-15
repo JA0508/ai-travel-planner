@@ -11,6 +11,7 @@ from app.trips.access import capability_cookie_name
 from app.trips.dependencies import get_trip_persistence_service, get_trip_repository
 from app.trips.errors import TripError
 from app.trips.schemas import (
+    ApplyPersistedReplanProposalRequest,
     PersistedCompletionTaskActionRequest,
     PersistedCompletionTaskActionResponse,
     PersistedReplanRequest,
@@ -131,12 +132,13 @@ def preview_persisted_replan(
 
 
 @router.post(
-    "/{trip_id}/replan",
+    "/{trip_id}/replan/proposals/{proposal_id}/apply",
     response_model=PersistedReplanResponse,
 )
-def apply_persisted_replan(
+def apply_persisted_replan_proposal(
     trip_id: str,
-    payload: PersistedReplanRequest,
+    proposal_id: str,
+    payload: ApplyPersistedReplanProposalRequest,
     request: Request,
     x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
 ) -> PersistedReplanResponse | JSONResponse:
@@ -144,8 +146,9 @@ def apply_persisted_replan(
     if origin_error is not None:
         return origin_error
     try:
-        return get_trip_persistence_service().apply_replan(
+        return get_trip_persistence_service().apply_replan_proposal(
             trip_id=trip_id,
+            proposal_id=proposal_id,
             capability=get_trip_capability_from_request(request, trip_id),
             idempotency_key=x_idempotency_key,
             payload=payload,

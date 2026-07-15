@@ -13,22 +13,32 @@ from app.trips.digests import (
     canonical_json,
     itinerary_content_digest,
     lineage_digest,
+    mutation_proposal_digest,
 )
 from app.trips.errors import (
     IdempotencyConflictError,
     ImmutableRevisionViolationError,
+    MutationProposalCancelledError,
+    MutationProposalExpiredError,
+    MutationProposalInvalidatedError,
+    MutationProposalNotFoundError,
     PersistenceSchemaMismatchError,
     PersistenceTemporarilyUnavailableError,
+    ProposalDigestMismatchError,
+    ProposalIntegrityViolationError,
     RevisionNotFoundError,
     StaleBaseRevisionError,
+    StaleMutationProposalError,
     TripAccessDeniedError,
     TripNotFoundError,
 )
 from app.trips.models import (
     CreateRevisionResult,
+    ProposalStatus,
     RevisionSourceType,
     TripAggregate,
     TripLifecycleStatus,
+    TripMutationProposalRecord,
     TripRecord,
     TripRevisionRecord,
 )
@@ -204,6 +214,224 @@ class SQLiteTripRepository:
                 idempotent_replay=True,
             )
 
+    def create_mutation_proposal(
+        self,
+        *,
+        proposal: TripMutationProposalRecord,
+    ) -> TripMutationProposalRecord:
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO trip_mutation_proposals(
+                  id, trip_id, base_revision_id, proposal_schema_version, source_type,
+                  operation_type, request_digest, instruction_digest,
+                  preview_snapshot_schema_version, preview_snapshot_json,
+                  preview_content_digest, proposal_digest, planner_run_id, planner_version,
+                  trace_schema_version, trace_digest, validation_report_json, status,
+                  expires_at, applied_revision_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    proposal.id,
+                    proposal.trip_id,
+                    proposal.base_revision_id,
+                    proposal.proposal_schema_version,
+                    proposal.source_type,
+                    proposal.operation_type,
+                    proposal.request_digest,
+                    proposal.instruction_digest,
+                    proposal.preview_snapshot_schema_version,
+                    canonical_json(proposal.preview_snapshot),
+                    proposal.preview_content_digest,
+                    proposal.proposal_digest,
+                    proposal.planner_run_id,
+                    proposal.planner_version,
+                    proposal.trace_schema_version,
+                    proposal.trace_digest,
+                    canonical_json(proposal.validation_report),
+                    proposal.status,
+                    proposal.expires_at,
+                    proposal.applied_revision_id,
+                    proposal.created_at,
+                    proposal.updated_at,
+                ),
+            )
+        return self.get_mutation_proposal(trip_id=proposal.trip_id, proposal_id=proposal.id)
+
+    def get_mutation_proposal(
+        self,
+        *,
+        trip_id: str,
+        proposal_id: str,
+    ) -> TripMutationProposalRecord:
+        with closing(self.connection_factory()) as connection:
+            proposal = self._get_proposal_in_connection(connection, trip_id, proposal_id)
+        return proposal
+
+    def apply_mutation_proposal(
+        self,
+        *,
+        trip_id: str,
+        capability_hash: str,
+        proposal_id: str,
+        base_revision_id: str,
+        proposal_digest: str,
+        now: str,
+        operation_summary: str,
+        operation_metadata: dict[str, Any],
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CreateRevisionResult:
+        revision_id = generate_revision_id()
+        operation_id = generate_operation_id()
+
+        with self._transaction() as connection:
+            trip_row = connection.execute("SELECT * FROM trips WHERE id = ?", (trip_id,)).fetchone()
+            if trip_row is None:
+                raise TripNotFoundError(trip_id)
+            trip = row_to_trip(trip_row)
+            if trip.capability_hash != capability_hash:
+                raise TripAccessDeniedError()
+
+            idempotency_row = connection.execute(
+                """
+                SELECT * FROM idempotency_records
+                WHERE trip_id = ? AND idempotency_key_hash = ?
+                """,
+                (trip_id, idempotency_key_hash),
+            ).fetchone()
+            if idempotency_row is not None:
+                if idempotency_row["request_digest"] != request_digest:
+                    raise IdempotencyConflictError()
+                return CreateRevisionResult(
+                    revision=self._get_revision_in_connection(
+                        connection,
+                        trip_id,
+                        idempotency_row["result_revision_id"],
+                    ),
+                    idempotent_replay=True,
+                )
+
+            proposal = self._get_proposal_in_connection(connection, trip_id, proposal_id)
+            if proposal.applied_revision_id is not None:
+                return CreateRevisionResult(
+                    revision=self._get_revision_in_connection(
+                        connection,
+                        trip_id,
+                        proposal.applied_revision_id,
+                    ),
+                    idempotent_replay=True,
+                )
+
+            if proposal.status == ProposalStatus.EXPIRED.value:
+                raise MutationProposalExpiredError(proposal_id)
+            if proposal.status == ProposalStatus.CANCELLED.value:
+                raise MutationProposalCancelledError(proposal_id)
+            if proposal.status == ProposalStatus.INVALIDATED.value:
+                raise MutationProposalInvalidatedError(proposal_id)
+            if proposal.status != ProposalStatus.PENDING.value:
+                raise ProposalIntegrityViolationError()
+
+            if now >= proposal.expires_at:
+                connection.execute(
+                    """
+                    UPDATE trip_mutation_proposals
+                    SET status = 'expired', updated_at = ?
+                    WHERE id = ? AND trip_id = ?
+                    """,
+                    (now, proposal_id, trip_id),
+                )
+                raise MutationProposalExpiredError(proposal_id)
+
+            if proposal.base_revision_id != base_revision_id:
+                raise ProposalDigestMismatchError()
+            if proposal.proposal_digest != proposal_digest:
+                raise ProposalDigestMismatchError()
+            self._assert_proposal_integrity(proposal)
+
+            current_revision = self._get_revision_in_connection(
+                connection,
+                trip_id,
+                trip.current_revision_id,
+            )
+            if current_revision.id != proposal.base_revision_id:
+                raise StaleMutationProposalError(
+                    trip_id=trip_id,
+                    proposal_id=proposal_id,
+                    base_revision_id=proposal.base_revision_id,
+                    current_revision_id=current_revision.id,
+                )
+
+            content_digest = itinerary_content_digest(proposal.preview_snapshot)
+            if content_digest != proposal.preview_content_digest:
+                raise ProposalIntegrityViolationError()
+            new_lineage_digest = lineage_digest(
+                parent_lineage_digest=current_revision.lineage_digest,
+                source_type=proposal.source_type,
+                operation_metadata=operation_metadata,
+                content_digest=content_digest,
+            )
+            revision_number = trip.revision_count + 1
+            self._insert_revision(
+                connection,
+                revision_id=revision_id,
+                trip_id=trip_id,
+                revision_number=revision_number,
+                parent_revision_id=current_revision.id,
+                base_revision_id=proposal.base_revision_id,
+                source_type=proposal.source_type,
+                itinerary_snapshot=proposal.preview_snapshot,
+                content_digest=content_digest,
+                parent_lineage_digest=current_revision.lineage_digest,
+                lineage_digest_value=new_lineage_digest,
+                planner_run_id=proposal.planner_run_id,
+                planner_version=proposal.planner_version,
+                trace_schema_version=proposal.trace_schema_version,
+                trace_digest=proposal.trace_digest,
+                restored_from_revision_id=None,
+                created_at=now,
+            )
+            self._insert_operation(
+                connection,
+                operation_id=operation_id,
+                trip_id=trip_id,
+                revision_id=revision_id,
+                base_revision_id=proposal.base_revision_id,
+                source_type=proposal.source_type,
+                operation_type=proposal.operation_type,
+                request_digest=request_digest,
+                idempotency_key_hash=idempotency_key_hash,
+                summary=operation_summary,
+                created_at=now,
+            )
+            connection.execute(
+                """
+                INSERT INTO idempotency_records(trip_id, idempotency_key_hash, request_digest, result_revision_id, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (trip_id, idempotency_key_hash, request_digest, revision_id, now),
+            )
+            connection.execute(
+                """
+                UPDATE trip_mutation_proposals
+                SET status = 'applied', applied_revision_id = ?, updated_at = ?
+                WHERE id = ? AND trip_id = ?
+                """,
+                (revision_id, now, proposal_id, trip_id),
+            )
+            connection.execute(
+                """
+                UPDATE trips
+                SET current_revision_id = ?, revision_count = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (revision_id, revision_number, now, trip_id),
+            )
+            return CreateRevisionResult(
+                revision=self._get_revision_in_connection(connection, trip_id, revision_id)
+            )
+
     def create_revision(
         self,
         *,
@@ -337,7 +565,7 @@ class SQLiteTripRepository:
             connection.execute("COMMIT")
         except sqlite3.IntegrityError as exc:
             connection.execute("ROLLBACK")
-            if "immutable_revision_violation" in str(exc):
+            if "immutable_revision_violation" in str(exc) or "immutable_proposal_violation" in str(exc):
                 raise ImmutableRevisionViolationError() from exc
             if "schema_migrations" in str(exc):
                 raise PersistenceSchemaMismatchError() from exc
@@ -346,7 +574,7 @@ class SQLiteTripRepository:
             connection.execute("ROLLBACK")
             if "locked" in str(exc).lower() or "busy" in str(exc).lower():
                 raise PersistenceTemporarilyUnavailableError() from exc
-            if "immutable_revision_violation" in str(exc):
+            if "immutable_revision_violation" in str(exc) or "immutable_proposal_violation" in str(exc):
                 raise ImmutableRevisionViolationError() from exc
             raise
         except Exception:
@@ -425,6 +653,40 @@ class SQLiteTripRepository:
             raise RevisionNotFoundError(revision_id)
         return row_to_revision(row)
 
+    def _get_proposal_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        trip_id: str,
+        proposal_id: str,
+    ) -> TripMutationProposalRecord:
+        row = connection.execute(
+            "SELECT * FROM trip_mutation_proposals WHERE id = ? AND trip_id = ?",
+            (proposal_id, trip_id),
+        ).fetchone()
+        if row is None:
+            raise MutationProposalNotFoundError(proposal_id)
+        return row_to_proposal(row)
+
+    def _assert_proposal_integrity(self, proposal: TripMutationProposalRecord) -> None:
+        expected = mutation_proposal_digest(
+            proposal_schema_version=proposal.proposal_schema_version,
+            trip_id=proposal.trip_id,
+            base_revision_id=proposal.base_revision_id,
+            source_type=proposal.source_type,
+            operation_type=proposal.operation_type,
+            request_digest=proposal.request_digest,
+            preview_snapshot_schema_version=proposal.preview_snapshot_schema_version,
+            preview_content_digest=proposal.preview_content_digest,
+            planner_run_id=proposal.planner_run_id,
+            planner_version=proposal.planner_version,
+            trace_schema_version=proposal.trace_schema_version,
+            trace_digest=proposal.trace_digest,
+            validation_report=proposal.validation_report,
+            expires_at=proposal.expires_at,
+        )
+        if expected != proposal.proposal_digest:
+            raise ProposalIntegrityViolationError()
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -461,4 +723,31 @@ def row_to_revision(row: sqlite3.Row) -> TripRevisionRecord:
         trace_digest=row["trace_digest"],
         restored_from_revision_id=row["restored_from_revision_id"],
         created_at=row["created_at"],
+    )
+
+
+def row_to_proposal(row: sqlite3.Row) -> TripMutationProposalRecord:
+    return TripMutationProposalRecord(
+        id=row["id"],
+        trip_id=row["trip_id"],
+        base_revision_id=row["base_revision_id"],
+        proposal_schema_version=row["proposal_schema_version"],
+        source_type=row["source_type"],
+        operation_type=row["operation_type"],
+        request_digest=row["request_digest"],
+        instruction_digest=row["instruction_digest"],
+        preview_snapshot_schema_version=row["preview_snapshot_schema_version"],
+        preview_snapshot=json.loads(row["preview_snapshot_json"]),
+        preview_content_digest=row["preview_content_digest"],
+        proposal_digest=row["proposal_digest"],
+        planner_run_id=row["planner_run_id"],
+        planner_version=row["planner_version"],
+        trace_schema_version=row["trace_schema_version"],
+        trace_digest=row["trace_digest"],
+        validation_report=json.loads(row["validation_report_json"]),
+        status=row["status"],
+        expires_at=row["expires_at"],
+        applied_revision_id=row["applied_revision_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )

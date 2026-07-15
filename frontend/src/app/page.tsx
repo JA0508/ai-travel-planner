@@ -18,7 +18,7 @@ import { useRouteWorkspaceUiState } from "@/features/trip-workspace/routeWorkspa
 import {
   LEGACY_FULL_SESSION_KEY,
   PERSISTED_TRIP_REF_KEY,
-  buildReplanIdempotencyKey,
+  buildReplanProposalIdempotencyKey,
   buildPersistedTripRef,
   describeTripPersistence,
   markDirty,
@@ -823,15 +823,38 @@ type PersistedReplanPreviewResponse = {
   trip: TripMetadata;
   current_revision: TripRevisionMetadata;
   proposal: {
+    id: string;
+    schema_version: string;
     operation_type: string;
     source_type: string;
     base_revision_id: string;
     request_digest: string;
-    proposed_content_digest: string;
+    instruction_digest: string | null;
+    preview_content_digest: string;
     proposal_digest: string;
+    planner_run_id: string | null;
+    planner_version: string | null;
+    trace_schema_version: string | null;
+    trace_digest: string | null;
+    validation_report: Record<string, unknown>;
+    status: string;
+    expires_at: string;
+    applied_revision_id: string | null;
   };
   replan_result: ReplanItineraryResponse;
 };
+
+type PersistedReplanProposalState =
+  | { status: "idle" }
+  | { status: "previewing"; baseRevisionId: string }
+  | {
+      status: "awaiting_apply" | "applying";
+      proposalId: string;
+      baseRevisionId: string;
+      proposalDigest: string;
+      expiresAt: string;
+    }
+  | { status: "expired" | "stale" | "error"; message: string };
 
 type RestoreRevisionResponse = {
   trip: TripMetadata;
@@ -1145,6 +1168,8 @@ export default function HomePage() {
   const [shareFeedbackSaved, setShareFeedbackSaved] = useState(false);
   const [loading, setLoading] = useState(false);
   const [replanning, setReplanning] = useState(false);
+  const [persistedReplanProposal, setPersistedReplanProposal] =
+    useState<PersistedReplanProposalState>({ status: "idle" });
   const [applyingCompletionTaskId, setApplyingCompletionTaskId] = useState<string | null>(null);
   const [completionTaskStatus, setCompletionTaskStatus] = useState<string | null>(null);
   const [recentCompletionTaskItemKey, setRecentCompletionTaskItemKey] = useState<string | null>(null);
@@ -2772,9 +2797,12 @@ function buildRegenerationSemanticsViewModel(
             },
             "按补充要求继续补全失败",
             "无法连接后端接口继续补全这趟旅行。",
-          );
+      );
       if (!result.ok) {
-        if (result.message.includes("stale_base_revision") && persistedBase) {
+        if (
+          persistedBase &&
+          (result.code === "stale_base_revision" || result.code === "stale_mutation_proposal")
+        ) {
           setTripPersistence({
             status: "conflict",
             tripId: persistedBase.tripId,
@@ -2847,6 +2875,10 @@ function buildRegenerationSemanticsViewModel(
     persistedBase: Extract<TripPersistenceState, { status: "saved" }>,
     followUpText: string,
   ): Promise<TripApiResult<PersistedReplanResponse>> {
+    setPersistedReplanProposal({
+      status: "previewing",
+      baseRevisionId: persistedBase.currentRevisionId,
+    });
     const preview = await postTripJson<PersistedReplanPreviewResponse>(
       TRIP_API_ENDPOINTS.previewPersistedReplan(persistedBase.tripId),
       {
@@ -2858,27 +2890,54 @@ function buildRegenerationSemanticsViewModel(
       "无法连接后端接口预览这次调整。",
     );
     if (!preview.ok) {
+      setPersistedReplanProposal({
+        status: preview.code === "stale_mutation_proposal" ? "stale" : "error",
+        message: preview.message,
+      });
       return preview;
     }
+    setPersistedReplanProposal({
+      status: "applying",
+      proposalId: preview.data.proposal.id,
+      baseRevisionId: persistedBase.currentRevisionId,
+      proposalDigest: preview.data.proposal.proposal_digest,
+      expiresAt: preview.data.proposal.expires_at,
+    });
     return postTripJson<PersistedReplanResponse>(
-      TRIP_API_ENDPOINTS.applyPersistedReplan(persistedBase.tripId),
+      TRIP_API_ENDPOINTS.applyPersistedReplanProposal(
+        persistedBase.tripId,
+        preview.data.proposal.id,
+      ),
       {
         base_revision_id: persistedBase.currentRevisionId,
-        follow_up_text: followUpText,
-        auto_fill_sparse_days: true,
-        expected_preview_digest: preview.data.proposal.proposal_digest,
+        proposal_digest: preview.data.proposal.proposal_digest,
       },
       "按补充要求继续补全失败",
       "无法连接后端接口继续补全这趟旅行。",
       {
         headers: {
-          "X-Idempotency-Key": buildReplanIdempotencyKey(
-            persistedBase.currentRevisionId,
-            followUpText,
+          "X-Idempotency-Key": buildReplanProposalIdempotencyKey(
+            preview.data.proposal.id,
+            preview.data.proposal.proposal_digest,
           ),
         },
       },
-    );
+    ).then((apply) => {
+      if (apply.ok) {
+        setPersistedReplanProposal({ status: "idle" });
+      } else {
+        setPersistedReplanProposal({
+          status:
+            apply.code === "mutation_proposal_expired"
+              ? "expired"
+              : apply.code === "stale_mutation_proposal"
+                ? "stale"
+                : "error",
+          message: apply.message,
+        });
+      }
+      return apply;
+    });
   }
 
   async function handleFollowUpReplan() {
@@ -3005,7 +3064,10 @@ function buildRegenerationSemanticsViewModel(
         },
       );
       if (!response.ok) {
-        if (response.message.includes("stale_base_revision")) {
+        if (
+          response.code === "stale_base_revision" ||
+          response.code === "undo_target_not_current"
+        ) {
           setTripPersistence({
             status: "conflict",
             tripId: persistedBase.tripId,

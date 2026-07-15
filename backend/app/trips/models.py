@@ -21,6 +21,14 @@ class RevisionSourceType(str, Enum):
     SYSTEM_MIGRATION = "system_migration"
 
 
+class ProposalStatus(str, Enum):
+    PENDING = "pending"
+    APPLIED = "applied"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+    INVALIDATED = "invalidated"
+
+
 @dataclass(slots=True)
 class TripRecord:
     id: str
@@ -66,6 +74,32 @@ class RevisionOperationRecord:
     actor_type: str
     summary: str
     created_at: str
+
+
+@dataclass(slots=True)
+class TripMutationProposalRecord:
+    id: str
+    trip_id: str
+    base_revision_id: str
+    proposal_schema_version: str
+    source_type: str
+    operation_type: str
+    request_digest: str
+    instruction_digest: str | None
+    preview_snapshot_schema_version: str
+    preview_snapshot: dict[str, Any]
+    preview_content_digest: str
+    proposal_digest: str
+    planner_run_id: str | None
+    planner_version: str | None
+    trace_schema_version: str | None
+    trace_digest: str | None
+    validation_report: dict[str, Any]
+    status: str
+    expires_at: str
+    applied_revision_id: str | None
+    created_at: str
+    updated_at: str
 
 
 @dataclass(slots=True)

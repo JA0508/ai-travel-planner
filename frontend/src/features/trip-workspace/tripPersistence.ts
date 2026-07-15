@@ -137,12 +137,14 @@ export function markDirty(
   };
 }
 
-export function buildReplanIdempotencyKey(baseRevisionId: string, followUpText: string): string {
-  const normalized = followUpText.trim().replace(/\s+/g, " ");
+export function buildReplanProposalIdempotencyKey(
+  proposalId: string,
+  proposalDigest: string,
+): string {
   let hash = 2166136261;
-  for (let index = 0; index < normalized.length; index += 1) {
-    hash ^= normalized.charCodeAt(index);
+  for (let index = 0; index < proposalDigest.length; index += 1) {
+    hash ^= proposalDigest.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return `replan:${baseRevisionId}:${(hash >>> 0).toString(16)}`;
+  return `replan-proposal:${proposalId}:${(hash >>> 0).toString(16)}`;
 }

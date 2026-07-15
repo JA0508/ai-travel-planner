@@ -2,13 +2,13 @@
 
 ## Current phase
 
-Trip + TripRevision Persistence Foundation
+Server-Authoritative Trip Mutation Revisions
 
 ## Active objective
 
-Establish F-001a Trip + TripRevision persistence with immutable revisions,
-optimistic concurrency, idempotent retry, anonymous capability access, and
-restart-safe workspace recovery.
+Harden F-001b replan proposal preview/apply integrity with persisted mutation
+proposals, deterministic validation, stale/expiry protection, idempotent apply,
+and current-only compensating undo.
 
 ## Current stable capabilities
 
@@ -24,14 +24,15 @@ restart-safe workspace recovery.
 - F-006 Route Workspace Architecture Decomposition
 - Source-to-Executable Governance Baseline
 - F-020a Planner Trace and Deterministic Evaluation Baseline
+- F-001a Trip + TripRevision Persistence Foundation
 
 ## In review
 
-- F-001a Trip + TripRevision Persistence Foundation
+- F-001b.1 Persisted Replan Proposal Integrity and Safe Undo Gate
 
 ## Next approved work
 
-1. F-001b migrate remaining high-value mutations to TripRevision
+1. F-001b.2 Typed Route Edit and Swap Mutation Revisions
 2. F-002/F-003 Import-to-Executable
 
 ## Explicitly not in scope

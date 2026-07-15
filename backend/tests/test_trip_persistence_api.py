@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.planner.trace import PlannerInputSnapshot, PlannerResultSummary, PlannerTrace
 from app.schemas import (
     ItineraryResponse,
     PlanningAnchorSource,
@@ -152,11 +152,22 @@ class TripPersistenceApiTests(unittest.TestCase):
                 fake_trace(),
             ),
         ) as execute_replan:
-            first = client.post(
-                f"/trips/{trip_id}/replan",
+            preview = client.post(
+                f"/trips/{trip_id}/replan/preview",
                 json={
                     "base_revision_id": base_revision_id,
                     "follow_up_text": "第二天加一个轻松街区",
+                },
+                headers={"Origin": "http://testserver"},
+            )
+        proposal = preview.json()["proposal"]
+        with patch("app.trips.service.execute_replan_from_itinerary") as execute_replan_apply:
+            execute_replan_apply.side_effect = AssertionError("apply must not execute planner")
+            first = client.post(
+                f"/trips/{trip_id}/replan/proposals/{proposal['id']}/apply",
+                json={
+                    "base_revision_id": base_revision_id,
+                    "proposal_digest": proposal["proposal_digest"],
                 },
                 headers={
                     "Origin": "http://testserver",
@@ -164,10 +175,10 @@ class TripPersistenceApiTests(unittest.TestCase):
                 },
             )
             retried = client.post(
-                f"/trips/{trip_id}/replan",
+                f"/trips/{trip_id}/replan/proposals/{proposal['id']}/apply",
                 json={
                     "base_revision_id": base_revision_id,
-                    "follow_up_text": "第二天加一个轻松街区",
+                    "proposal_digest": proposal["proposal_digest"],
                 },
                 headers={
                     "Origin": "http://testserver",
@@ -175,6 +186,7 @@ class TripPersistenceApiTests(unittest.TestCase):
                 },
             )
 
+        self.assertEqual(preview.status_code, 200)
         self.assertEqual(first.status_code, 200)
         self.assertEqual(retried.status_code, 200)
         self.assertEqual(first.json()["current_revision"]["source_type"], "replan_patch")
@@ -185,6 +197,7 @@ class TripPersistenceApiTests(unittest.TestCase):
         )
         self.assertTrue(retried.json()["persistence"]["idempotent_replay"])
         self.assertEqual(execute_replan.call_count, 1)
+        self.assertEqual(execute_replan_apply.call_count, 0)
 
         history = client.get(f"/trips/{trip_id}/revisions")
         self.assertEqual(len(history.json()["revisions"]), 2)
@@ -227,25 +240,101 @@ class TripPersistenceApiTests(unittest.TestCase):
                 },
                 headers={"Origin": "http://testserver"},
             )
-            mismatched_apply = client.post(
-                f"/trips/{trip_id}/replan",
+        proposal = preview.json()["proposal"]
+        mismatched_apply = client.post(
+            f"/trips/{trip_id}/replan/proposals/{proposal['id']}/apply",
+            json={
+                "base_revision_id": base_revision_id,
+                "proposal_digest": "wrong-preview-digest",
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "bad-preview",
+            },
+        )
+        rejected_raw_apply = client.post(
+            f"/trips/{trip_id}/replan/proposals/{proposal['id']}/apply",
+            json={
+                "base_revision_id": base_revision_id,
+                "follow_up_text": "第二天加一个轻松街区",
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "raw-apply",
+            },
+        )
+
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.json()["proposal"]["status"], "pending")
+        self.assertEqual(preview.json()["proposal"]["source_type"], "replan_patch")
+        self.assertEqual(preview.json()["proposal"]["base_revision_id"], base_revision_id)
+        self.assertEqual(preview.json()["proposal"]["validation_report"]["critical_passed"], True)
+        self.assertNotIn("第二天加一个轻松街区", str(preview.json()["replan_result"]))
+        self.assertEqual(mismatched_apply.status_code, 409)
+        self.assertEqual(mismatched_apply.json()["error"]["code"], "proposal_digest_mismatch")
+        self.assertEqual(rejected_raw_apply.status_code, 422)
+
+        history = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+        self.assertEqual([revision["revision_number"] for revision in history], [1])
+
+    def test_replan_apply_rejects_expired_proposal_without_new_revision(self) -> None:
+        client = TestClient(app)
+        with patch(
+            "app.trips.service.build_itinerary_response",
+            return_value=simple_itinerary(1),
+        ):
+            created = client.post(
+                "/trips/plan",
+                json={
+                    "itinerary_request": {
+                        "city": "上海",
+                        "trip_days": 1,
+                        "scenic_spots": [],
+                        "restaurants": [],
+                    }
+                },
+            )
+        trip_id = created.json()["trip"]["id"]
+        base_revision_id = created.json()["current_revision"]["id"]
+
+        with (
+            patch(
+                "app.trips.service.execute_replan_from_itinerary",
+                return_value=(
+                    ReplanItineraryResponse(
+                        trip_intent=simple_trip_intent(2),
+                        itinerary=simple_itinerary(2, with_intent=True),
+                    ),
+                    fake_trace(),
+                ),
+            ),
+            patch("app.trips.service.get_trip_replan_proposal_ttl_seconds", return_value=-1.0),
+        ):
+            preview = client.post(
+                f"/trips/{trip_id}/replan/preview",
                 json={
                     "base_revision_id": base_revision_id,
                     "follow_up_text": "第二天加一个轻松街区",
-                    "expected_preview_digest": "wrong-preview-digest",
                 },
-                headers={
-                    "Origin": "http://testserver",
-                    "X-Idempotency-Key": "bad-preview",
-                },
+                headers={"Origin": "http://testserver"},
             )
 
-        self.assertEqual(preview.status_code, 200)
-        self.assertEqual(preview.json()["proposal"]["source_type"], "replan_patch")
-        self.assertEqual(preview.json()["proposal"]["base_revision_id"], base_revision_id)
-        self.assertEqual(mismatched_apply.status_code, 409)
-        self.assertEqual(mismatched_apply.json()["error"]["code"], "mutation_proposal_mismatch")
+        proposal = preview.json()["proposal"]
+        expired = client.post(
+            f"/trips/{trip_id}/replan/proposals/{proposal['id']}/apply",
+            json={
+                "base_revision_id": base_revision_id,
+                "proposal_digest": proposal["proposal_digest"],
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "expired-proposal",
+            },
+        )
 
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(expired.status_code, 409)
+        self.assertEqual(expired.json()["error"]["code"], "mutation_proposal_expired")
         history = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
         self.assertEqual([revision["revision_number"] for revision in history], [1])
 
@@ -279,32 +368,48 @@ class TripPersistenceApiTests(unittest.TestCase):
                 fake_trace(),
             ),
         ):
-            applied = client.post(
-                f"/trips/{trip_id}/replan",
+            preview = client.post(
+                f"/trips/{trip_id}/replan/preview",
                 json={
                     "base_revision_id": base_revision_id,
                     "follow_up_text": "第二天加一个轻松街区",
                 },
-                headers={
-                    "Origin": "http://testserver",
-                    "X-Idempotency-Key": "replan-a",
-                },
+                headers={"Origin": "http://testserver"},
             )
-            stale = client.post(
-                f"/trips/{trip_id}/replan",
+        proposal = preview.json()["proposal"]
+        applied = client.post(
+            f"/trips/{trip_id}/replan/proposals/{proposal['id']}/apply",
+            json={
+                "base_revision_id": base_revision_id,
+                "proposal_digest": proposal["proposal_digest"],
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "replan-a",
+            },
+        )
+        with patch(
+            "app.trips.service.execute_replan_from_itinerary",
+            return_value=(
+                ReplanItineraryResponse(
+                    trip_intent=simple_trip_intent(3),
+                    itinerary=simple_itinerary(3, with_intent=True),
+                ),
+                fake_trace("run-replan-b"),
+            ),
+        ):
+            stale_preview = client.post(
+                f"/trips/{trip_id}/replan/preview",
                 json={
                     "base_revision_id": base_revision_id,
                     "follow_up_text": "第三天再加一个博物馆",
                 },
-                headers={
-                    "Origin": "http://testserver",
-                    "X-Idempotency-Key": "replan-b",
-                },
+                headers={"Origin": "http://testserver"},
             )
 
         self.assertEqual(applied.status_code, 200)
-        self.assertEqual(stale.status_code, 409)
-        self.assertEqual(stale.json()["error"]["code"], "stale_base_revision")
+        self.assertEqual(stale_preview.status_code, 409)
+        self.assertEqual(stale_preview.json()["error"]["code"], "stale_mutation_proposal")
 
         revision_2 = applied.json()["current_revision"]["id"]
         undone = client.post(
@@ -321,6 +426,16 @@ class TripPersistenceApiTests(unittest.TestCase):
         self.assertEqual(undone.json()["current_revision"]["source_type"], "replan_undo")
         self.assertEqual(undone.json()["current_revision"]["restored_from_revision_id"], base_revision_id)
         self.assertEqual(undone.json()["itinerary"]["trip_days"], 1)
+        repeat_undo = client.post(
+            f"/trips/{trip_id}/revisions/{revision_2}/undo",
+            json={"base_revision_id": revision_2},
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "undo-replan-b",
+            },
+        )
+        self.assertEqual(repeat_undo.status_code, 409)
+        self.assertEqual(repeat_undo.json()["error"]["code"], "undo_target_not_current")
 
         history = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
         self.assertEqual([revision["revision_number"] for revision in history], [3, 2, 1])
@@ -354,12 +469,18 @@ def simple_trip_intent(trip_days: int) -> TripIntentEnvelope:
     )
 
 
-def fake_trace():
-    return SimpleNamespace(
-        planner_run_id="run-replan",
+def fake_trace(planner_run_id: str = "run-replan") -> PlannerTrace:
+    return PlannerTrace(
+        planner_run_id=planner_run_id,
         planner_version="planner-test",
         schema_version="1.0",
-        trace_digest="trace-replan",
+        trace_digest=f"trace-{planner_run_id}",
+        input_summary=PlannerInputSnapshot(city="上海", trip_days=1),
+        result_summary=PlannerResultSummary(
+            status="ok",
+            trip_days=1,
+            scheduled_item_count=0,
+        ),
     )
 
 

@@ -7,7 +7,7 @@ from typing import Iterator
 
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
-CURRENT_SCHEMA_VERSION = "0001_trip_revision_foundation"
+CURRENT_SCHEMA_VERSION = "0002_trip_mutation_proposals"
 DEFAULT_TRIP_STORE_PATH = "data/trips.sqlite3"
 
 
