@@ -36,6 +36,7 @@ type CompletionCandidateTraceLike = {
 };
 
 export type ScheduledItemLike = {
+  stable_id?: string | null;
   name: string;
   type: TimelineItemType;
   city?: string | null;

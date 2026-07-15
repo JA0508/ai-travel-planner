@@ -18,6 +18,7 @@ test("documents refresh policy for every current route workspace mutation kind",
       "completion_task_undo",
       "local_replan_mutation",
       "route_edit_commit",
+      "swap_apply",
     ],
   );
 });
@@ -74,12 +75,24 @@ test("completion undo preserves local result if derived refresh fails", () => {
   assert.equal(policy.failureBehavior, "preserve_local_itinerary");
 });
 
-test("route edit commit has no hidden backend refresh dependency", () => {
+test("saved route edit commit is server-authoritative through typed mutation proposal", () => {
   const policy = getRouteWorkspaceRefreshPolicy("route_edit_commit");
+  const pageSource = readFileSync(new URL("../../app/page.tsx", import.meta.url), "utf8");
 
-  assert.equal(policy.itineraryUpdate, "local_patch");
-  assert.equal(policy.refreshEndpoint, null);
-  assert.deepEqual(policy.refreshedSurfaces, ["itinerary", "trip_intent"]);
+  assert.equal(policy.itineraryUpdate, "backend_authoritative");
+  assert.equal(policy.refreshEndpoint, "applyPersistedMutationProposal");
+  assert.match(pageSource, /previewPersistedMutation/);
+  assert.match(pageSource, /applyPersistedMutationProposal/);
+  assert.match(pageSource, /buildRouteEditCommandEnvelope/);
+});
+
+test("saved swap apply is server-authoritative through typed replacement command", () => {
+  const policy = getRouteWorkspaceRefreshPolicy("swap_apply");
+  const pageSource = readFileSync(new URL("../../app/page.tsx", import.meta.url), "utf8");
+
+  assert.equal(policy.itineraryUpdate, "backend_authoritative");
+  assert.equal(policy.refreshEndpoint, "applyPersistedMutationProposal");
+  assert.match(pageSource, /buildSwapReplaceCommandEnvelope/);
 });
 
 test("all refresh policies use known mutation ids", () => {
@@ -90,6 +103,7 @@ test("all refresh policies use known mutation ids", () => {
     "backend_replan_undo",
     "completion_task_apply",
     "completion_task_undo",
+    "swap_apply",
   ];
 
   for (const mutationKind of mutationKinds) {

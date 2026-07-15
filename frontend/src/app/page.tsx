@@ -18,6 +18,7 @@ import { useRouteWorkspaceUiState } from "@/features/trip-workspace/routeWorkspa
 import {
   LEGACY_FULL_SESSION_KEY,
   PERSISTED_TRIP_REF_KEY,
+  buildMutationProposalIdempotencyKey,
   buildReplanProposalIdempotencyKey,
   buildPersistedTripRef,
   describeTripPersistence,
@@ -29,6 +30,11 @@ import {
   type TripPersistenceState,
   type TripRevisionMetadata,
 } from "@/features/trip-workspace/tripPersistence";
+import {
+  buildRouteEditCommandEnvelope,
+  buildSwapReplaceCommandEnvelope,
+  type TripMutationCommandEnvelope,
+} from "@/features/trip-workspace/routeWorkspaceMutationCommands";
 import { ConversationalReplanPanel } from "@/components/trip/replanning/ConversationalReplanPanel";
 import type {
   ReplanExecutionResult,
@@ -180,6 +186,7 @@ const QUICK_GENERATE_EXAMPLES: Array<{
 ];
 
 type ScheduledItem = {
+  stable_id?: string | null;
   name: string;
   type: "scenic" | "restaurant" | "hotel";
   latitude?: number | null;
@@ -844,6 +851,58 @@ type PersistedReplanPreviewResponse = {
   replan_result: ReplanItineraryResponse;
 };
 
+type PersistedMutationProposal = {
+  id: string;
+  schema_version: string;
+  operation_type: string;
+  source_type: string;
+  base_revision_id: string;
+  request_digest: string;
+  instruction_digest: string | null;
+  preview_content_digest: string;
+  proposal_digest: string;
+  planner_run_id: string | null;
+  planner_version: string | null;
+  trace_schema_version: string | null;
+  trace_digest: string | null;
+  validation_report: Record<string, unknown>;
+  execution_kind: string | null;
+  command_schema_version: string | null;
+  mutation_engine_version: string | null;
+  mutation_kind: "route_edit" | "swap" | string | null;
+  commands: Array<Record<string, unknown>> | null;
+  command_digest: string | null;
+  impact_summary: Record<string, unknown> | null;
+  invalidated_surfaces: string[] | null;
+  status: string;
+  expires_at: string;
+  applied_revision_id: string | null;
+};
+
+type PersistedMutationPreviewResponse = {
+  trip: TripMetadata;
+  current_revision: TripRevisionMetadata;
+  proposal: PersistedMutationProposal;
+  itinerary: ItineraryResponse;
+  impact_summary: Record<string, unknown>;
+  invalidated_surfaces: string[];
+  refresh_targets: string[];
+};
+
+type PersistedMutationApplyResponse = {
+  trip: TripMetadata;
+  current_revision: TripRevisionMetadata;
+  itinerary: ItineraryResponse;
+  impact_summary: Record<string, unknown> | null;
+  invalidated_surfaces: string[] | null;
+  refresh_targets: string[] | null;
+  persistence: {
+    status: "saved";
+    schema_version: string;
+    idempotent_replay: boolean;
+  };
+};
+
 type PersistedReplanProposalState =
   | { status: "idle" }
   | { status: "previewing"; baseRevisionId: string }
@@ -912,6 +971,7 @@ type GenerationContext = {
 };
 
 type SwapTarget = {
+  stable_id?: string | null;
   day: number;
   block_type: DayBlock["block_type"];
   start_time: string;
@@ -1413,6 +1473,26 @@ export default function HomePage() {
     }
     setTripPersistence(markSavedFromRevision(revision));
     setHasSavedSession(true);
+  }
+
+  async function hydrateFromPersistedMutation(
+    trip: TripMetadata,
+    revision: TripRevisionMetadata,
+    itinerary: ItineraryResponse,
+  ) {
+    setResult(itinerary);
+    rememberPersistedTrip(trip, revision);
+    setGenerationContext(
+      itinerary.trip_intent?.current_intent
+        ? buildGenerationContextFromRegenerationIntent(itinerary.trip_intent.current_intent)
+        : generationContext,
+    );
+    syncFormStateWithRegenerationIntent(
+      itinerary.trip_intent?.current_intent ??
+        itinerary.planning_assumptions?.regeneration_intent ??
+        null,
+    );
+    await refreshRevisionHistory(trip.id);
   }
 
   function clearPersistedTripRef() {
@@ -2409,9 +2489,46 @@ function buildRegenerationSemanticsViewModel(
     }
   }
 
-  function handleApplySwap(target: SwapTarget, option: ItineraryCompletionOption) {
+  async function handleApplySwap(target: SwapTarget, option: ItineraryCompletionOption) {
     setRecentCompletionTaskItemKey(null);
     const committedSelection = buildCommittedSwapSelectionFromOption(target, option);
+    if (tripPersistence.status === "saved") {
+      const envelope = buildSwapReplaceCommandEnvelope(
+        tripPersistence.currentRevisionId,
+        target,
+        option,
+      );
+      if (envelope) {
+        const applied = await applyPersistedMutationWithPreview(tripPersistence, envelope);
+        if (!applied.ok) {
+          markPersistedMutationFailure(tripPersistence, applied);
+          return;
+        }
+        await hydrateFromPersistedMutation(
+          applied.data.trip,
+          applied.data.current_revision,
+          applied.data.itinerary,
+        );
+        setGenerationContext((current) =>
+          current ? applySwapToGenerationContext(current, committedSelection) : current,
+        );
+        setCommittedSwaps((current) => {
+          const nextSwaps = upsertCommittedSwap(current, committedSelection);
+          setPreferenceSignals(derivePreferenceSignalsFromCommittedSwaps(nextSwaps));
+          return nextSwaps;
+        });
+        setUserIntentState((current) =>
+          addRejectedPoiToUserIntentState(
+            addConfirmedPoiToUserIntentState(current, option.name, option.type),
+            target.name,
+            target.type === "restaurant" ? "restaurant" : "scenic",
+          ),
+        );
+        setActiveSwapTarget(null);
+        setError(null);
+        return;
+      }
+    }
     setResult((current) => {
       if (!current) {
         return current;
@@ -2470,7 +2587,7 @@ function buildRegenerationSemanticsViewModel(
     markWorkspaceDirty("swap_undo");
   }
 
-  function handleCommitRouteEdits(
+  async function handleCommitRouteEdits(
     editedDays: EditableRouteDay[],
     routePreviewMap?: Record<string, { distance_m: number; duration_s: number }>,
     unplannedStops: EditableRouteDay["stops"] = [],
@@ -2480,6 +2597,31 @@ function buildRegenerationSemanticsViewModel(
       return;
     }
     const editedPois = buildRouteEditPoiLists(editedDays, unplannedStops);
+
+    if (tripPersistence.status === "saved") {
+      const envelope = buildRouteEditCommandEnvelope(
+        result,
+        tripPersistence.currentRevisionId,
+        editedDays,
+        unplannedStops,
+      );
+      if (envelope) {
+        const applied = await applyPersistedMutationWithPreview(tripPersistence, envelope);
+        if (!applied.ok) {
+          markPersistedMutationFailure(tripPersistence, applied);
+          return;
+        }
+        await hydrateFromPersistedMutation(
+          applied.data.trip,
+          applied.data.current_revision,
+          applied.data.itinerary,
+        );
+        setScenicSpots(editedPois.scenic.join("\n"));
+        setRestaurants(editedPois.restaurants.join("\n"));
+        setError(null);
+        return;
+      }
+    }
 
     setResult((current) => {
       if (!current) {
@@ -2937,6 +3079,66 @@ function buildRegenerationSemanticsViewModel(
         });
       }
       return apply;
+    });
+  }
+
+  async function applyPersistedMutationWithPreview(
+    persistedBase: Extract<TripPersistenceState, { status: "saved" }>,
+    envelope: TripMutationCommandEnvelope,
+  ): Promise<TripApiResult<PersistedMutationApplyResponse>> {
+    const preview = await postTripJson<PersistedMutationPreviewResponse>(
+      TRIP_API_ENDPOINTS.previewPersistedMutation(persistedBase.tripId),
+      envelope,
+      "预览这次行程调整失败",
+      "无法连接后端接口预览这次行程调整。",
+    );
+    if (!preview.ok) {
+      return preview;
+    }
+    return postTripJson<PersistedMutationApplyResponse>(
+      TRIP_API_ENDPOINTS.applyPersistedMutationProposal(
+        persistedBase.tripId,
+        preview.data.proposal.id,
+      ),
+      {
+        base_revision_id: persistedBase.currentRevisionId,
+        proposal_digest: preview.data.proposal.proposal_digest,
+      },
+      "保存这次行程调整失败",
+      "无法连接后端接口保存这次行程调整。",
+      {
+        headers: {
+          "X-Idempotency-Key": buildMutationProposalIdempotencyKey(
+            preview.data.proposal.id,
+            preview.data.proposal.proposal_digest,
+          ),
+        },
+      },
+    );
+  }
+
+  function markPersistedMutationFailure(
+    persistedBase: Extract<TripPersistenceState, { status: "saved" }>,
+    failure: Extract<TripApiResult<unknown>, { ok: false }>,
+  ) {
+    setError(failure.message);
+    if (failure.code === "stale_mutation_proposal" || failure.code === "stale_base_revision") {
+      setTripPersistence({
+        status: "conflict",
+        tripId: persistedBase.tripId,
+        providedBaseRevisionId:
+          String(failure.context?.provided_base_revision_id ?? persistedBase.currentRevisionId),
+        currentRevisionId:
+          String(failure.context?.current_revision_id ?? persistedBase.currentRevisionId),
+        message: failure.message,
+      });
+      return;
+    }
+    setTripPersistence({
+      status: "error",
+      message: failure.message,
+      tripId: persistedBase.tripId,
+      recoverable: failure.recoverable,
     });
   }
 

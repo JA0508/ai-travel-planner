@@ -1,5 +1,6 @@
 export type RouteWorkspaceMutationKind =
   | "route_edit_commit"
+  | "swap_apply"
   | "local_replan_mutation"
   | "backend_replan_apply"
   | "backend_replan_undo"
@@ -13,6 +14,7 @@ export type RouteWorkspaceRefreshPolicy = {
     | "refreshItinerarySurfaces"
     | "applyCompletionTask"
     | "applyPersistedReplanProposal"
+    | "applyPersistedMutationProposal"
     | "undoPersistedRevision"
     | null;
   refreshTiming: "none" | "after_local_patch" | "during_backend_mutation";
@@ -26,11 +28,29 @@ export const routeWorkspaceRefreshPolicies: Record<
 > = {
   route_edit_commit: {
     mutationKind: "route_edit_commit",
-    itineraryUpdate: "local_patch",
-    refreshEndpoint: null,
-    refreshTiming: "none",
-    failureBehavior: "preserve_local_itinerary",
-    refreshedSurfaces: ["itinerary", "trip_intent"],
+    itineraryUpdate: "backend_authoritative",
+    refreshEndpoint: "applyPersistedMutationProposal",
+    refreshTiming: "during_backend_mutation",
+    failureBehavior: "use_backend_error",
+    refreshedSurfaces: [
+      "itinerary",
+      "trip_intent",
+      "completion_intelligence",
+      "completion_candidate_history",
+    ],
+  },
+  swap_apply: {
+    mutationKind: "swap_apply",
+    itineraryUpdate: "backend_authoritative",
+    refreshEndpoint: "applyPersistedMutationProposal",
+    refreshTiming: "during_backend_mutation",
+    failureBehavior: "use_backend_error",
+    refreshedSurfaces: [
+      "itinerary",
+      "trip_intent",
+      "completion_intelligence",
+      "completion_candidate_history",
+    ],
   },
   local_replan_mutation: {
     mutationKind: "local_replan_mutation",
