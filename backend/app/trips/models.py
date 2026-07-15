@@ -17,6 +17,8 @@ class RevisionSourceType(str, Enum):
     REPLAN_UNDO = "replan_undo"
     COMPLETION_PATCH = "completion_patch"
     ROUTE_EDIT = "route_edit"
+    SWAP = "swap"
+    MUTATION_UNDO = "mutation_undo"
     RESTORE = "restore"
     SYSTEM_MIGRATION = "system_migration"
 
@@ -73,6 +75,7 @@ class RevisionOperationRecord:
     idempotency_key_hash: str | None
     actor_type: str
     summary: str
+    operation_metadata: dict[str, Any]
     created_at: str
 
 
@@ -95,6 +98,14 @@ class TripMutationProposalRecord:
     trace_schema_version: str | None
     trace_digest: str | None
     validation_report: dict[str, Any]
+    execution_kind: str | None
+    command_schema_version: str | None
+    mutation_engine_version: str | None
+    mutation_kind: str | None
+    commands: list[dict[str, Any]] | None
+    command_digest: str | None
+    impact_summary: dict[str, Any] | None
+    invalidated_surfaces: list[str] | None
     status: str
     expires_at: str
     applied_revision_id: str | None

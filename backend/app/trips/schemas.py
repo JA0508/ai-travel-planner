@@ -20,6 +20,7 @@ from app.schemas import (
     TripIntentEnvelope,
 )
 from .models import TripMutationProposalRecord, TripRecord, TripRevisionRecord
+from .mutation_commands import TripMutationCommandEnvelope
 
 
 class TripPlanRequest(BaseModel):
@@ -162,6 +163,13 @@ class ApplyPersistedReplanProposalRequest(BaseModel):
     proposal_digest: str = Field(..., min_length=1)
 
 
+class ApplyPersistedMutationProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision_id: str = Field(..., min_length=1)
+    proposal_digest: str = Field(..., min_length=1)
+
+
 class PersistedReplanResponse(BaseModel):
     trip: TripMetadata
     current_revision: TripRevisionMetadata
@@ -184,6 +192,14 @@ class MutationProposalMetadata(BaseModel):
     trace_schema_version: str | None = None
     trace_digest: str | None = None
     validation_report: dict
+    execution_kind: str | None = None
+    command_schema_version: str | None = None
+    mutation_engine_version: str | None = None
+    mutation_kind: str | None = None
+    commands: list[dict] | None = None
+    command_digest: str | None = None
+    impact_summary: dict | None = None
+    invalidated_surfaces: list[str] | None = None
     status: str
     expires_at: str
     applied_revision_id: str | None = None
@@ -205,6 +221,14 @@ class MutationProposalMetadata(BaseModel):
             trace_schema_version=record.trace_schema_version,
             trace_digest=record.trace_digest,
             validation_report=record.validation_report,
+            execution_kind=record.execution_kind,
+            command_schema_version=record.command_schema_version,
+            mutation_engine_version=record.mutation_engine_version,
+            mutation_kind=record.mutation_kind,
+            commands=record.commands,
+            command_digest=record.command_digest,
+            impact_summary=record.impact_summary,
+            invalidated_surfaces=record.invalidated_surfaces,
             status=record.status,
             expires_at=record.expires_at,
             applied_revision_id=record.applied_revision_id,
@@ -216,6 +240,30 @@ class PersistedReplanPreviewResponse(BaseModel):
     current_revision: TripRevisionMetadata
     proposal: MutationProposalMetadata
     replan_result: ReplanItineraryResponse
+
+
+class PersistedMutationPreviewResponse(BaseModel):
+    trip: TripMetadata
+    current_revision: TripRevisionMetadata
+    proposal: MutationProposalMetadata
+    itinerary: ItineraryResponse
+    impact_summary: dict
+    invalidated_surfaces: list[str]
+    refresh_targets: list[str]
+
+
+class PersistedMutationApplyResponse(BaseModel):
+    trip: TripMetadata
+    current_revision: TripRevisionMetadata
+    itinerary: ItineraryResponse
+    impact_summary: dict | None = None
+    invalidated_surfaces: list[str] | None = None
+    refresh_targets: list[str] | None = None
+    persistence: TripPersistenceInfo
+
+
+class PersistedMutationPreviewRequest(TripMutationCommandEnvelope):
+    pass
 
 
 class UndoPersistedMutationRequest(BaseModel):

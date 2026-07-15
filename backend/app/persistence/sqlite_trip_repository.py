@@ -129,6 +129,7 @@ class SQLiteTripRepository:
                 base_revision_id=None,
                 source_type=RevisionSourceType.PLANNER_GENERATION.value,
                 operation_type=operation_type,
+                operation_metadata={"operation_type": operation_type},
                 request_digest=request_digest,
                 idempotency_key_hash=None,
                 summary=operation_summary,
@@ -227,10 +228,13 @@ class SQLiteTripRepository:
                   operation_type, request_digest, instruction_digest,
                   preview_snapshot_schema_version, preview_snapshot_json,
                   preview_content_digest, proposal_digest, planner_run_id, planner_version,
-                  trace_schema_version, trace_digest, validation_report_json, status,
-                  expires_at, applied_revision_id, created_at, updated_at
+                  trace_schema_version, trace_digest, validation_report_json,
+                  execution_kind, command_schema_version, mutation_engine_version,
+                  mutation_kind, commands_json, command_digest, impact_summary_json,
+                  invalidated_surfaces_json, status, expires_at, applied_revision_id,
+                  created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     proposal.id,
@@ -250,6 +254,16 @@ class SQLiteTripRepository:
                     proposal.trace_schema_version,
                     proposal.trace_digest,
                     canonical_json(proposal.validation_report),
+                    proposal.execution_kind,
+                    proposal.command_schema_version,
+                    proposal.mutation_engine_version,
+                    proposal.mutation_kind,
+                    canonical_json(proposal.commands) if proposal.commands is not None else None,
+                    proposal.command_digest,
+                    canonical_json(proposal.impact_summary) if proposal.impact_summary is not None else None,
+                    canonical_json(proposal.invalidated_surfaces)
+                    if proposal.invalidated_surfaces is not None
+                    else None,
                     proposal.status,
                     proposal.expires_at,
                     proposal.applied_revision_id,
@@ -400,6 +414,7 @@ class SQLiteTripRepository:
                 base_revision_id=proposal.base_revision_id,
                 source_type=proposal.source_type,
                 operation_type=proposal.operation_type,
+                operation_metadata=operation_metadata,
                 request_digest=request_digest,
                 idempotency_key_hash=idempotency_key_hash,
                 summary=operation_summary,
@@ -532,6 +547,7 @@ class SQLiteTripRepository:
                 base_revision_id=base_revision_id,
                 source_type=source_type,
                 operation_type=operation_type,
+                operation_metadata=operation_metadata,
                 request_digest=request_digest,
                 idempotency_key_hash=idempotency_key_hash,
                 summary=operation_summary,
@@ -620,9 +636,9 @@ class SQLiteTripRepository:
             """
             INSERT INTO revision_operations(
               id, trip_id, revision_id, base_revision_id, source_type, operation_type,
-              request_digest, idempotency_key_hash, actor_type, summary, created_at
+              operation_metadata_json, request_digest, idempotency_key_hash, actor_type, summary, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 values["operation_id"],
@@ -631,6 +647,7 @@ class SQLiteTripRepository:
                 values["base_revision_id"],
                 values["source_type"],
                 values["operation_type"],
+                canonical_json(values["operation_metadata"]),
                 values["request_digest"],
                 values["idempotency_key_hash"],
                 "anonymous",
@@ -683,6 +700,10 @@ class SQLiteTripRepository:
             trace_digest=proposal.trace_digest,
             validation_report=proposal.validation_report,
             expires_at=proposal.expires_at,
+            execution_kind=proposal.execution_kind,
+            command_digest=proposal.command_digest,
+            mutation_kind=proposal.mutation_kind,
+            mutation_engine_version=proposal.mutation_engine_version,
         )
         if expected != proposal.proposal_digest:
             raise ProposalIntegrityViolationError()
@@ -745,6 +766,16 @@ def row_to_proposal(row: sqlite3.Row) -> TripMutationProposalRecord:
         trace_schema_version=row["trace_schema_version"],
         trace_digest=row["trace_digest"],
         validation_report=json.loads(row["validation_report_json"]),
+        execution_kind=row["execution_kind"],
+        command_schema_version=row["command_schema_version"],
+        mutation_engine_version=row["mutation_engine_version"],
+        mutation_kind=row["mutation_kind"],
+        commands=json.loads(row["commands_json"]) if row["commands_json"] is not None else None,
+        command_digest=row["command_digest"],
+        impact_summary=json.loads(row["impact_summary_json"]) if row["impact_summary_json"] is not None else None,
+        invalidated_surfaces=json.loads(row["invalidated_surfaces_json"])
+        if row["invalidated_surfaces_json"] is not None
+        else None,
         status=row["status"],
         expires_at=row["expires_at"],
         applied_revision_id=row["applied_revision_id"],

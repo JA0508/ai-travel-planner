@@ -11,9 +11,13 @@ from app.trips.access import capability_cookie_name
 from app.trips.dependencies import get_trip_persistence_service, get_trip_repository
 from app.trips.errors import TripError
 from app.trips.schemas import (
+    ApplyPersistedMutationProposalRequest,
     ApplyPersistedReplanProposalRequest,
     PersistedCompletionTaskActionRequest,
     PersistedCompletionTaskActionResponse,
+    PersistedMutationApplyResponse,
+    PersistedMutationPreviewRequest,
+    PersistedMutationPreviewResponse,
     PersistedReplanRequest,
     PersistedReplanPreviewResponse,
     PersistedReplanResponse,
@@ -147,6 +151,54 @@ def apply_persisted_replan_proposal(
         return origin_error
     try:
         return get_trip_persistence_service().apply_replan_proposal(
+            trip_id=trip_id,
+            proposal_id=proposal_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/mutations/preview",
+    response_model=PersistedMutationPreviewResponse,
+)
+def preview_typed_mutation(
+    trip_id: str,
+    payload: PersistedMutationPreviewRequest,
+    request: Request,
+) -> PersistedMutationPreviewResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().preview_typed_mutation(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/mutation-proposals/{proposal_id}/apply",
+    response_model=PersistedMutationApplyResponse,
+)
+def apply_typed_mutation_proposal(
+    trip_id: str,
+    proposal_id: str,
+    payload: ApplyPersistedMutationProposalRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> PersistedMutationApplyResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().apply_mutation_proposal(
             trip_id=trip_id,
             proposal_id=proposal_id,
             capability=get_trip_capability_from_request(request, trip_id),

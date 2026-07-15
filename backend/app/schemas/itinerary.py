@@ -226,6 +226,11 @@ class POIResearchSummary(BaseModel):
 
 
 class ScheduledPOI(BaseModel):
+    stable_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Stable scheduled-item identity for TripRevision mutation commands.",
+    )
     name: str
     type: POIType
     city: str | None = None
