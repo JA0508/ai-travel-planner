@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import Any, Protocol
 
 from app.imports.domain import (
+    ArtifactDerivationRecord,
     ExtractedMentionRecord,
     ImportCommitRecord,
     ImportJobRecord,
@@ -16,6 +17,7 @@ from app.imports.domain import (
     ImportReviewDecisionRecord,
     ResolvedPlaceCandidateRecord,
     SourceArtifactRecord,
+    URLFetchSnapshotRecord,
     validate_import_transition,
 )
 from app.trips.errors import IdempotencyConflictError, TripError
@@ -35,6 +37,25 @@ class ImportRepository(Protocol):
         ...
 
     def create_artifact(self, artifact: SourceArtifactRecord) -> SourceArtifactRecord:
+        ...
+
+    def create_url_fetch_snapshot(self, snapshot: URLFetchSnapshotRecord) -> URLFetchSnapshotRecord:
+        ...
+
+    def get_url_fetch_snapshot_for_job(self, *, import_job_id: str) -> URLFetchSnapshotRecord | None:
+        ...
+
+    def find_latest_url_fetch_snapshot(
+        self,
+        *,
+        normalized_request_url: str,
+    ) -> URLFetchSnapshotRecord | None:
+        ...
+
+    def create_artifact_derivation(self, derivation: ArtifactDerivationRecord) -> ArtifactDerivationRecord:
+        ...
+
+    def get_artifact_derivation_for_child(self, *, child_artifact_id: str) -> ArtifactDerivationRecord | None:
         ...
 
     def create_job(self, job: ImportJobRecord) -> ImportJobRecord:
@@ -228,6 +249,109 @@ class SQLiteImportRepository:
                 ),
             )
         return artifact
+
+    def create_url_fetch_snapshot(self, snapshot: URLFetchSnapshotRecord) -> URLFetchSnapshotRecord:
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO url_fetch_snapshots(
+                  id, import_job_id, raw_artifact_id, request_url_sanitized,
+                  normalized_request_url, final_url_sanitized, final_url,
+                  redirect_chain_json, robots_status, robots_checked_at, status_code,
+                  content_type, declared_charset, effective_charset, content_language,
+                  compressed_bytes, decoded_bytes, body_checksum, header_metadata_json,
+                  fetcher_version, policy_version, fetched_at, warning_codes_json,
+                  cache_status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot.id,
+                    snapshot.import_job_id,
+                    snapshot.raw_artifact_id,
+                    snapshot.request_url_sanitized,
+                    snapshot.normalized_request_url,
+                    snapshot.final_url_sanitized,
+                    snapshot.final_url,
+                    json_dumps(snapshot.redirect_chain),
+                    snapshot.robots_status,
+                    snapshot.robots_checked_at,
+                    snapshot.status_code,
+                    snapshot.content_type,
+                    snapshot.declared_charset,
+                    snapshot.effective_charset,
+                    snapshot.content_language,
+                    snapshot.compressed_bytes,
+                    snapshot.decoded_bytes,
+                    snapshot.body_checksum,
+                    json_dumps(snapshot.header_metadata),
+                    snapshot.fetcher_version,
+                    snapshot.policy_version,
+                    snapshot.fetched_at,
+                    json_dumps(snapshot.warning_codes),
+                    snapshot.cache_status,
+                ),
+            )
+        return snapshot
+
+    def get_url_fetch_snapshot_for_job(self, *, import_job_id: str) -> URLFetchSnapshotRecord | None:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM url_fetch_snapshots
+                WHERE import_job_id = ?
+                ORDER BY fetched_at DESC, id DESC
+                LIMIT 1
+                """,
+                (import_job_id,),
+            ).fetchone()
+        return row_to_url_fetch_snapshot(row) if row else None
+
+    def find_latest_url_fetch_snapshot(self, *, normalized_request_url: str) -> URLFetchSnapshotRecord | None:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM url_fetch_snapshots
+                WHERE normalized_request_url = ?
+                ORDER BY fetched_at DESC, id DESC
+                LIMIT 1
+                """,
+                (normalized_request_url,),
+            ).fetchone()
+        return row_to_url_fetch_snapshot(row) if row else None
+
+    def create_artifact_derivation(self, derivation: ArtifactDerivationRecord) -> ArtifactDerivationRecord:
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO artifact_derivations(
+                  id, parent_artifact_id, child_artifact_id, derivation_type,
+                  transformer_version, input_checksum, output_checksum,
+                  metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    derivation.id,
+                    derivation.parent_artifact_id,
+                    derivation.child_artifact_id,
+                    derivation.derivation_type,
+                    derivation.transformer_version,
+                    derivation.input_checksum,
+                    derivation.output_checksum,
+                    json_dumps(derivation.metadata),
+                    derivation.created_at,
+                ),
+            )
+        return derivation
+
+    def get_artifact_derivation_for_child(self, *, child_artifact_id: str) -> ArtifactDerivationRecord | None:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute(
+                "SELECT * FROM artifact_derivations WHERE child_artifact_id = ?",
+                (child_artifact_id,),
+            ).fetchone()
+        return row_to_artifact_derivation(row) if row else None
 
     def create_job(self, job: ImportJobRecord) -> ImportJobRecord:
         with self._transaction() as connection:
@@ -775,6 +899,8 @@ class MemoryImportRepository:
         self.decisions: dict[str, ImportReviewDecisionRecord] = {}
         self.idempotency: dict[tuple[str, str, str], tuple[str, str]] = {}
         self.commits: dict[str, ImportCommitRecord] = {}
+        self.url_fetch_snapshots: dict[str, URLFetchSnapshotRecord] = {}
+        self.artifact_derivations: dict[str, ArtifactDerivationRecord] = {}
 
     def get_artifact(self, *, trip_id: str, artifact_id: str) -> SourceArtifactRecord:
         artifact = self.artifacts.get(artifact_id)
@@ -791,6 +917,36 @@ class MemoryImportRepository:
     def create_artifact(self, artifact: SourceArtifactRecord) -> SourceArtifactRecord:
         self.artifacts[artifact.id] = copy.deepcopy(artifact)
         return copy.deepcopy(artifact)
+
+    def create_url_fetch_snapshot(self, snapshot: URLFetchSnapshotRecord) -> URLFetchSnapshotRecord:
+        self.url_fetch_snapshots[snapshot.id] = copy.deepcopy(snapshot)
+        return copy.deepcopy(snapshot)
+
+    def get_url_fetch_snapshot_for_job(self, *, import_job_id: str) -> URLFetchSnapshotRecord | None:
+        snapshots = [
+            snapshot for snapshot in self.url_fetch_snapshots.values()
+            if snapshot.import_job_id == import_job_id
+        ]
+        if not snapshots:
+            return None
+        return copy.deepcopy(sorted(snapshots, key=lambda item: (item.fetched_at, item.id), reverse=True)[0])
+
+    def find_latest_url_fetch_snapshot(self, *, normalized_request_url: str) -> URLFetchSnapshotRecord | None:
+        snapshots = [
+            snapshot for snapshot in self.url_fetch_snapshots.values()
+            if snapshot.normalized_request_url == normalized_request_url
+        ]
+        if not snapshots:
+            return None
+        return copy.deepcopy(sorted(snapshots, key=lambda item: (item.fetched_at, item.id), reverse=True)[0])
+
+    def create_artifact_derivation(self, derivation: ArtifactDerivationRecord) -> ArtifactDerivationRecord:
+        self.artifact_derivations[derivation.child_artifact_id] = copy.deepcopy(derivation)
+        return copy.deepcopy(derivation)
+
+    def get_artifact_derivation_for_child(self, *, child_artifact_id: str) -> ArtifactDerivationRecord | None:
+        derivation = self.artifact_derivations.get(child_artifact_id)
+        return copy.deepcopy(derivation) if derivation else None
 
     def create_job(self, job: ImportJobRecord) -> ImportJobRecord:
         self.jobs[job.id] = copy.deepcopy(job)
@@ -956,6 +1112,49 @@ def row_to_artifact(row) -> SourceArtifactRecord:
         privacy_level=row["privacy_level"],
         storage_key=row["storage_key"],
         original_label=row["original_label"],
+        created_at=row["created_at"],
+    )
+
+
+def row_to_url_fetch_snapshot(row) -> URLFetchSnapshotRecord:
+    return URLFetchSnapshotRecord(
+        id=row["id"],
+        import_job_id=row["import_job_id"],
+        raw_artifact_id=row["raw_artifact_id"],
+        request_url_sanitized=row["request_url_sanitized"],
+        normalized_request_url=row["normalized_request_url"],
+        final_url_sanitized=row["final_url_sanitized"],
+        final_url=row["final_url"],
+        redirect_chain=list(json_loads(row["redirect_chain_json"], [])),
+        robots_status=row["robots_status"],
+        robots_checked_at=row["robots_checked_at"],
+        status_code=row["status_code"],
+        content_type=row["content_type"],
+        declared_charset=row["declared_charset"],
+        effective_charset=row["effective_charset"],
+        content_language=row["content_language"],
+        compressed_bytes=row["compressed_bytes"],
+        decoded_bytes=row["decoded_bytes"],
+        body_checksum=row["body_checksum"],
+        header_metadata=dict(json_loads(row["header_metadata_json"], {})),
+        fetcher_version=row["fetcher_version"],
+        policy_version=row["policy_version"],
+        fetched_at=row["fetched_at"],
+        warning_codes=list(json_loads(row["warning_codes_json"], [])),
+        cache_status=row["cache_status"],
+    )
+
+
+def row_to_artifact_derivation(row) -> ArtifactDerivationRecord:
+    return ArtifactDerivationRecord(
+        id=row["id"],
+        parent_artifact_id=row["parent_artifact_id"],
+        child_artifact_id=row["child_artifact_id"],
+        derivation_type=row["derivation_type"],
+        transformer_version=row["transformer_version"],
+        input_checksum=row["input_checksum"],
+        output_checksum=row["output_checksum"],
+        metadata=dict(json_loads(row["metadata_json"], {})),
         created_at=row["created_at"],
     )
 

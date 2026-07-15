@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from typing import Any
 
 from app.imports.artifacts import ArtifactStore, make_storage_key
+from app.imports.document_extraction import DocumentTextExtractor, FetchedDocument
 from app.imports.domain import (
+    ArtifactDerivationRecord,
+    ArtifactDerivationResponse,
     IMPORT_EXTRACTION_SCHEMA_VERSION,
     IMPORT_EXTRACTOR_VERSION,
     IMPORT_RESOLVER_VERSION,
     MAX_CONTEXT_CHARS,
+    URL_DOCUMENT_TEXT_TRANSFORMER_VERSION,
+    URL_IMPORT_FETCHER_VERSION,
+    URL_IMPORT_POLICY_VERSION,
     ExtractedMentionRecord,
     ExtractedMentionResponse,
     ImportCommitRecord,
@@ -34,12 +40,18 @@ from app.imports.domain import (
     SourceArtifactResponse,
     TextImportCreateRequest,
     TextImportCreateResponse,
+    URLFetchSnapshotRecord,
+    URLFetchSnapshotResponse,
+    URLImportCreateRequest,
+    URLImportCreateResponse,
     generate_artifact_id,
+    generate_artifact_derivation_id,
     generate_import_attempt_id,
     generate_import_commit_id,
     generate_import_job_id,
     generate_mention_id,
     generate_review_decision_id,
+    generate_url_fetch_snapshot_id,
     mention_content_digest,
     normalize_mention_text,
     source_checksum,
@@ -47,6 +59,7 @@ from app.imports.domain import (
 from app.imports.extraction import TextImportExtractor
 from app.imports.repository import ImportRepository
 from app.imports.resolution import PlaceMentionResolver
+from app.imports.url_fetcher import SecureURLFetcher
 from app.trips.access import hash_capability, hash_idempotency_key
 from app.trips.candidates import (
     CandidateCoordinate,
@@ -71,6 +84,8 @@ class TextImportService:
         artifact_store: ArtifactStore,
         extractor: TextImportExtractor,
         resolver: PlaceMentionResolver,
+        url_fetcher: SecureURLFetcher | None = None,
+        document_extractor: DocumentTextExtractor | None = None,
         clock=datetime.now,
     ) -> None:
         self.import_repository = import_repository
@@ -79,6 +94,8 @@ class TextImportService:
         self.artifact_store = artifact_store
         self.extractor = extractor
         self.resolver = resolver
+        self.url_fetcher = url_fetcher
+        self.document_extractor = document_extractor
         self.clock = clock
 
     def create_text_import(
@@ -191,6 +208,223 @@ class TextImportService:
             duplicate_artifact=duplicate_artifact,
         )
 
+    def create_url_import(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        idempotency_key: str | None,
+        payload: URLImportCreateRequest,
+    ) -> URLImportCreateResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        if self.url_fetcher is None or self.document_extractor is None:
+            raise TripError("import_url_disabled", "URL import is not configured.", 503)
+        if not get_import_url_enabled_inline():
+            raise TripError("import_url_disabled", "URL import is disabled.", 503)
+        self._require_trip_access(trip_id, capability)
+        normalized = self.url_fetcher.policy.normalize_url(payload.url)
+        req_digest = request_digest(
+            {
+                "operation": "create_url_import",
+                "trip_id": trip_id,
+                "normalized_url": normalized.normalized_url,
+                "refresh": payload.refresh,
+            }
+        )
+        key_hash = hash_idempotency_key(idempotency_key.strip())
+        idempotent_job = self.import_repository.get_idempotent_job(
+            trip_id=trip_id,
+            scope="create_url_import",
+            request_digest=req_digest,
+            idempotency_key_hash=key_hash,
+        )
+        if idempotent_job is not None:
+            artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=idempotent_job.artifact_id)
+            return URLImportCreateResponse(
+                artifact=artifact_to_response(artifact),
+                job=job_to_response(idempotent_job),
+                mentions=self._mention_responses(idempotent_job),
+                duplicate_artifact=True,
+                idempotent_replay=True,
+                source_fetch=snapshot_to_response(self.import_repository.get_url_fetch_snapshot_for_job(import_job_id=idempotent_job.id)),
+                derivation=derivation_to_response(self.import_repository.get_artifact_derivation_for_child(child_artifact_id=artifact.id)),
+            )
+
+        fetched = self.url_fetcher.fetch(normalized.normalized_url)
+        now = format_utc(self.clock(timezone.utc))
+        raw_artifact, raw_duplicate = self._get_or_create_artifact(
+            trip_id=trip_id,
+            content_bytes=fetched.body,
+            checksum=fetched.body_checksum,
+            original_label=fetched.final_url_sanitized,
+            now=now,
+            artifact_type="url_document",
+            mime_type=fetched.content_type,
+            charset=fetched.declared_charset or "binary",
+            storage_type="url-document",
+            extension=extension_for_content_type(fetched.content_type),
+        )
+        text_result = self.document_extractor.extract(
+            FetchedDocument(
+                content=fetched.body,
+                content_type=fetched.content_type,
+                declared_charset=fetched.declared_charset,
+                max_text_bytes=get_import_url_max_text_bytes_inline(),
+            )
+        )
+        derived_bytes = text_result.normalized_text.encode("utf-8")
+        derived_artifact, derived_duplicate = self._get_or_create_artifact(
+            trip_id=trip_id,
+            content_bytes=derived_bytes,
+            checksum=source_checksum(derived_bytes),
+            original_label=text_result.title or fetched.final_url_sanitized,
+            now=now,
+            artifact_type="derived_text",
+            mime_type="text/plain",
+            charset="utf-8",
+            storage_type="derived-text",
+            extension="txt",
+        )
+        existing_job = self.import_repository.find_latest_job_for_artifact(
+            trip_id=trip_id,
+            artifact_id=derived_artifact.id,
+        )
+        if existing_job is not None and existing_job.input_type == "url" and existing_job.status in {
+            ImportJobStatus.REVIEW_READY.value,
+            ImportJobStatus.PARTIAL.value,
+            ImportJobStatus.COMMITTED.value,
+        }:
+            self.import_repository.remember_idempotent_job(
+                trip_id=trip_id,
+                scope="create_url_import",
+                request_digest=req_digest,
+                idempotency_key_hash=key_hash,
+                job_id=existing_job.id,
+                created_at=now,
+            )
+            return URLImportCreateResponse(
+                artifact=artifact_to_response(derived_artifact),
+                job=job_to_response(existing_job),
+                mentions=self._mention_responses(existing_job),
+                duplicate_artifact=True,
+                source_fetch=snapshot_to_response(self.import_repository.get_url_fetch_snapshot_for_job(import_job_id=existing_job.id)),
+                derivation=derivation_to_response(self.import_repository.get_artifact_derivation_for_child(child_artifact_id=derived_artifact.id)),
+            )
+
+        job = self.import_repository.create_job(
+            ImportJobRecord(
+                id=generate_import_job_id(),
+                trip_id=trip_id,
+                artifact_id=derived_artifact.id,
+                input_type="url",
+                status=ImportJobStatus.CREATED.value,
+                extraction_schema_version=IMPORT_EXTRACTION_SCHEMA_VERSION,
+                extractor_version=IMPORT_EXTRACTOR_VERSION,
+                resolver_version=IMPORT_RESOLVER_VERSION,
+                review_version=0,
+                mention_count=0,
+                warning_codes=[],
+                error_code=None,
+                committed_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        self.import_repository.remember_idempotent_job(
+            trip_id=trip_id,
+            scope="create_url_import",
+            request_digest=req_digest,
+            idempotency_key_hash=key_hash,
+            job_id=job.id,
+            created_at=now,
+        )
+        fetching_attempt = self._start_attempt(job.id, stage="fetch", extractor_version=None, resolver_version=None)
+        fetching = self.import_repository.update_job(
+            trip_id=trip_id,
+            import_job_id=job.id,
+            status=ImportJobStatus.FETCHING.value,
+            updated_at=now,
+        )
+        self._complete_attempt(fetching_attempt.id, job.id, warning_codes=[], error_code=None)
+        snapshot = self.import_repository.create_url_fetch_snapshot(
+            URLFetchSnapshotRecord(
+                id=generate_url_fetch_snapshot_id(),
+                import_job_id=job.id,
+                raw_artifact_id=raw_artifact.id,
+                request_url_sanitized=fetched.request_url_sanitized,
+                normalized_request_url=fetched.normalized_request_url,
+                final_url_sanitized=fetched.final_url_sanitized,
+                final_url=fetched.final_url,
+                redirect_chain=[asdict(hop) for hop in fetched.redirect_chain],
+                robots_status=fetched.robots_status,
+                robots_checked_at=now,
+                status_code=fetched.status_code,
+                content_type=fetched.content_type,
+                declared_charset=fetched.declared_charset,
+                effective_charset=text_result.effective_charset,
+                content_language=fetched.content_language,
+                compressed_bytes=fetched.compressed_bytes,
+                decoded_bytes=fetched.decoded_bytes,
+                body_checksum=fetched.body_checksum,
+                header_metadata={
+                    **fetched.header_metadata,
+                    "page_title": text_result.title or "",
+                    "language_hint": text_result.language_hint or "",
+                    "source_host": normalized.host,
+                    "final_host": self.url_fetcher.policy.normalize_url(fetched.final_url).host,
+                    "environment_proxy_disabled": str(self.url_fetcher.transport.environment_proxy_disabled).lower(),
+                    "tls_verification_preserved": str(self.url_fetcher.transport.tls_verification_preserved).lower(),
+                },
+                fetcher_version=URL_IMPORT_FETCHER_VERSION,
+                policy_version=URL_IMPORT_POLICY_VERSION,
+                fetched_at=now,
+                warning_codes=unique(fetched.warning_codes + text_result.warning_codes),
+                cache_status="artifact_reused" if raw_duplicate or derived_duplicate else "fetched",
+            )
+        )
+        content_attempt = self._start_attempt(job.id, stage="content_extraction", extractor_version=URL_DOCUMENT_TEXT_TRANSFORMER_VERSION, resolver_version=None)
+        content_stage = self.import_repository.update_job(
+            trip_id=trip_id,
+            import_job_id=fetching.id,
+            status=ImportJobStatus.EXTRACTING_CONTENT.value,
+            updated_at=now,
+            warning_codes=snapshot.warning_codes,
+        )
+        derivation = self.import_repository.create_artifact_derivation(
+            ArtifactDerivationRecord(
+                id=generate_artifact_derivation_id(),
+                parent_artifact_id=raw_artifact.id,
+                child_artifact_id=derived_artifact.id,
+                derivation_type=text_result.derivation_type,
+                transformer_version=text_result.transformer_version,
+                input_checksum=raw_artifact.content_checksum,
+                output_checksum=derived_artifact.content_checksum,
+                metadata={
+                    "title": text_result.title,
+                    "language_hint": text_result.language_hint,
+                    "declared_canonical_url": text_result.declared_canonical_url,
+                    "metrics": {
+                        "raw_bytes": text_result.extraction_metrics.raw_bytes,
+                        "text_bytes": text_result.extraction_metrics.text_bytes,
+                        "script_bytes": text_result.extraction_metrics.script_bytes,
+                        "visible_text_chars": text_result.extraction_metrics.visible_text_chars,
+                    },
+                },
+                created_at=now,
+            )
+        )
+        self._complete_attempt(content_attempt.id, job.id, warning_codes=text_result.warning_codes, error_code=None)
+        processed = self._process_inline(job=content_stage, source_text=text_result.normalized_text)
+        return URLImportCreateResponse(
+            artifact=artifact_to_response(derived_artifact),
+            job=job_to_response(processed),
+            mentions=self._mention_responses(processed),
+            duplicate_artifact=raw_duplicate or derived_duplicate,
+            source_fetch=snapshot_to_response(snapshot),
+            derivation=derivation_to_response(derivation),
+        )
+
     def get_import(
         self,
         *,
@@ -205,6 +439,8 @@ class TextImportService:
             artifact=artifact_to_response(artifact),
             job=job_to_response(job),
             mentions=self._mention_responses(job),
+            source_fetch=snapshot_to_response(self.import_repository.get_url_fetch_snapshot_for_job(import_job_id=job.id)),
+            derivation=derivation_to_response(self.import_repository.get_artifact_derivation_for_child(child_artifact_id=artifact.id)),
         )
 
     def get_artifact_text(
@@ -271,6 +507,8 @@ class TextImportService:
             artifact=artifact_to_response(artifact),
             job=job_to_response(updated_job),
             mentions=self._mention_responses(updated_job),
+            source_fetch=snapshot_to_response(self.import_repository.get_url_fetch_snapshot_for_job(import_job_id=updated_job.id)),
+            derivation=derivation_to_response(self.import_repository.get_artifact_derivation_for_child(child_artifact_id=artifact.id)),
         )
 
     def commit_import(
@@ -370,6 +608,9 @@ class TextImportService:
                 evidence_ref(job.artifact_id, mention.id)
                 for mention, _candidate in group_items
             ][:8]
+            snapshot = self.import_repository.get_url_fetch_snapshot_for_job(import_job_id=import_job_id)
+            if snapshot is not None:
+                evidence_refs = (evidence_refs + [f"fetch:{snapshot.id}"])[:8]
             response = self.trip_service.register_candidate(
                 trip_id=trip_id,
                 capability=capability,
@@ -386,7 +627,7 @@ class TextImportService:
                         else None
                     ),
                     address_summary=selected.address_summary,
-                    source_kind=CandidateSourceKind.TEXT_IMPORT,
+                    source_kind=CandidateSourceKind.URL_IMPORT if job.input_type == "url" else CandidateSourceKind.TEXT_IMPORT,
                     source_ref=f"import:{import_job_id}",
                     evidence_refs=evidence_refs,
                 ),
@@ -434,24 +675,29 @@ class TextImportService:
         checksum: str,
         original_label: str | None,
         now: str,
+        artifact_type: str = "text",
+        mime_type: str = "text/plain",
+        charset: str = "utf-8",
+        storage_type: str = "text",
+        extension: str = "txt",
     ) -> tuple[SourceArtifactRecord, bool]:
         existing = self.import_repository.find_artifact_by_checksum(
             trip_id=trip_id,
-            artifact_type="text",
+            artifact_type=artifact_type,
             checksum=checksum,
         )
         if existing is not None:
             return existing, True
-        storage_key = make_storage_key()
+        storage_key = make_storage_key(artifact_type=storage_type, extension=extension)
         self.artifact_store.put(storage_key=storage_key, content=content_bytes)
         artifact = SourceArtifactRecord(
             id=generate_artifact_id(),
             trip_id=trip_id,
-            artifact_type="text",
-            mime_type="text/plain",
+            artifact_type=artifact_type,
+            mime_type=mime_type,
             content_checksum=checksum,
             byte_size=len(content_bytes),
-            charset="utf-8",
+            charset=charset,
             privacy_level="private",
             storage_key=storage_key,
             original_label=original_label,
@@ -535,7 +781,7 @@ class TextImportService:
         )
         self.import_repository.create_attempt(resolution_attempt)
         resolutions: list[ResolvedPlaceCandidateRecord] = []
-        warning_codes = list(extraction.warning_codes)
+        warning_codes = list(job.warning_codes) + list(extraction.warning_codes)
         for mention in mentions:
             if mention.entity_type != MentionEntityType.PLACE.value:
                 continue
@@ -584,6 +830,46 @@ class TextImportService:
             updated_at=finished,
             mention_count=len(mentions),
             warning_codes=unique(warning_codes),
+        )
+
+    def _start_attempt(
+        self,
+        import_job_id: str,
+        *,
+        stage: str,
+        extractor_version: str | None,
+        resolver_version: str | None,
+    ) -> ImportProcessingAttemptRecord:
+        attempt = ImportProcessingAttemptRecord(
+            id=generate_import_attempt_id(),
+            import_job_id=import_job_id,
+            stage=stage,
+            extractor_version=extractor_version,
+            resolver_version=resolver_version,
+            status="running",
+            warning_codes=[],
+            error_code=None,
+            started_at=format_utc(self.clock(timezone.utc)),
+            completed_at=None,
+        )
+        self.import_repository.create_attempt(attempt)
+        return attempt
+
+    def _complete_attempt(
+        self,
+        attempt_id: str,
+        import_job_id: str,
+        *,
+        warning_codes: list[str],
+        error_code: str | None,
+    ) -> None:
+        self.import_repository.complete_attempt(
+            attempt_id=attempt_id,
+            import_job_id=import_job_id,
+            status="failed" if error_code else "completed",
+            warning_codes=warning_codes,
+            error_code=error_code,
+            completed_at=format_utc(self.clock(timezone.utc)),
         )
 
     def _build_mentions(
@@ -719,6 +1005,18 @@ def get_import_text_max_bytes_inline() -> int:
     return get_import_text_max_bytes()
 
 
+def get_import_url_enabled_inline() -> bool:
+    from app.core.runtime_config import get_import_url_enabled
+
+    return get_import_url_enabled()
+
+
+def get_import_url_max_text_bytes_inline() -> int:
+    from app.core.runtime_config import get_import_url_max_text_bytes
+
+    return get_import_url_max_text_bytes()
+
+
 def infer_city_from_snapshot(snapshot: dict[str, Any]) -> str | None:
     trip_intent = snapshot.get("trip_intent")
     if isinstance(trip_intent, dict):
@@ -818,11 +1116,11 @@ def artifact_to_response(artifact: SourceArtifactRecord) -> SourceArtifactRespon
     return SourceArtifactResponse(
         id=artifact.id,
         trip_id=artifact.trip_id,
-        artifact_type="text",
-        mime_type="text/plain",
+        artifact_type=artifact.artifact_type,
+        mime_type=artifact.mime_type,
         content_checksum=artifact.content_checksum,
         byte_size=artifact.byte_size,
-        charset="utf-8",
+        charset=artifact.charset,
         privacy_level=artifact.privacy_level,
         original_label=artifact.original_label,
         created_at=artifact.created_at,
@@ -834,7 +1132,7 @@ def job_to_response(job: ImportJobRecord) -> ImportJobResponse:
         id=job.id,
         trip_id=job.trip_id,
         artifact_id=job.artifact_id,
-        input_type="text",
+        input_type=job.input_type,
         status=job.status,
         extraction_schema_version=job.extraction_schema_version,
         extractor_version=job.extractor_version,
@@ -847,6 +1145,62 @@ def job_to_response(job: ImportJobRecord) -> ImportJobResponse:
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
+
+
+def snapshot_to_response(snapshot: URLFetchSnapshotRecord | None) -> URLFetchSnapshotResponse | None:
+    if snapshot is None:
+        return None
+    return URLFetchSnapshotResponse(
+        id=snapshot.id,
+        import_job_id=snapshot.import_job_id,
+        raw_artifact_id=snapshot.raw_artifact_id,
+        request_url_sanitized=snapshot.request_url_sanitized,
+        normalized_request_url=snapshot.normalized_request_url,
+        final_url_sanitized=snapshot.final_url_sanitized,
+        redirect_chain=snapshot.redirect_chain,
+        robots_status=snapshot.robots_status,
+        robots_checked_at=snapshot.robots_checked_at,
+        status_code=snapshot.status_code,
+        content_type=snapshot.content_type,
+        declared_charset=snapshot.declared_charset,
+        effective_charset=snapshot.effective_charset,
+        content_language=snapshot.content_language,
+        compressed_bytes=snapshot.compressed_bytes,
+        decoded_bytes=snapshot.decoded_bytes,
+        body_checksum=snapshot.body_checksum,
+        fetcher_version=snapshot.fetcher_version,
+        policy_version=snapshot.policy_version,
+        fetched_at=snapshot.fetched_at,
+        warning_codes=snapshot.warning_codes,
+        cache_status=snapshot.cache_status,
+        page_title=str(snapshot.header_metadata.get("page_title") or "") or None,
+        source_host=str(snapshot.header_metadata.get("source_host") or "") or None,
+        final_host=str(snapshot.header_metadata.get("final_host") or "") or None,
+        recovery_actions=["paste_text"],
+    )
+
+
+def derivation_to_response(derivation: ArtifactDerivationRecord | None) -> ArtifactDerivationResponse | None:
+    if derivation is None:
+        return None
+    return ArtifactDerivationResponse(
+        id=derivation.id,
+        parent_artifact_id=derivation.parent_artifact_id,
+        child_artifact_id=derivation.child_artifact_id,
+        derivation_type=derivation.derivation_type,
+        transformer_version=derivation.transformer_version,
+        input_checksum=derivation.input_checksum,
+        output_checksum=derivation.output_checksum,
+        created_at=derivation.created_at,
+    )
+
+
+def extension_for_content_type(content_type: str) -> str:
+    if content_type == "text/plain":
+        return "txt"
+    if content_type == "application/xhtml+xml":
+        return "xhtml"
+    return "html"
 
 
 def resolution_to_response(candidate: ResolvedPlaceCandidateRecord) -> ResolvedPlaceCandidateResponse:

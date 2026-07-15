@@ -2,14 +2,14 @@
 
 ## Current phase
 
-F-002a/F-003a Text Import and Review Inbox Foundation
+F-002b Secure URL Import Adapter
 
 ## Active objective
 
-Establish the first source-to-review import boundary for pasted text:
-persist private source artifacts, extract span-valid mentions, resolve place
-candidates deterministically, require human review, and commit confirmed places
-only into the existing TripCandidate pool.
+Extend the source-to-review import boundary from pasted text to public static
+web pages: validate URL/network policy, obey robots.txt, fetch bounded content,
+persist immutable fetch snapshots and raw artifacts, derive reviewable text, and
+reuse the existing human review boundary before TripCandidate creation.
 
 ## Current stable capabilities
 
@@ -33,11 +33,11 @@ only into the existing TripCandidate pool.
 
 ## In review
 
-- F-002a/F-003a Text Import and Review Inbox Foundation
+- F-002b Secure URL Import Adapter
 
 ## Next approved work
 
-1. F-002b URL Import Adapter
+1. F-002c Image/PDF Artifact Intake and Safe Document Classification
 2. F-020b Planner Trace Review and Evaluation Expansion
 
 ## Explicitly not in scope

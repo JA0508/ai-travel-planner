@@ -1,12 +1,22 @@
 import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
-import type { ImportCommitResult, ImportReviewResponse, TextImportCreateResponse } from "./importTypes";
+import type { ImportCommitResult, ImportReviewResponse, TextImportCreateResponse, URLImportCreateResponse } from "./importTypes";
 
 export async function submitTextImport(tripId: string, text: string, idempotencyKey: string) {
   return postTripJson<TextImportCreateResponse>(
     TRIP_API_ENDPOINTS.createTextImport(tripId),
     { text, original_label: "Pasted text" },
     "导入文本失败",
+    undefined,
+    { headers: { "X-Idempotency-Key": idempotencyKey } },
+  );
+}
+
+export async function submitUrlImport(tripId: string, url: string, idempotencyKey: string) {
+  return postTripJson<URLImportCreateResponse>(
+    TRIP_API_ENDPOINTS.createUrlImport(tripId),
+    { url },
+    "导入 URL 失败",
     undefined,
     { headers: { "X-Idempotency-Key": idempotencyKey } },
   );

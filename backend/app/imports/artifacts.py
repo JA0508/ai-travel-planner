@@ -93,8 +93,10 @@ class LocalPrivateArtifactStore:
         return path
 
 
-def make_storage_key() -> str:
-    return f"text/{uuid4().hex}.txt"
+def make_storage_key(*, artifact_type: str = "text", extension: str = "txt") -> str:
+    safe_type = artifact_type.strip().replace("_", "-")
+    safe_extension = extension.strip().lstrip(".") or "bin"
+    return f"{safe_type}/{uuid4().hex}.{safe_extension}"
 
 
 def is_safe_storage_key(value: str) -> bool:

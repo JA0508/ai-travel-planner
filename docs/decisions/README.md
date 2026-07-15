@@ -89,3 +89,5 @@ Routine implementation details should remain in code, tests, issues, or pull req
 - ADR-0004: Persisted Replan Proposal Integrity
 - ADR-0005: Typed Trip Mutation Commands
 - ADR-0006: Trip Candidate Admission and Mutation Closure
+- ADR-0007: Text Import Provenance and Review Boundary
+- ADR-0008: Secure URL Import and Fetch Provenance
