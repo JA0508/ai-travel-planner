@@ -15,6 +15,7 @@ export const routeWorkspacePageStateOwnership = {
   availabilityPreviewError: "async",
   availabilityPreviewSignature: "server",
   availabilityWindowsText: "draft",
+  candidateWorkspace: "server",
   committedSwaps: "durable",
   completionCandidateHistory: "durable",
   completionPickerOpen: "ui",

@@ -44,6 +44,20 @@ from .access import (
     hash_idempotency_key,
     verify_capability,
 )
+from .candidates import (
+    CandidateDecisionReasonCode,
+    CandidateDecisionType,
+    TripCandidateCreateRequest,
+    TripCandidateDecisionRecord,
+    TripCandidateDecisionRequest,
+    TripCandidateDecisionResponse,
+    TripCandidateListResponse,
+    TripCandidateRegistrationResponse,
+    build_candidate_record,
+    candidate_to_response,
+    generate_candidate_decision_id,
+    infer_workflow_state,
+)
 from .digests import (
     TRIP_MUTATION_COMMAND_SCHEMA_VERSION,
     TRIP_MUTATION_ENGINE_VERSION,
@@ -175,6 +189,132 @@ class TripPersistenceService:
             trip=TripMetadata.from_record(trip),
             revision=TripRevisionMetadata.from_record(revision),
             itinerary=deserialize_itinerary_snapshot(revision.itinerary_snapshot),
+        )
+
+    def register_candidate(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        idempotency_key: str | None,
+        payload: TripCandidateCreateRequest,
+    ) -> TripCandidateRegistrationResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        trip = self._require_trip_access(trip_id, capability)
+        now = format_utc(self.clock())
+        candidate = build_candidate_record(trip_id=trip_id, payload=payload, now=now)
+        decision = TripCandidateDecisionRecord(
+            id=generate_candidate_decision_id(),
+            trip_id=trip_id,
+            candidate_id=candidate.id,
+            decision_type=CandidateDecisionType.PENDING.value,
+            reason_code=CandidateDecisionReasonCode.CANDIDATE_REGISTERED.value,
+            base_revision_id=trip.current_revision_id,
+            related_revision_id=None,
+            source="candidate_registration",
+            created_at=now,
+        )
+        req_digest = request_digest(
+            {
+                "operation": "register_candidate",
+                "trip_id": trip_id,
+                "candidate_content_digest": candidate.content_digest,
+                "source_kind": candidate.source_kind,
+            }
+        )
+        result = self.repository.create_candidate(
+            candidate=candidate,
+            decision=decision,
+            request_digest=req_digest,
+            idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+        )
+        decisions = self.repository.list_candidate_decisions(
+            trip_id=trip_id,
+            candidate_id=result.candidate.id,
+        )
+        state, latest_id = infer_workflow_state(decisions)
+        return TripCandidateRegistrationResponse(
+            candidate=candidate_to_response(result.candidate, workflow_state=state, latest_decision_id=latest_id),
+            deduplicated=result.deduplicated,
+            idempotent_replay=result.idempotent_replay,
+        )
+
+    def list_candidates(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        state: str | None = None,
+    ) -> TripCandidateListResponse:
+        self._require_trip_access(trip_id, capability)
+        decisions_by_candidate: dict[str, list[TripCandidateDecisionRecord]] = {}
+        for decision in self.repository.list_candidate_decisions(trip_id=trip_id):
+            decisions_by_candidate.setdefault(decision.candidate_id, []).append(decision)
+        candidates = []
+        for candidate in self.repository.list_candidates(trip_id=trip_id):
+            workflow_state, latest_id = infer_workflow_state(decisions_by_candidate.get(candidate.id, []))
+            if state and workflow_state != state:
+                continue
+            candidates.append(candidate_to_response(candidate, workflow_state=workflow_state, latest_decision_id=latest_id))
+        return TripCandidateListResponse(candidates=candidates)
+
+    def record_candidate_decision(
+        self,
+        *,
+        trip_id: str,
+        candidate_id: str,
+        capability: str | None,
+        idempotency_key: str | None,
+        payload: TripCandidateDecisionRequest,
+    ) -> TripCandidateDecisionResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        self._require_trip_access(trip_id, capability)
+        if payload.decision == CandidateDecisionType.SCHEDULED:
+            raise InvalidRevisionOperationError("scheduled decisions are created by mutation apply.")
+        candidate = self.repository.get_candidate(trip_id=trip_id, candidate_id=candidate_id)
+        now = format_utc(self.clock())
+        decision = TripCandidateDecisionRecord(
+            id=generate_candidate_decision_id(),
+            trip_id=trip_id,
+            candidate_id=candidate_id,
+            decision_type=payload.decision.value,
+            reason_code=payload.reason_code.value,
+            base_revision_id=payload.base_revision_id,
+            related_revision_id=None,
+            source="user_decision",
+            created_at=now,
+        )
+        req_digest = request_digest(
+            {
+                "operation": "candidate_decision",
+                "candidate_id": candidate_id,
+                "decision": payload.decision.value,
+                "reason_code": payload.reason_code.value,
+                "base_revision_id": payload.base_revision_id,
+            }
+        )
+        result = self.repository.create_candidate_decision(
+            decision=decision,
+            request_digest=req_digest,
+            idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+        )
+        decisions = self.repository.list_candidate_decisions(trip_id=trip_id, candidate_id=candidate.id)
+        state, latest_id = infer_workflow_state(decisions)
+        return TripCandidateDecisionResponse(
+            decision={
+                "id": result.decision.id,
+                "candidate_id": result.decision.candidate_id,
+                "decision_type": result.decision.decision_type,
+                "reason_code": result.decision.reason_code,
+                "base_revision_id": result.decision.base_revision_id,
+                "related_revision_id": result.decision.related_revision_id,
+                "source": result.decision.source,
+                "created_at": result.decision.created_at,
+            },
+            candidate=candidate_to_response(result.candidate, workflow_state=state, latest_decision_id=latest_id),
+            idempotent_replay=result.idempotent_replay,
         )
 
     def apply_completion_task(
@@ -374,9 +514,11 @@ class TripPersistenceService:
                 current_revision_id=trip.current_revision_id,
             )
         envelope = TripMutationCommandEnvelope.model_validate(payload.model_dump(mode="json"))
+        candidates_by_id = self._candidate_context_for_envelope(trip_id, envelope)
         preview = TripMutationEngine().preview(
             base_snapshot=base_revision.itinerary_snapshot,
             envelope=envelope,
+            candidates_by_id=candidates_by_id,
         )
         now = self.clock()
         expires_at = format_utc(now + timedelta(seconds=get_trip_replan_proposal_ttl_seconds()))
@@ -384,11 +526,15 @@ class TripPersistenceService:
         source_type = (
             RevisionSourceType.SWAP.value
             if envelope.mutation_kind == "swap"
+            else RevisionSourceType.CANDIDATE_ADMISSION.value
+            if envelope.mutation_kind == "candidate_admission"
             else RevisionSourceType.ROUTE_EDIT.value
         )
         operation_type = (
             "apply_swap_commands"
             if envelope.mutation_kind == "swap"
+            else "apply_candidate_admission_commands"
+            if envelope.mutation_kind == "candidate_admission"
             else "apply_route_edit_commands"
         )
         req_digest = request_digest(
@@ -608,6 +754,18 @@ class TripPersistenceService:
             ).hexdigest(),
             "invalidated_surfaces": proposal.invalidated_surfaces,
         }
+        if proposal.mutation_kind == "candidate_admission":
+            candidate_id = first_candidate_id_from_commands(proposal.commands or [])
+            if candidate_id:
+                candidate = self.repository.get_candidate(trip_id=trip_id, candidate_id=candidate_id)
+                operation_metadata["candidate_admission"] = {
+                    "candidate_id": candidate.id,
+                    "candidate_content_digest": candidate.content_digest,
+                    "candidate_source_kind": candidate.source_kind,
+                    "candidate_source_ref": candidate.source_ref,
+                    "scheduled_item_id": first_value_from_impact(proposal.impact_summary, "scheduled_item_ids"),
+                    "assumption_codes": candidate_assumption_codes(candidate),
+                }
         result = self.repository.apply_mutation_proposal(
             trip_id=trip_id,
             capability_hash=trip.capability_hash,
@@ -685,6 +843,7 @@ class TripPersistenceService:
             RevisionSourceType.REPLAN_PATCH.value,
             RevisionSourceType.ROUTE_EDIT.value,
             RevisionSourceType.SWAP.value,
+            RevisionSourceType.COMPLETION_PATCH.value,
         }
         if target_revision.source_type not in undoable_source_types:
             raise RevisionNotUndoableError(target_revision_id)
@@ -696,6 +855,8 @@ class TripPersistenceService:
         undo_source_type = (
             RevisionSourceType.REPLAN_UNDO.value
             if target_revision.source_type == RevisionSourceType.REPLAN_PATCH.value
+            else RevisionSourceType.COMPLETION_UNDO.value
+            if target_revision.source_type == RevisionSourceType.COMPLETION_PATCH.value
             else RevisionSourceType.MUTATION_UNDO.value
         )
         result = self.repository.create_revision(
@@ -838,6 +999,32 @@ class TripPersistenceService:
         if not verify_capability(capability, trip.capability_hash):
             raise TripAccessDeniedError()
         return trip
+
+    def _candidate_context_for_envelope(
+        self,
+        trip_id: str,
+        envelope: TripMutationCommandEnvelope,
+    ) -> dict[str, dict[str, Any]]:
+        candidate_ids = [
+            str(command.candidate_id)
+            for command in envelope.commands
+            if getattr(command, "type", None) == "add_candidate_stop"
+        ]
+        if not candidate_ids:
+            return {}
+        decisions_by_candidate: dict[str, list[TripCandidateDecisionRecord]] = {}
+        for decision in self.repository.list_candidate_decisions(trip_id=trip_id):
+            decisions_by_candidate.setdefault(decision.candidate_id, []).append(decision)
+        result: dict[str, dict[str, Any]] = {}
+        for candidate_id in candidate_ids:
+            candidate = self.repository.get_candidate(trip_id=trip_id, candidate_id=candidate_id)
+            workflow_state, latest_id = infer_workflow_state(decisions_by_candidate.get(candidate_id, []))
+            result[candidate_id] = candidate_to_response(
+                candidate,
+                workflow_state=workflow_state,
+                latest_decision_id=latest_id,
+            ).model_dump(mode="json")
+        return result
 
 
 def build_trace_collector(payload, *, raw_text: str | None = None) -> PlannerTraceCollector:
@@ -1028,3 +1215,28 @@ def unique_preserve_order(values: list[str]) -> list[str]:
             seen.add(key)
             result.append(normalized)
     return result
+
+
+def first_candidate_id_from_commands(commands: list[dict[str, Any]]) -> str | None:
+    for command in commands:
+        if command.get("type") == "add_candidate_stop" and command.get("candidate_id"):
+            return str(command["candidate_id"])
+    return None
+
+
+def first_value_from_impact(impact: dict[str, Any] | None, key: str) -> Any:
+    if not isinstance(impact, dict):
+        return None
+    values = impact.get(key)
+    if isinstance(values, list) and values:
+        return values[0]
+    return None
+
+
+def candidate_assumption_codes(candidate) -> list[str]:
+    codes: list[str] = []
+    if candidate.location_state == "assumed":
+        codes.append("LOCATION_ASSUMED")
+    if candidate.duration_state == "assumed":
+        codes.append("DURATION_ASSUMED")
+    return codes

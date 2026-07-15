@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import time
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -251,6 +251,9 @@ class ScheduledPOI(BaseModel):
     selection_top_candidates: list[PlanningCandidateTrace] = Field(default_factory=list)
     selection_rejected_candidates: list[PlanningCandidateTrace] = Field(default_factory=list)
     poi_research: POIResearchSummary | None = None
+    candidate_id: str | None = None
+    candidate_provenance: dict[str, Any] | None = None
+    local_edit: dict[str, Any] | None = None
 
 
 class DayTimeBlock(BaseModel):

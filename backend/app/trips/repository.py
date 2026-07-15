@@ -3,8 +3,12 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from .models import (
+    CandidateDecisionResult,
+    CandidateRegistrationResult,
     CreateRevisionResult,
     TripAggregate,
+    TripCandidateDecisionRecord,
+    TripCandidateRecord,
     TripMutationProposalRecord,
     TripRecord,
     TripRevisionRecord,
@@ -43,6 +47,39 @@ class TripRepository(Protocol):
         ...
 
     def list_revisions(self, trip_id: str) -> list[TripRevisionRecord]:
+        ...
+
+    def create_candidate(
+        self,
+        *,
+        candidate: TripCandidateRecord,
+        decision: TripCandidateDecisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CandidateRegistrationResult:
+        ...
+
+    def get_candidate(self, *, trip_id: str, candidate_id: str) -> TripCandidateRecord:
+        ...
+
+    def list_candidates(self, *, trip_id: str) -> list[TripCandidateRecord]:
+        ...
+
+    def list_candidate_decisions(
+        self,
+        *,
+        trip_id: str,
+        candidate_id: str | None = None,
+    ) -> list[TripCandidateDecisionRecord]:
+        ...
+
+    def create_candidate_decision(
+        self,
+        *,
+        decision: TripCandidateDecisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CandidateDecisionResult:
         ...
 
     def get_idempotent_revision(

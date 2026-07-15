@@ -237,6 +237,65 @@ class RevisionNotUndoableError(TripError):
         )
 
 
+class CandidateNotFoundError(TripError):
+    def __init__(self, candidate_id: str) -> None:
+        super().__init__(
+            code="candidate_not_found",
+            message="Trip candidate was not found.",
+            status_code=404,
+            context={"candidate_id": candidate_id},
+        )
+
+
+class CandidateWrongTripError(TripError):
+    def __init__(self, candidate_id: str) -> None:
+        super().__init__(
+            code="candidate_wrong_trip",
+            message="Trip candidate does not belong to this trip.",
+            status_code=404,
+            context={"candidate_id": candidate_id},
+        )
+
+
+class CandidateDecisionConflictError(TripError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="candidate_decision_conflict",
+            message="Candidate decision conflicts with the current workflow state.",
+            status_code=409,
+        )
+
+
+class CandidateAdmissionRepairRequiredError(TripError):
+    def __init__(self, *, candidate_id: str, repair: dict[str, Any]) -> None:
+        super().__init__(
+            code="candidate_admission_repair_required",
+            message="Candidate admission requires an explicit repair before it can be scheduled.",
+            status_code=409,
+            context={"candidate_id": candidate_id, "repair": repair},
+        )
+
+
+class CandidateRejectedError(TripError):
+    def __init__(self, candidate_id: str) -> None:
+        super().__init__(
+            code="candidate_rejected",
+            message="Rejected candidates cannot be admitted without restoring them to pending.",
+            status_code=409,
+            context={"candidate_id": candidate_id},
+        )
+
+
+class CandidateAlreadyScheduledError(TripError):
+    def __init__(self, candidate_id: str) -> None:
+        super().__init__(
+            code="candidate_already_scheduled",
+            message="Candidate has already been scheduled.",
+            status_code=409,
+            context={"candidate_id": candidate_id},
+        )
+
+
 class UndoTargetNotCurrentError(TripError):
     def __init__(self, *, target_revision_id: str, current_revision_id: str) -> None:
         super().__init__(

@@ -16,8 +16,10 @@ class RevisionSourceType(str, Enum):
     REPLAN_PATCH = "replan_patch"
     REPLAN_UNDO = "replan_undo"
     COMPLETION_PATCH = "completion_patch"
+    COMPLETION_UNDO = "completion_undo"
     ROUTE_EDIT = "route_edit"
     SWAP = "swap"
+    CANDIDATE_ADMISSION = "candidate_admission"
     MUTATION_UNDO = "mutation_undo"
     RESTORE = "restore"
     SYSTEM_MIGRATION = "system_migration"
@@ -123,3 +125,11 @@ class TripAggregate:
 class CreateRevisionResult:
     revision: TripRevisionRecord
     idempotent_replay: bool = False
+
+
+from .candidates import (  # noqa: E402
+    CandidateDecisionResult,
+    CandidateRegistrationResult,
+    TripCandidateDecisionRecord,
+    TripCandidateRecord,
+)

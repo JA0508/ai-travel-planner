@@ -5,7 +5,10 @@ export type RouteWorkspaceMutationKind =
   | "backend_replan_apply"
   | "backend_replan_undo"
   | "completion_task_apply"
-  | "completion_task_undo";
+  | "completion_task_undo"
+  | "candidate_intake"
+  | "candidate_workflow_decision"
+  | "candidate_admission";
 
 export type RouteWorkspaceRefreshPolicy = {
   mutationKind: RouteWorkspaceMutationKind;
@@ -16,10 +19,18 @@ export type RouteWorkspaceRefreshPolicy = {
     | "applyPersistedReplanProposal"
     | "applyPersistedMutationProposal"
     | "undoPersistedRevision"
+    | "registerTripCandidate"
+    | "recordTripCandidateDecision"
     | null;
   refreshTiming: "none" | "after_local_patch" | "during_backend_mutation";
   failureBehavior: "preserve_local_itinerary" | "preserve_previous_itinerary" | "use_backend_error";
-  refreshedSurfaces: Array<"itinerary" | "trip_intent" | "completion_intelligence" | "completion_candidate_history">;
+  refreshedSurfaces: Array<
+    | "itinerary"
+    | "trip_intent"
+    | "completion_intelligence"
+    | "completion_candidate_history"
+    | "candidate_workspace"
+  >;
 };
 
 export const routeWorkspaceRefreshPolicies: Record<
@@ -96,11 +107,41 @@ export const routeWorkspaceRefreshPolicies: Record<
   },
   completion_task_undo: {
     mutationKind: "completion_task_undo",
-    itineraryUpdate: "local_patch",
-    refreshEndpoint: "refreshItinerarySurfaces",
-    refreshTiming: "after_local_patch",
-    failureBehavior: "preserve_local_itinerary",
+    itineraryUpdate: "backend_authoritative",
+    refreshEndpoint: "undoPersistedRevision",
+    refreshTiming: "during_backend_mutation",
+    failureBehavior: "use_backend_error",
     refreshedSurfaces: ["itinerary", "completion_intelligence", "completion_candidate_history"],
+  },
+  candidate_intake: {
+    mutationKind: "candidate_intake",
+    itineraryUpdate: "backend_authoritative",
+    refreshEndpoint: "registerTripCandidate",
+    refreshTiming: "during_backend_mutation",
+    failureBehavior: "use_backend_error",
+    refreshedSurfaces: ["candidate_workspace"],
+  },
+  candidate_workflow_decision: {
+    mutationKind: "candidate_workflow_decision",
+    itineraryUpdate: "backend_authoritative",
+    refreshEndpoint: "recordTripCandidateDecision",
+    refreshTiming: "during_backend_mutation",
+    failureBehavior: "use_backend_error",
+    refreshedSurfaces: ["candidate_workspace"],
+  },
+  candidate_admission: {
+    mutationKind: "candidate_admission",
+    itineraryUpdate: "backend_authoritative",
+    refreshEndpoint: "applyPersistedMutationProposal",
+    refreshTiming: "during_backend_mutation",
+    failureBehavior: "use_backend_error",
+    refreshedSurfaces: [
+      "itinerary",
+      "trip_intent",
+      "completion_intelligence",
+      "completion_candidate_history",
+      "candidate_workspace",
+    ],
   },
 };
 

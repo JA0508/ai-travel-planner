@@ -139,6 +139,9 @@ The repository currently contains a substantial planning foundation:
 - persisted replan proposal preview/apply integrity
 - typed route edit and swap mutation proposals
 - immutable route-edit/swap revisions with compensating undo
+- persisted TripCandidate intake and workflow decisions
+- typed candidate admission with repair-required semantics
+- saved completion undo as a compensating TripRevision
 - fixture-driven product verification
 
 > Development branches may contain additional in-review capabilities. Required CI
@@ -500,6 +503,28 @@ The backend deterministic mutation engine computes the preview snapshot,
 command digest, impact summary, and invalidated derived surfaces. Apply validates
 the persisted proposal and creates the revision without rerunning the engine,
 planner, geocoder, or route provider.
+
+Candidate handling is split from executable itinerary mutation. Candidate intake,
+reject, defer, and restore are persisted workflow decisions and do not create
+`TripRevision` records. A candidate becomes itinerary state only through a typed
+candidate-admission proposal:
+
+```text
+POST /trips/{trip_id}/candidates
+POST /trips/{trip_id}/candidates/{candidate_id}/decisions
+POST /trips/{trip_id}/mutations/preview
+POST /trips/{trip_id}/mutation-proposals/{proposal_id}/apply
+```
+
+Admission commands reference a server-owned `candidate_id` and target slot. The
+backend validates candidate workflow state, required execution facts, schedule
+invariants, proposal digest, base revision, and idempotency before creating an
+immutable revision. Missing execution facts return repair-required state instead
+of silently scheduling weak or invented data.
+
+Saved completion undo is also server-authoritative: undoing a persisted
+completion patch creates a compensating revision and preserves lineage instead
+of treating the browser as the canonical saved state.
 
 ### Uncertainty semantics
 

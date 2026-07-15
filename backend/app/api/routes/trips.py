@@ -10,6 +10,13 @@ from app.core.runtime_config import parse_cors_allow_origins
 from app.trips.access import capability_cookie_name
 from app.trips.dependencies import get_trip_persistence_service, get_trip_repository
 from app.trips.errors import TripError
+from app.trips.candidates import (
+    TripCandidateCreateRequest,
+    TripCandidateDecisionRequest,
+    TripCandidateDecisionResponse,
+    TripCandidateListResponse,
+    TripCandidateRegistrationResponse,
+)
 from app.trips.schemas import (
     ApplyPersistedMutationProposalRequest,
     ApplyPersistedReplanProposalRequest,
@@ -84,6 +91,73 @@ def get_trip_revision(
             trip_id,
             revision_id,
             get_trip_capability_from_request(request, trip_id),
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/candidates",
+    response_model=TripCandidateRegistrationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def register_trip_candidate(
+    trip_id: str,
+    payload: TripCandidateCreateRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> TripCandidateRegistrationResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().register_candidate(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get("/{trip_id}/candidates", response_model=TripCandidateListResponse)
+def list_trip_candidates(
+    trip_id: str,
+    request: Request,
+    state: str | None = None,
+) -> TripCandidateListResponse | JSONResponse:
+    try:
+        return get_trip_persistence_service().list_candidates(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            state=state,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/candidates/{candidate_id}/decisions",
+    response_model=TripCandidateDecisionResponse,
+)
+def record_trip_candidate_decision(
+    trip_id: str,
+    candidate_id: str,
+    payload: TripCandidateDecisionRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> TripCandidateDecisionResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().record_candidate_decision(
+            trip_id=trip_id,
+            candidate_id=candidate_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
         )
     except TripError as exc:
         return trip_error_response(exc)

@@ -80,3 +80,12 @@ Create an ADR only for decisions expected to remain important across multiple
 features or releases.
 
 Routine implementation details should remain in code, tests, issues, or pull requests.
+
+## Current ADRs
+
+- ADR-0001: Source-to-Executable Trip Workspace
+- ADR-0002: Planner Trace and Deterministic Evaluation
+- ADR-0003: TripRevision Persistence and Concurrency
+- ADR-0004: Persisted Replan Proposal Integrity
+- ADR-0005: Typed Trip Mutation Commands
+- ADR-0006: Trip Candidate Admission and Mutation Closure

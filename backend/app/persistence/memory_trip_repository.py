@@ -12,6 +12,7 @@ from app.trips.digests import (
     mutation_proposal_digest,
 )
 from app.trips.errors import (
+    CandidateNotFoundError,
     IdempotencyConflictError,
     MutationProposalCancelledError,
     MutationProposalExpiredError,
@@ -26,16 +27,21 @@ from app.trips.errors import (
     TripNotFoundError,
 )
 from app.trips.models import (
+    CandidateDecisionResult,
+    CandidateRegistrationResult,
     CreateRevisionResult,
     ProposalStatus,
     RevisionOperationRecord,
     RevisionSourceType,
+    TripCandidateDecisionRecord,
+    TripCandidateRecord,
     TripAggregate,
     TripLifecycleStatus,
     TripMutationProposalRecord,
     TripRecord,
     TripRevisionRecord,
 )
+from app.trips.candidates import generate_candidate_decision_id
 
 
 class MemoryTripRepository:
@@ -45,6 +51,9 @@ class MemoryTripRepository:
         self.operations: dict[str, RevisionOperationRecord] = {}
         self.idempotency_records: dict[tuple[str, str], tuple[str, str]] = {}
         self.proposals: dict[str, TripMutationProposalRecord] = {}
+        self.candidates: dict[str, TripCandidateRecord] = {}
+        self.candidate_decisions: dict[str, TripCandidateDecisionRecord] = {}
+        self.candidate_idempotency_records: dict[tuple[str, str], tuple[str, str, str | None]] = {}
 
     def health_check(self) -> dict[str, Any]:
         return {
@@ -151,6 +160,99 @@ class MemoryTripRepository:
             key=lambda revision: revision.revision_number,
             reverse=True,
         )
+
+    def create_candidate(
+        self,
+        *,
+        candidate: TripCandidateRecord,
+        decision: TripCandidateDecisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CandidateRegistrationResult:
+        key = (candidate.trip_id, idempotency_key_hash)
+        existing_idempotency = self.candidate_idempotency_records.get(key)
+        if existing_idempotency is not None:
+            stored_digest, candidate_id, decision_id = existing_idempotency
+            if stored_digest != request_digest:
+                raise IdempotencyConflictError()
+            return CandidateRegistrationResult(
+                candidate=self.get_candidate(trip_id=candidate.trip_id, candidate_id=candidate_id),
+                decision=(
+                    copy.deepcopy(self.candidate_decisions[decision_id])
+                    if decision_id
+                    else None
+                ),
+                idempotent_replay=True,
+            )
+        duplicate = next(
+            (
+                stored
+                for stored in self.candidates.values()
+                if stored.trip_id == candidate.trip_id
+                and stored.content_digest == candidate.content_digest
+            ),
+            None,
+        )
+        if duplicate is not None:
+            self.candidate_idempotency_records[key] = (request_digest, duplicate.id, None)
+            return CandidateRegistrationResult(candidate=copy.deepcopy(duplicate), deduplicated=True)
+        self.candidates[candidate.id] = copy.deepcopy(candidate)
+        self.candidate_decisions[decision.id] = copy.deepcopy(decision)
+        self.candidate_idempotency_records[key] = (request_digest, candidate.id, decision.id)
+        return CandidateRegistrationResult(candidate=copy.deepcopy(candidate), decision=copy.deepcopy(decision))
+
+    def get_candidate(self, *, trip_id: str, candidate_id: str) -> TripCandidateRecord:
+        candidate = self.candidates.get(candidate_id)
+        if candidate is None or candidate.trip_id != trip_id:
+            raise CandidateNotFoundError(candidate_id)
+        return copy.deepcopy(candidate)
+
+    def list_candidates(self, *, trip_id: str) -> list[TripCandidateRecord]:
+        return sorted(
+            [copy.deepcopy(candidate) for candidate in self.candidates.values() if candidate.trip_id == trip_id],
+            key=lambda candidate: (candidate.created_at, candidate.id),
+        )
+
+    def list_candidate_decisions(
+        self,
+        *,
+        trip_id: str,
+        candidate_id: str | None = None,
+    ) -> list[TripCandidateDecisionRecord]:
+        return sorted(
+            [
+                copy.deepcopy(decision)
+                for decision in self.candidate_decisions.values()
+                if decision.trip_id == trip_id
+                and (candidate_id is None or decision.candidate_id == candidate_id)
+            ],
+            key=lambda decision: (decision.created_at, decision.id),
+        )
+
+    def create_candidate_decision(
+        self,
+        *,
+        decision: TripCandidateDecisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CandidateDecisionResult:
+        key = (decision.trip_id, idempotency_key_hash)
+        existing = self.candidate_idempotency_records.get(key)
+        if existing is not None:
+            stored_digest, candidate_id, decision_id = existing
+            if stored_digest != request_digest:
+                raise IdempotencyConflictError()
+            if decision_id is None:
+                raise CandidateNotFoundError(candidate_id)
+            return CandidateDecisionResult(
+                candidate=self.get_candidate(trip_id=decision.trip_id, candidate_id=candidate_id),
+                decision=copy.deepcopy(self.candidate_decisions[decision_id]),
+                idempotent_replay=True,
+            )
+        candidate = self.get_candidate(trip_id=decision.trip_id, candidate_id=decision.candidate_id)
+        self.candidate_decisions[decision.id] = copy.deepcopy(decision)
+        self.candidate_idempotency_records[key] = (request_digest, candidate.id, decision.id)
+        return CandidateDecisionResult(candidate=candidate, decision=copy.deepcopy(decision))
 
     def get_idempotent_revision(
         self,
@@ -298,6 +400,23 @@ class MemoryTripRepository:
         proposal.applied_revision_id = revision_id
         proposal.updated_at = now
         self.proposals[proposal_id] = copy.deepcopy(proposal)
+        candidate_admission = operation_metadata.get("candidate_admission")
+        if isinstance(candidate_admission, dict):
+            candidate_id = str(candidate_admission.get("candidate_id") or "")
+            if candidate_id:
+                self.get_candidate(trip_id=trip_id, candidate_id=candidate_id)
+                decision = TripCandidateDecisionRecord(
+                    id=generate_candidate_decision_id(),
+                    trip_id=trip_id,
+                    candidate_id=candidate_id,
+                    decision_type="scheduled",
+                    reason_code="SCHEDULED_IN_REVISION",
+                    base_revision_id=base_revision_id,
+                    related_revision_id=revision_id,
+                    source="mutation_apply",
+                    created_at=now,
+                )
+                self.candidate_decisions[decision.id] = decision
         self.trips[trip_id] = TripRecord(
             id=trip.id,
             current_revision_id=revision_id,
