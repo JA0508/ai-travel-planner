@@ -140,6 +140,26 @@ class MemoryTripRepository:
             reverse=True,
         )
 
+    def get_idempotent_revision(
+        self,
+        *,
+        trip_id: str,
+        capability_hash: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CreateRevisionResult | None:
+        self.get_trip_for_access(trip_id, capability_hash)
+        idempotency_record = self.idempotency_records.get((trip_id, idempotency_key_hash))
+        if idempotency_record is None:
+            return None
+        stored_request_digest, result_revision_id = idempotency_record
+        if stored_request_digest != request_digest:
+            raise IdempotencyConflictError()
+        return CreateRevisionResult(
+            revision=self.get_revision(trip_id, result_revision_id),
+            idempotent_replay=True,
+        )
+
     def create_revision(
         self,
         *,

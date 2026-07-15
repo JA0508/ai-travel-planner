@@ -14,6 +14,7 @@ from app.schemas import (
     PlanTripFromTextResponse,
     ParsedTripIntentResponse,
     PlanningInputState,
+    ReplanItineraryResponse,
     TimeBlockType,
     TravelMode,
     TripIntentEnvelope,
@@ -145,6 +146,47 @@ class PersistedCompletionTaskActionResponse(BaseModel):
     trip: TripMetadata
     current_revision: TripRevisionMetadata
     task_result: CompletionTaskActionResponse
+    persistence: TripPersistenceInfo
+
+
+class PersistedReplanRequest(BaseModel):
+    base_revision_id: str = Field(..., min_length=1)
+    follow_up_text: str = Field(..., min_length=1)
+    auto_fill_sparse_days: bool = True
+    expected_preview_digest: str | None = Field(default=None, min_length=1)
+
+
+class PersistedReplanResponse(BaseModel):
+    trip: TripMetadata
+    current_revision: TripRevisionMetadata
+    replan_result: ReplanItineraryResponse
+    persistence: TripPersistenceInfo
+
+
+class MutationProposalMetadata(BaseModel):
+    operation_type: str
+    source_type: str
+    base_revision_id: str
+    request_digest: str
+    proposed_content_digest: str
+    proposal_digest: str
+
+
+class PersistedReplanPreviewResponse(BaseModel):
+    trip: TripMetadata
+    current_revision: TripRevisionMetadata
+    proposal: MutationProposalMetadata
+    replan_result: ReplanItineraryResponse
+
+
+class UndoPersistedMutationRequest(BaseModel):
+    base_revision_id: str = Field(..., min_length=1)
+
+
+class UndoPersistedMutationResponse(BaseModel):
+    trip: TripMetadata
+    current_revision: TripRevisionMetadata
+    itinerary: ItineraryResponse
     persistence: TripPersistenceInfo
 
 

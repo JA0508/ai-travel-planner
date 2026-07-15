@@ -14,6 +14,7 @@ class RevisionSourceType(str, Enum):
     PLANNER_GENERATION = "planner_generation"
     PLANNER_REGENERATION = "planner_regeneration"
     REPLAN_PATCH = "replan_patch"
+    REPLAN_UNDO = "replan_undo"
     COMPLETION_PATCH = "completion_patch"
     ROUTE_EDIT = "route_edit"
     RESTORE = "restore"

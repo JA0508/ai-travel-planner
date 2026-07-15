@@ -13,6 +13,9 @@ from app.trips.errors import TripError
 from app.trips.schemas import (
     PersistedCompletionTaskActionRequest,
     PersistedCompletionTaskActionResponse,
+    PersistedReplanRequest,
+    PersistedReplanPreviewResponse,
+    PersistedReplanResponse,
     RestoreRevisionRequest,
     RestoreRevisionResponse,
     TripCurrentResponse,
@@ -20,6 +23,8 @@ from app.trips.schemas import (
     TripPlanResponse,
     TripRevisionDetailResponse,
     TripRevisionListResponse,
+    UndoPersistedMutationRequest,
+    UndoPersistedMutationResponse,
 )
 
 router = APIRouter(prefix="/trips", tags=["trips"])
@@ -98,6 +103,78 @@ def apply_persisted_completion_task(
             capability=get_trip_capability_from_request(request, trip_id),
             idempotency_key=x_idempotency_key,
             payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/replan/preview",
+    response_model=PersistedReplanPreviewResponse,
+)
+def preview_persisted_replan(
+    trip_id: str,
+    payload: PersistedReplanRequest,
+    request: Request,
+) -> PersistedReplanPreviewResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().preview_replan(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/replan",
+    response_model=PersistedReplanResponse,
+)
+def apply_persisted_replan(
+    trip_id: str,
+    payload: PersistedReplanRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> PersistedReplanResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().apply_replan(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/revisions/{target_revision_id}/undo",
+    response_model=UndoPersistedMutationResponse,
+)
+def undo_persisted_revision(
+    trip_id: str,
+    target_revision_id: str,
+    payload: UndoPersistedMutationRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> UndoPersistedMutationResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().undo_revision(
+            trip_id=trip_id,
+            target_revision_id=target_revision_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            base_revision_id=payload.base_revision_id,
         )
     except TripError as exc:
         return trip_error_response(exc)

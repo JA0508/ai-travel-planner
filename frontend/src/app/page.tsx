@@ -18,6 +18,7 @@ import { useRouteWorkspaceUiState } from "@/features/trip-workspace/routeWorkspa
 import {
   LEGACY_FULL_SESSION_KEY,
   PERSISTED_TRIP_REF_KEY,
+  buildReplanIdempotencyKey,
   buildPersistedTripRef,
   describeTripPersistence,
   markDirty,
@@ -118,7 +119,7 @@ import {
   parseFixedEventLines,
   splitLines,
 } from "@/components/trip/tripInputParsing";
-import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
+import { getTripJson, postTripJson, type TripApiResult } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 
 const API_URL = TRIP_API_ENDPOINTS.generateItinerary;
@@ -807,6 +808,31 @@ type PersistedCompletionTaskActionResponse = {
   };
 };
 
+type PersistedReplanResponse = {
+  trip: TripMetadata;
+  current_revision: TripRevisionMetadata;
+  replan_result: ReplanItineraryResponse;
+  persistence: {
+    status: "saved";
+    schema_version: string;
+    idempotent_replay: boolean;
+  };
+};
+
+type PersistedReplanPreviewResponse = {
+  trip: TripMetadata;
+  current_revision: TripRevisionMetadata;
+  proposal: {
+    operation_type: string;
+    source_type: string;
+    base_revision_id: string;
+    request_digest: string;
+    proposed_content_digest: string;
+    proposal_digest: string;
+  };
+  replan_result: ReplanItineraryResponse;
+};
+
 type RestoreRevisionResponse = {
   trip: TripMetadata;
   current_revision: TripRevisionMetadata;
@@ -817,6 +843,8 @@ type RestoreRevisionResponse = {
     idempotent_replay: boolean;
   };
 };
+
+type UndoPersistedMutationResponse = RestoreRevisionResponse;
 
 type ReplanItineraryResponse = {
   trip_intent: TripIntentEnvelope;
@@ -2707,7 +2735,11 @@ function buildRegenerationSemanticsViewModel(
     };
   }
 
-  async function runFollowUpReplan(rawFollowUpText: string) {
+  async function runFollowUpReplan(rawFollowUpText: string): Promise<{
+    itinerary: ItineraryResponse;
+    persistedRevisionId?: string;
+    persistedBaseRevisionId?: string;
+  } | null | undefined> {
     if (!activeRegenerationIntent) {
       setError("当前旅行计划缺失，暂时不能按补充要求继续补全。");
       return;
@@ -2725,31 +2757,47 @@ function buildRegenerationSemanticsViewModel(
 
     try {
       const currentBaseIntent = activeRegenerationIntent;
-      const result = await postTripJson<ReplanItineraryResponse>(
-        REPLAN_API_URL,
-        {
-          trip_intent: activeTripIntent
-            ? withCompletionCandidateHistory(activeTripIntent, completionCandidateHistory)
-            : undefined,
-          base_intent: currentBaseIntent,
-          follow_up_text: trimmedFollowUpText,
-          auto_fill_sparse_days: true,
-        },
-        "按补充要求继续补全失败",
-        "无法连接后端接口继续补全这趟旅行。",
-      );
+      const persistedBase = tripPersistence.status === "saved" ? tripPersistence : null;
+      const result = persistedBase
+        ? await applyPersistedReplanWithPreview(persistedBase, trimmedFollowUpText)
+        : await postTripJson<ReplanItineraryResponse>(
+            REPLAN_API_URL,
+            {
+              trip_intent: activeTripIntent
+                ? withCompletionCandidateHistory(activeTripIntent, completionCandidateHistory)
+                : undefined,
+              base_intent: currentBaseIntent,
+              follow_up_text: trimmedFollowUpText,
+              auto_fill_sparse_days: true,
+            },
+            "按补充要求继续补全失败",
+            "无法连接后端接口继续补全这趟旅行。",
+          );
       if (!result.ok) {
+        if (result.message.includes("stale_base_revision") && persistedBase) {
+          setTripPersistence({
+            status: "conflict",
+            tripId: persistedBase.tripId,
+            providedBaseRevisionId: persistedBase.currentRevisionId,
+            currentRevisionId: persistedBase.currentRevisionId,
+            message: result.message,
+          });
+        }
         setError(result.message);
         return;
       }
 
-      const replanResult = result.data;
+      const replanResult = "replan_result" in result.data ? result.data.replan_result : result.data;
       const itinerary = replanResult.itinerary;
       const regenerationIntent =
         replanResult.trip_intent.current_intent ??
         itinerary.trip_intent?.current_intent ??
         itinerary.planning_assumptions?.regeneration_intent ??
         null;
+      if ("current_revision" in result.data) {
+        rememberPersistedTrip(result.data.trip, result.data.current_revision);
+        await refreshRevisionHistory(result.data.trip.id);
+      }
 
       setDismissedFollowUpRawText(null);
       setLatestFollowUpBaseIntent(currentBaseIntent);
@@ -2779,14 +2827,58 @@ function buildRegenerationSemanticsViewModel(
       setCommittedSwaps([]);
       setQuickPreviewMode(regenerationIntent ? "current_brief" : "original_parse");
       setFollowUpText("");
-      markWorkspaceDirty("backend_replan");
-      return itinerary;
+      if (!("current_revision" in result.data)) {
+        markWorkspaceDirty("backend_replan");
+      }
+      return {
+        itinerary,
+        persistedRevisionId: "current_revision" in result.data ? result.data.current_revision.id : undefined,
+        persistedBaseRevisionId: persistedBase?.currentRevisionId,
+      };
     } catch {
       setError("无法连接后端接口继续补全这趟旅行。");
       return null;
     } finally {
       setReplanning(false);
     }
+  }
+
+  async function applyPersistedReplanWithPreview(
+    persistedBase: Extract<TripPersistenceState, { status: "saved" }>,
+    followUpText: string,
+  ): Promise<TripApiResult<PersistedReplanResponse>> {
+    const preview = await postTripJson<PersistedReplanPreviewResponse>(
+      TRIP_API_ENDPOINTS.previewPersistedReplan(persistedBase.tripId),
+      {
+        base_revision_id: persistedBase.currentRevisionId,
+        follow_up_text: followUpText,
+        auto_fill_sparse_days: true,
+      },
+      "预览补充调整失败",
+      "无法连接后端接口预览这次调整。",
+    );
+    if (!preview.ok) {
+      return preview;
+    }
+    return postTripJson<PersistedReplanResponse>(
+      TRIP_API_ENDPOINTS.applyPersistedReplan(persistedBase.tripId),
+      {
+        base_revision_id: persistedBase.currentRevisionId,
+        follow_up_text: followUpText,
+        auto_fill_sparse_days: true,
+        expected_preview_digest: preview.data.proposal.proposal_digest,
+      },
+      "按补充要求继续补全失败",
+      "无法连接后端接口继续补全这趟旅行。",
+      {
+        headers: {
+          "X-Idempotency-Key": buildReplanIdempotencyKey(
+            persistedBase.currentRevisionId,
+            followUpText,
+          ),
+        },
+      },
+    );
   }
 
   async function handleFollowUpReplan() {
@@ -2810,8 +2902,8 @@ function buildRegenerationSemanticsViewModel(
       const beforeItinerary = result;
       setLatestDirectOptimizationComparison(null);
       scheduleResultReveal();
-      const afterItinerary = await runFollowUpReplan(rawText);
-      if (!afterItinerary) {
+      const replanOutcome = await runFollowUpReplan(rawText);
+      if (!replanOutcome) {
         return {
           ok: false,
           message: "后端 follow-up replan 未返回新行程。",
@@ -2820,9 +2912,11 @@ function buildRegenerationSemanticsViewModel(
       return {
         ok: true,
         beforeItinerary,
-        afterItinerary,
+        afterItinerary: replanOutcome.itinerary,
         message: "已通过后端 follow-up replan 生成新版行程。",
         usedBackend: true,
+        persistedRevisionId: replanOutcome.persistedRevisionId,
+        persistedBaseRevisionId: replanOutcome.persistedBaseRevisionId,
       };
     }
 
@@ -2876,10 +2970,61 @@ function buildRegenerationSemanticsViewModel(
   }
 
   function handleUndoConversationalReplan(entry: ReplanHistoryEntry<ItineraryResponse>) {
+    if (
+      entry.persistedRevisionId &&
+      tripPersistence.status === "saved" &&
+      tripPersistence.currentRevisionId === entry.persistedRevisionId
+    ) {
+      void undoPersistedReplanRevision(entry, tripPersistence);
+      return;
+    }
     setResult(entry.beforeItinerary);
     syncLocalReplanIntentState(entry.beforeItinerary);
     setError(null);
     markWorkspaceDirty("replan_undo");
+  }
+
+  async function undoPersistedReplanRevision(
+    entry: ReplanHistoryEntry<ItineraryResponse>,
+    persistedBase: Extract<TripPersistenceState, { status: "saved" }>,
+  ) {
+    setReplanning(true);
+    setError(null);
+    try {
+      const response = await postTripJson<UndoPersistedMutationResponse>(
+        TRIP_API_ENDPOINTS.undoPersistedRevision(persistedBase.tripId, entry.persistedRevisionId ?? ""),
+        {
+          base_revision_id: persistedBase.currentRevisionId,
+        },
+        "撤销调整失败",
+        "无法连接后端接口撤销这次调整。",
+        {
+          headers: {
+            "X-Idempotency-Key": `undo-replan:${entry.persistedRevisionId}:${persistedBase.currentRevisionId}`,
+          },
+        },
+      );
+      if (!response.ok) {
+        if (response.message.includes("stale_base_revision")) {
+          setTripPersistence({
+            status: "conflict",
+            tripId: persistedBase.tripId,
+            providedBaseRevisionId: persistedBase.currentRevisionId,
+            currentRevisionId: persistedBase.currentRevisionId,
+            message: response.message,
+          });
+        }
+        setError(response.message);
+        return;
+      }
+      rememberPersistedTrip(response.data.trip, response.data.current_revision);
+      await refreshRevisionHistory(response.data.trip.id);
+      setResult(response.data.itinerary);
+      syncLocalReplanIntentState(response.data.itinerary);
+      setError(null);
+    } finally {
+      setReplanning(false);
+    }
   }
 
   function syncLocalReplanIntentState(itinerary: ItineraryResponse) {
@@ -2954,9 +3099,12 @@ function buildRegenerationSemanticsViewModel(
     setDismissedFollowUpRawText(null);
     setFollowUpText(prompt);
     scheduleResultReveal();
-    const itinerary = await runFollowUpReplan(prompt);
+    const replanOutcome = await runFollowUpReplan(prompt);
     setLatestDirectOptimizationComparison(
-      buildDirectOptimizationComparison(before, itinerary?.completion_intelligence ?? null),
+      buildDirectOptimizationComparison(
+        before,
+        replanOutcome?.itinerary.completion_intelligence ?? null,
+      ),
     );
   }
 

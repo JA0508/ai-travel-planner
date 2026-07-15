@@ -122,6 +122,8 @@ export function reduceReplanWorkflowState<TItinerary extends ReplanItineraryLike
               afterItinerary: event.result.afterItinerary,
               changeSet: event.changeSet,
               usedBackend: event.result.usedBackend,
+              persistedRevisionId: event.result.persistedRevisionId,
+              persistedBaseRevisionId: event.result.persistedBaseRevisionId,
             }
           : null;
       return {

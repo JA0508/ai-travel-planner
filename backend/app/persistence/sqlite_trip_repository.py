@@ -174,6 +174,36 @@ class SQLiteTripRepository:
             ).fetchall()
         return [row_to_revision(row) for row in rows]
 
+    def get_idempotent_revision(
+        self,
+        *,
+        trip_id: str,
+        capability_hash: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CreateRevisionResult | None:
+        trip = self.get_trip_for_access(trip_id, capability_hash)
+        with closing(self.connection_factory()) as connection:
+            idempotency_row = connection.execute(
+                """
+                SELECT * FROM idempotency_records
+                WHERE trip_id = ? AND idempotency_key_hash = ?
+                """,
+                (trip.id, idempotency_key_hash),
+            ).fetchone()
+            if idempotency_row is None:
+                return None
+            if idempotency_row["request_digest"] != request_digest:
+                raise IdempotencyConflictError()
+            return CreateRevisionResult(
+                revision=self._get_revision_in_connection(
+                    connection,
+                    trip.id,
+                    idempotency_row["result_revision_id"],
+                ),
+                idempotent_replay=True,
+            )
+
     def create_revision(
         self,
         *,

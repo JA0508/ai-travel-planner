@@ -39,6 +39,16 @@ class TripRepository(Protocol):
     def list_revisions(self, trip_id: str) -> list[TripRevisionRecord]:
         ...
 
+    def get_idempotent_revision(
+        self,
+        *,
+        trip_id: str,
+        capability_hash: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CreateRevisionResult | None:
+        ...
+
     def create_revision(
         self,
         *,

@@ -12,6 +12,8 @@ test("documents refresh policy for every current route workspace mutation kind",
   assert.deepEqual(
     Object.keys(routeWorkspaceRefreshPolicies).sort(),
     [
+      "backend_replan_apply",
+      "backend_replan_undo",
       "completion_task_apply",
       "completion_task_undo",
       "local_replan_mutation",
@@ -28,6 +30,29 @@ test("local replan mutation applies optimistically and then refreshes derived su
   assert.equal(policy.refreshTiming, "after_local_patch");
   assert.equal(policy.failureBehavior, "preserve_local_itinerary");
   assert.ok(policy.refreshedSurfaces.includes("completion_intelligence"));
+});
+
+test("saved backend replan apply is server-authoritative and idempotent", () => {
+  const policy = getRouteWorkspaceRefreshPolicy("backend_replan_apply");
+  const pageSource = readFileSync(new URL("../../app/page.tsx", import.meta.url), "utf8");
+
+  assert.equal(policy.itineraryUpdate, "backend_authoritative");
+  assert.equal(policy.refreshEndpoint, "applyPersistedReplan");
+  assert.equal(policy.refreshTiming, "during_backend_mutation");
+  assert.match(pageSource, /previewPersistedReplan/);
+  assert.match(pageSource, /applyPersistedReplan/);
+  assert.match(pageSource, /buildReplanIdempotencyKey/);
+  assert.match(pageSource, /expected_preview_digest/);
+});
+
+test("saved backend replan undo is a server-authoritative compensating revision", () => {
+  const policy = getRouteWorkspaceRefreshPolicy("backend_replan_undo");
+  const pageSource = readFileSync(new URL("../../app/page.tsx", import.meta.url), "utf8");
+
+  assert.equal(policy.itineraryUpdate, "backend_authoritative");
+  assert.equal(policy.refreshEndpoint, "undoPersistedRevision");
+  assert.match(pageSource, /undoPersistedReplanRevision/);
+  assert.match(pageSource, /undo-replan:/);
 });
 
 test("completion task apply remains backend-authoritative with idempotent execution", () => {
@@ -60,6 +85,8 @@ test("all refresh policies use known mutation ids", () => {
   const mutationKinds: RouteWorkspaceMutationKind[] = [
     "route_edit_commit",
     "local_replan_mutation",
+    "backend_replan_apply",
+    "backend_replan_undo",
     "completion_task_apply",
     "completion_task_undo",
   ];

@@ -209,6 +209,8 @@ export type ReplanExecutionResult<TItinerary extends ReplanItineraryLike> =
       afterItinerary: TItinerary;
       message: string;
       usedBackend: boolean;
+      persistedRevisionId?: string;
+      persistedBaseRevisionId?: string;
     }
   | {
       ok: false;
@@ -223,4 +225,6 @@ export type ReplanHistoryEntry<TItinerary extends ReplanItineraryLike = ReplanIt
   afterItinerary: TItinerary;
   changeSet: ReplanChangeSet;
   usedBackend: boolean;
+  persistedRevisionId?: string;
+  persistedBaseRevisionId?: string;
 };

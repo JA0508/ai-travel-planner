@@ -99,6 +99,15 @@ class InvalidRevisionOperationError(TripError):
         )
 
 
+class MutationProposalMismatchError(TripError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="mutation_proposal_mismatch",
+            message="The applied mutation no longer matches the previewed proposal.",
+            status_code=409,
+        )
+
+
 class ImmutableRevisionViolationError(TripError):
     def __init__(self) -> None:
         super().__init__(
