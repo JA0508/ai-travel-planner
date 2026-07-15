@@ -134,7 +134,7 @@ export function ConversationalReplanPanel<TItinerary extends ReplanItineraryLike
             </button>
             <span>
               {state.activePlan.executionMode === "backend_replan"
-                ? "会调用现有 /replan-itinerary，执行后再审计实际变化。"
+                ? "会由后端执行 replan，执行后再审计实际变化。"
                 : state.activePlan.executionMode === "local_mutation"
                   ? "会执行本地确定性 mutation，再刷新解释和补全表面。"
                   : "当前能力不足，不会执行。"}

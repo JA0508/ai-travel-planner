@@ -92,7 +92,7 @@ export function buildReplanMutationPlan(
         "现有后端可以把这句话合并进 regeneration intent 并重跑确定性规划，但还不能保证只移动某一个 stop。",
       targetStops,
       evidence: [
-        "当前 /replan-itinerary 会解析 follow-up 文本。",
+        "Saved Trip 会通过持久化 replan endpoint 解析 follow-up 文本并创建新 revision。",
         "调度结果仍由 deterministic planner 输出。",
       ],
       contractGaps: [
@@ -112,7 +112,7 @@ export function buildReplanMutationPlan(
     evidence: ["未检测到明确的删除、移动或轻量化目标。"],
     contractGaps: [
       "当前后端 response 没有返回 before/after diff。",
-      "当前后端 replan endpoint 没有 idempotency key contract。",
+      "非持久化 legacy replan path 仍没有 revision/idempotency contract。",
     ],
   });
 }
