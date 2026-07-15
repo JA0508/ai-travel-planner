@@ -26,6 +26,14 @@ from app.schemas import (
     TravelMode,
 )
 from app.schemas.preference_policy import PlannerPreferencePolicy
+from app.planner.trace import (
+    PlannerDecision,
+    PlannerDecisionStage,
+    PlannerSubjectType,
+    PlannerTraceCollector,
+    PlannerReasonCode,
+    stable_subject_id,
+)
 from app.services.amap_direction import RoutePlanningError, get_route, get_walking_route
 
 
@@ -85,6 +93,7 @@ class Scheduler:
         availability_windows: list[AvailabilityWindow] | None = None,
         trip_days: int | None = None,
         preference_policy: PlannerPreferencePolicy | None = None,
+        trace_collector: PlannerTraceCollector | None = None,
     ) -> ItineraryResponse:
         """
         Main orchestration entrypoint.
@@ -111,7 +120,11 @@ class Scheduler:
         while True:
             day_windows = self.create_day_windows(planning_days, availability_windows)
             fixed_pois, flexible_pois = self.split_fixed_and_flexible(all_pois)
-            scheduled_by_day, free_slots = self.place_fixed_items(fixed_pois, day_windows)
+            scheduled_by_day, free_slots = self.place_fixed_items(
+                fixed_pois,
+                day_windows,
+                trace_collector=trace_collector,
+            )
             scheduled_by_day, boundary_explanation = self.fill_flexible_items(
                 flexible_pois,
                 hotel,
@@ -122,6 +135,7 @@ class Scheduler:
                 free_slots,
                 scheduled_by_day,
                 preference_policy=preference_policy,
+                trace_collector=trace_collector,
             )
 
             scheduled_names = {
@@ -293,6 +307,7 @@ class Scheduler:
         self,
         fixed_pois: list[NormalizedPOI],
         day_windows: dict[int, list[TimeWindow]],
+        trace_collector: PlannerTraceCollector | None = None,
     ) -> tuple[dict[int, list[ScheduledPOI]], list[FreeSlot]]:
         """
         Place fixed POIs first and return:
@@ -418,6 +433,20 @@ class Scheduler:
                     travel_duration_s=None,
                 )
             )
+            if trace_collector is not None:
+                trace_collector.record_decision(
+                    stage=PlannerDecisionStage.SCHEDULE_COMMIT,
+                    subject_type=PlannerSubjectType.FIXED_EVENT,
+                    subject_id=stable_candidate_id(poi),
+                    decision=PlannerDecision.ACCEPTED,
+                    reason_codes=[PlannerReasonCode.ACCEPTED_FIXED_EVENT],
+                    metrics={
+                        "name": poi.name,
+                        "day": poi.fixed_day,
+                        "start_time": format_time_value(scheduled_start),
+                        "end_time": format_time_value(scheduled_end),
+                    },
+                )
             free_slots = split_free_slot(
                 free_slots,
                 target_slot,
@@ -441,6 +470,7 @@ class Scheduler:
         free_slots: list[FreeSlot],
         scheduled_by_day: dict[int, list[ScheduledPOI]],
         preference_policy: PlannerPreferencePolicy | None = None,
+        trace_collector: PlannerTraceCollector | None = None,
     ) -> tuple[dict[int, list[ScheduledPOI]], BoundaryInfluenceExplanation]:
         """
         Greedily fill remaining slots.
@@ -574,6 +604,7 @@ class Scheduler:
                         and slot.block_type == last_slot_by_day[slot.day].block_type
                     ),
                     preference_policy=preference_policy,
+                    trace_collector=trace_collector,
                 )
                 if not candidate_details:
                     break
@@ -588,6 +619,29 @@ class Scheduler:
                     ranked_candidates=candidate_details,
                     slot=current_slot,
                 )
+                if trace_collector is not None:
+                    for rejected_trace in selection_rejected_candidates:
+                        trace_collector.record_decision(
+                            stage=PlannerDecisionStage.CANDIDATE_RANKING,
+                            subject_type=PlannerSubjectType.CANDIDATE,
+                            subject_id=stable_subject_id(
+                                "candidate",
+                                rejected_trace.name.casefold(),
+                                rejected_trace.type.value,
+                            ),
+                            decision=PlannerDecision.REJECTED,
+                            reason_codes=[
+                                reason_code_for_candidate_rejection(
+                                    rejected_trace.reason
+                                )
+                            ],
+                            metrics={
+                                "name": rejected_trace.name,
+                                "type": rejected_trace.type.value,
+                                "slot_day": current_slot.day,
+                                "slot_block": current_slot.block_type.value,
+                            },
+                        )
                 if next_poi is None:
                     break
 
@@ -658,6 +712,24 @@ class Scheduler:
                         selection_rejected_candidates=selection_rejected_candidates,
                     )
                 )
+                if trace_collector is not None:
+                    trace_collector.record_decision(
+                        stage=PlannerDecisionStage.SCHEDULE_COMMIT,
+                        subject_type=PlannerSubjectType.SCHEDULED_ITEM,
+                        subject_id=stable_candidate_id(next_poi),
+                        decision=PlannerDecision.ACCEPTED,
+                        reason_codes=[PlannerReasonCode.ACCEPTED_RANKED_CANDIDATE],
+                        metrics={
+                            "name": next_poi.name,
+                            "type": next_poi.type.value,
+                            "day": slot.day,
+                            "block_type": slot.block_type.value,
+                            "start_time": format_time_value(current_start),
+                            "end_time": format_time_value(scheduled_end),
+                            "travel_duration_s": travel_info.get("duration_s") if travel_info else None,
+                            "travel_distance_m": travel_info.get("distance_m") if travel_info else None,
+                        },
+                    )
                 remaining_pois.remove(next_poi)
                 current_start = scheduled_end
 
@@ -958,6 +1030,7 @@ class Scheduler:
         apply_departure_bias: bool = False,
         apply_return_to_base_bias: bool = False,
         preference_policy: PlannerPreferencePolicy | None = None,
+        trace_collector: PlannerTraceCollector | None = None,
     ) -> NormalizedPOI | None:
         """
         Pick the next POI for a slot using a greedy travel-time-based heuristic.
@@ -980,6 +1053,7 @@ class Scheduler:
             apply_departure_bias=apply_departure_bias,
             apply_return_to_base_bias=apply_return_to_base_bias,
             preference_policy=preference_policy,
+            trace_collector=trace_collector,
         )
         return best_poi
 
@@ -996,6 +1070,7 @@ class Scheduler:
         apply_departure_bias: bool = False,
         apply_return_to_base_bias: bool = False,
         preference_policy: PlannerPreferencePolicy | None = None,
+        trace_collector: PlannerTraceCollector | None = None,
     ) -> tuple[NormalizedPOI | None, dict[str, int | None] | None]:
         """
         Pick the next POI and return the travel metadata used during selection.
@@ -1012,6 +1087,7 @@ class Scheduler:
             apply_departure_bias=apply_departure_bias,
             apply_return_to_base_bias=apply_return_to_base_bias,
             preference_policy=preference_policy,
+            trace_collector=trace_collector,
         )
         if not candidate_details:
             return None, None
@@ -1032,6 +1108,7 @@ class Scheduler:
         apply_departure_bias: bool = False,
         apply_return_to_base_bias: bool = False,
         preference_policy: PlannerPreferencePolicy | None = None,
+        trace_collector: PlannerTraceCollector | None = None,
     ) -> list[
         tuple[
             tuple[float, int, int, int, int, int, float, float, int, str, str],
@@ -1060,8 +1137,25 @@ class Scheduler:
                 dest_lng=poi.longitude,
                 city=poi.city or getattr(current_anchor, "city", None),
                 travel_mode=travel_mode,
+                trace_collector=trace_collector,
+                origin_id=stable_anchor_id(current_anchor),
+                destination_id=stable_candidate_id(poi),
             )
             if not self.fits_in_slot_with_travel(poi=poi, slot=slot, travel_info=travel_info):
+                if trace_collector is not None:
+                    trace_collector.record_decision(
+                        stage=PlannerDecisionStage.ROUTE_EVALUATION,
+                        subject_type=PlannerSubjectType.CANDIDATE,
+                        subject_id=stable_candidate_id(poi),
+                        decision=PlannerDecision.REJECTED,
+                        reason_codes=[PlannerReasonCode.REJECTED_ROUTE_INFEASIBLE],
+                        metrics={
+                            "name": poi.name,
+                            "duration_s": travel_info.get("duration_s"),
+                            "slot_day": slot.day,
+                            "slot_block": slot.block_type.value,
+                        },
+                    )
                 continue
             travel_cost = float(travel_info["duration_s"])
 
@@ -1529,6 +1623,9 @@ class Scheduler:
         dest_lng: float,
         city: str | None = None,
         travel_mode: TravelMode | None = None,
+        trace_collector: PlannerTraceCollector | None = None,
+        origin_id: str | None = None,
+        destination_id: str | None = None,
     ) -> dict[str, int]:
         """
         Return deterministic route metadata for city itinerary scheduling.
@@ -1554,6 +1651,32 @@ class Scheduler:
                     dest_lng=dest_lng,
                     city=city,
                 )
+                if trace_collector is not None:
+                    trace_collector.record_route_snapshot(
+                        origin_id=origin_id or stable_subject_id("route_origin", origin_lat, origin_lng),
+                        destination_id=destination_id or stable_subject_id("route_destination", dest_lat, dest_lng),
+                        travel_mode=mode,
+                        availability="known",
+                        duration_seconds=int(route["duration_s"]),
+                        distance_meters=int(route["distance_m"]),
+                    )
+                    trace_collector.record_decision(
+                        stage=PlannerDecisionStage.ROUTE_EVALUATION,
+                        subject_type=PlannerSubjectType.ROUTE_SEGMENT,
+                        subject_id=stable_subject_id(
+                            "route_segment",
+                            origin_id,
+                            destination_id,
+                            mode,
+                        ),
+                        decision=PlannerDecision.ACCEPTED,
+                        reason_codes=[PlannerReasonCode.ROUTE_DATA_KNOWN],
+                        metrics={
+                            "mode": mode,
+                            "duration_s": int(route["duration_s"]),
+                            "distance_m": int(route["distance_m"]),
+                        },
+                    )
                 return {
                     "distance_m": int(route["distance_m"]),
                     "duration_s": int(route["duration_s"]),
@@ -1562,10 +1685,40 @@ class Scheduler:
                 continue
 
         fallback_mode = preferred_modes[0] if preferred_modes else "transit"
-        return self.estimate_local_city_route(
+        fallback_route = self.estimate_local_city_route(
             straight_distance_km=straight_distance_km,
             mode=fallback_mode,
         )
+        if trace_collector is not None:
+            trace_collector.record_route_snapshot(
+                origin_id=origin_id or stable_subject_id("route_origin", origin_lat, origin_lng),
+                destination_id=destination_id or stable_subject_id("route_destination", dest_lat, dest_lng),
+                travel_mode=fallback_mode,
+                availability="missing",
+                duration_seconds=fallback_route["duration_s"],
+                distance_meters=fallback_route["distance_m"],
+            )
+            trace_collector.record_decision(
+                stage=PlannerDecisionStage.ROUTE_EVALUATION,
+                subject_type=PlannerSubjectType.ROUTE_SEGMENT,
+                subject_id=stable_subject_id(
+                    "route_segment",
+                    origin_id,
+                    destination_id,
+                    fallback_mode,
+                ),
+                decision=PlannerDecision.FALLBACK_USED,
+                reason_codes=[
+                    PlannerReasonCode.ROUTE_DATA_MISSING,
+                    PlannerReasonCode.FALLBACK_ROUTE_ESTIMATE_USED,
+                ],
+                metrics={
+                    "mode": fallback_mode,
+                    "duration_s": fallback_route["duration_s"],
+                    "distance_m": fallback_route["distance_m"],
+                },
+            )
+        return fallback_route
 
     def city_route_mode_order(
         self,
@@ -1712,6 +1865,39 @@ def is_fixed_poi(poi: NormalizedPOI) -> bool:
             poi.fixed_time_end is not None,
         ]
     )
+
+
+def stable_candidate_id(poi: NormalizedPOI) -> str:
+    return stable_subject_id(
+        "candidate",
+        poi.name.strip().casefold(),
+        poi.type.value,
+        poi.city or "",
+        round(poi.latitude, 6),
+        round(poi.longitude, 6),
+    )
+
+
+def stable_anchor_id(anchor: HotelStay | ScheduledPOI) -> str:
+    return stable_subject_id(
+        "anchor",
+        anchor.name.strip().casefold(),
+        getattr(anchor, "city", None) or "",
+        round(anchor.latitude, 6),
+        round(anchor.longitude, 6),
+    )
+
+
+def reason_code_for_candidate_rejection(reason: str) -> PlannerReasonCode:
+    if "排序低于" in reason:
+        return PlannerReasonCode.REJECTED_LOWER_RANKED_CANDIDATE
+    if "不是它最合适的时段" in reason:
+        return PlannerReasonCode.DEFERRED_TO_BETTER_TIME_BLOCK
+    if "放不进当前剩余时段" in reason:
+        return PlannerReasonCode.REJECTED_SLOT_DURATION_OVERFLOW
+    if "分散规则" in reason:
+        return PlannerReasonCode.DEFERRED_FOR_DAY_SPREAD
+    return PlannerReasonCode.REJECTED_NO_AVAILABLE_SLOT
 
 
 def filter_schedulable_pois(pois: list[NormalizedPOI]) -> list[NormalizedPOI]:

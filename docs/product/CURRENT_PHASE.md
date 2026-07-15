@@ -2,13 +2,12 @@
 
 ## Current phase
 
-Source-to-Executable Governance Baseline
+Planner Trace and Deterministic Evaluation Baseline
 
 ## Active objective
 
-Land the repository governance documents that define the Source-to-Executable Trip
-Workspace direction, agent operating rules, architecture decisions, and research
-baseline.
+Establish F-020a planner trace, deterministic replay fixtures, invariant-based
+evaluation, and CI regression gating.
 
 ## Current stable capabilities
 
@@ -22,16 +21,16 @@ baseline.
 - session undo
 - reproducible frontend/backend CI
 - F-006 Route Workspace Architecture Decomposition
+- Source-to-Executable Governance Baseline
 
 ## In review
 
-- Documentation-only Source-to-Executable governance baseline PR
+- F-020a Planner Trace and Deterministic Evaluation Baseline
 
 ## Next approved work
 
-1. F-020a Planner Trace and Deterministic Evaluation
-2. F-001a Trip + TripRevision Persistence
-3. F-002/F-003 Import-to-Executable
+1. F-001a Trip + TripRevision Persistence
+2. F-002/F-003 Import-to-Executable
 
 ## Explicitly not in scope
 

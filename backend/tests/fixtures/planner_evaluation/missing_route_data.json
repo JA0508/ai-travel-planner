@@ -1,0 +1,20 @@
+{
+  "id": "missing_route_data",
+  "request": {
+    "city": "上海",
+    "trip_days": 1,
+    "hotel": {"name": "人民广场酒店"},
+    "scenic_spots": [{"name": "静安寺"}, {"name": "外滩"}],
+    "restaurants": [{"name": "城隍庙小吃街"}],
+    "preferences": ["路线 provider 缺失时不能当成 0"]
+  },
+  "provider_snapshot": {
+    "default_route_availability": "missing",
+    "places": [
+      {"query": "人民广场酒店", "poi_type": "hotel", "city": "上海", "canonical_name": "人民广场酒店", "latitude": 31.2304, "longitude": 121.4737, "resolution_status": "known"},
+      {"query": "静安寺", "poi_type": "scenic", "city": "上海", "canonical_name": "静安寺", "latitude": 31.22346, "longitude": 121.44531, "resolution_status": "known"},
+      {"query": "外滩", "poi_type": "scenic", "city": "上海", "canonical_name": "外滩", "latitude": 31.238235, "longitude": 121.497253, "resolution_status": "known"},
+      {"query": "城隍庙小吃街", "poi_type": "restaurant", "city": "上海", "canonical_name": "城隍庙小吃街", "latitude": 31.22738, "longitude": 121.49058, "resolution_status": "known"}
+    ]
+  }
+}

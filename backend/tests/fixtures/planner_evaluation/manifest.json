@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "planner_version": "current-baseline",
+  "cases": [
+    "standard_multi_day_trip.json",
+    "fixed_event_preservation.json",
+    "arrival_boundary.json",
+    "departure_boundary.json",
+    "sparse_itinerary_bootstrap.json",
+    "dense_ranked_itinerary.json",
+    "geocoding_failure_noncritical.json",
+    "explicit_midtrip_availability.json",
+    "missing_route_data.json",
+    "soft_route_anchor.json"
+  ]
+}

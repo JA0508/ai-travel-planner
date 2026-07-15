@@ -1,0 +1,18 @@
+{
+  "id": "geocoding_failure_noncritical",
+  "request": {
+    "city": "上海",
+    "trip_days": 1,
+    "scenic_spots": [{"name": "不存在的私房景点"}, {"name": "静安寺"}],
+    "restaurants": [{"name": "城隍庙小吃街"}],
+    "preferences": ["非关键景点解析失败也要继续"]
+  },
+  "provider_snapshot": {
+    "default_route_availability": "known",
+    "places": [
+      {"query": "不存在的私房景点", "poi_type": "scenic", "city": "上海", "canonical_name": null, "resolution_status": "failed"},
+      {"query": "静安寺", "poi_type": "scenic", "city": "上海", "canonical_name": "静安寺", "latitude": 31.22346, "longitude": 121.44531, "resolution_status": "known"},
+      {"query": "城隍庙小吃街", "poi_type": "restaurant", "city": "上海", "canonical_name": "城隍庙小吃街", "latitude": 31.22738, "longitude": 121.49058, "resolution_status": "known"}
+    ]
+  }
+}

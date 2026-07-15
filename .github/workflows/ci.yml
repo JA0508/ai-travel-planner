@@ -54,3 +54,6 @@ jobs:
 
       - name: Test
         run: python -m unittest discover -s tests -t .
+
+      - name: Planner evaluation
+        run: python -m tools.run_planner_evaluation --ci

@@ -1,0 +1,32 @@
+{
+  "id": "dense_ranked_itinerary",
+  "request": {
+    "city": "上海",
+    "scenic_spots": [
+      {"name": "上海博物馆"},
+      {"name": "静安寺"},
+      {"name": "思南公馆"},
+      {"name": "外滩"},
+      {"name": "新天地"},
+      {"name": "田子坊"}
+    ],
+    "restaurants": [
+      {"name": "人民广场本帮菜午餐"},
+      {"name": "城隍庙小吃街"}
+    ],
+    "preferences": ["尽量顺路", "文化", "citywalk"]
+  },
+  "provider_snapshot": {
+    "default_route_availability": "known",
+    "places": [
+      {"query": "上海博物馆", "poi_type": "scenic", "city": "上海", "canonical_name": "上海博物馆", "latitude": 31.23041, "longitude": 121.4737, "resolution_status": "known"},
+      {"query": "静安寺", "poi_type": "scenic", "city": "上海", "canonical_name": "静安寺", "latitude": 31.22346, "longitude": 121.44531, "resolution_status": "known"},
+      {"query": "思南公馆", "poi_type": "scenic", "city": "上海", "canonical_name": "思南公馆", "latitude": 31.21992, "longitude": 121.46753, "resolution_status": "known"},
+      {"query": "外滩", "poi_type": "scenic", "city": "上海", "canonical_name": "外滩", "latitude": 31.238235, "longitude": 121.497253, "resolution_status": "known"},
+      {"query": "新天地", "poi_type": "scenic", "city": "上海", "canonical_name": "新天地", "latitude": 31.21943, "longitude": 121.47529, "resolution_status": "known"},
+      {"query": "田子坊", "poi_type": "scenic", "city": "上海", "canonical_name": "田子坊", "latitude": 31.21072, "longitude": 121.46815, "resolution_status": "known"},
+      {"query": "人民广场本帮菜午餐", "poi_type": "restaurant", "city": "上海", "canonical_name": "人民广场本帮菜午餐", "latitude": 31.231, "longitude": 121.474, "resolution_status": "known"},
+      {"query": "城隍庙小吃街", "poi_type": "restaurant", "city": "上海", "canonical_name": "城隍庙小吃街", "latitude": 31.22738, "longitude": 121.49058, "resolution_status": "known"}
+    ]
+  }
+}

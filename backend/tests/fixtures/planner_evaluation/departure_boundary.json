@@ -1,0 +1,21 @@
+{
+  "id": "departure_boundary",
+  "request": {
+    "city": "上海",
+    "trip_days": 2,
+    "departure_anchor": "上海虹桥站",
+    "availability_windows": [{"day": 2, "available_end": "12:00", "label": "最后一天中午离开"}],
+    "scenic_spots": [{"name": "静安寺"}, {"name": "思南公馆"}],
+    "restaurants": [{"name": "人民广场本帮菜午餐"}],
+    "preferences": ["最后一天中午走"]
+  },
+  "provider_snapshot": {
+    "default_route_availability": "known",
+    "places": [
+      {"query": "上海虹桥站", "poi_type": "anchor", "city": "上海", "canonical_name": "上海虹桥站", "latitude": 31.196, "longitude": 121.32, "resolution_status": "known"},
+      {"query": "静安寺", "poi_type": "scenic", "city": "上海", "canonical_name": "静安寺", "latitude": 31.22346, "longitude": 121.44531, "resolution_status": "known"},
+      {"query": "思南公馆", "poi_type": "scenic", "city": "上海", "canonical_name": "思南公馆", "latitude": 31.21992, "longitude": 121.46753, "resolution_status": "known"},
+      {"query": "人民广场本帮菜午餐", "poi_type": "restaurant", "city": "上海", "canonical_name": "人民广场本帮菜午餐", "latitude": 31.231, "longitude": 121.474, "resolution_status": "known"}
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "id": "standard_multi_day_trip",
+  "request": {
+    "city": "上海",
+    "trip_days": 3,
+    "hotel": {"name": "人民广场酒店"},
+    "scenic_spots": [
+      {"name": "上海博物馆"},
+      {"name": "静安寺"},
+      {"name": "思南公馆"},
+      {"name": "外滩"}
+    ],
+    "restaurants": [
+      {"name": "人民广场本帮菜午餐"},
+      {"name": "城隍庙小吃街"},
+      {"name": "BFC 外滩枫径"}
+    ],
+    "preferences": ["文化", "夜景", "不要太赶"]
+  },
+  "provider_snapshot": {
+    "default_route_availability": "known",
+    "places": [
+      {"query": "人民广场酒店", "poi_type": "hotel", "city": "上海", "canonical_name": "人民广场酒店", "latitude": 31.2304, "longitude": 121.4737, "resolution_status": "known"},
+      {"query": "上海博物馆", "poi_type": "scenic", "city": "上海", "canonical_name": "上海博物馆", "latitude": 31.23041, "longitude": 121.4737, "resolution_status": "known"},
+      {"query": "静安寺", "poi_type": "scenic", "city": "上海", "canonical_name": "静安寺", "latitude": 31.22346, "longitude": 121.44531, "resolution_status": "known"},
+      {"query": "思南公馆", "poi_type": "scenic", "city": "上海", "canonical_name": "思南公馆", "latitude": 31.21992, "longitude": 121.46753, "resolution_status": "known"},
+      {"query": "外滩", "poi_type": "scenic", "city": "上海", "canonical_name": "外滩", "latitude": 31.238235, "longitude": 121.497253, "resolution_status": "known"},
+      {"query": "人民广场本帮菜午餐", "poi_type": "restaurant", "city": "上海", "canonical_name": "人民广场本帮菜午餐", "latitude": 31.231, "longitude": 121.474, "resolution_status": "known"},
+      {"query": "城隍庙小吃街", "poi_type": "restaurant", "city": "上海", "canonical_name": "城隍庙小吃街", "latitude": 31.22738, "longitude": 121.49058, "resolution_status": "known"},
+      {"query": "BFC 外滩枫径", "poi_type": "restaurant", "city": "上海", "canonical_name": "BFC 外滩枫径", "latitude": 31.23374, "longitude": 121.49759, "resolution_status": "known"}
+    ]
+  }
+}

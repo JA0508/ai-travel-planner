@@ -1,0 +1,14 @@
+{
+  "id": "sparse_itinerary_bootstrap",
+  "request": {
+    "city": "上海",
+    "trip_days": 1,
+    "scenic_spots": [],
+    "restaurants": [],
+    "preferences": ["文化", "晚上吃点东西"]
+  },
+  "provider_snapshot": {
+    "default_route_availability": "known",
+    "places": []
+  }
+}
