@@ -99,6 +99,45 @@ class InvalidRevisionOperationError(TripError):
         )
 
 
+class UnsupportedMutationCommandSchemaError(TripError):
+    def __init__(self, schema_version: str) -> None:
+        super().__init__(
+            code="unsupported_mutation_command_schema",
+            message="Mutation command schema is not supported.",
+            status_code=422,
+            context={"schema_version": schema_version},
+        )
+
+
+class MutationCommandFailedError(TripError):
+    def __init__(self, *, command_index: int, reason_code: str) -> None:
+        super().__init__(
+            code="mutation_command_failed",
+            message="Mutation command failed deterministic validation.",
+            status_code=422,
+            context={"command_index": command_index, "reason_code": reason_code},
+        )
+
+
+class MutationCommandNoEffectError(TripError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="mutation_command_no_effect",
+            message="Mutation command batch has no effective itinerary change.",
+            status_code=422,
+            context={"reason_code": "no_effective_mutation"},
+        )
+
+
+class CommandDigestMismatchError(TripError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="command_digest_mismatch",
+            message="Mutation command digest does not match.",
+            status_code=409,
+        )
+
+
 class MutationProposalNotFoundError(TripError):
     def __init__(self, proposal_id: str) -> None:
         super().__init__(

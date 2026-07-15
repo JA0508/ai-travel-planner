@@ -230,6 +230,9 @@ function buildEditableStopId(
   item: ScheduledItemLike,
   index: number,
 ): string {
+  if (item.stable_id) {
+    return item.stable_id;
+  }
   return `${day}-${blockType}-${item.name}-${item.start_time}-${item.end_time}-${index}`;
 }
 

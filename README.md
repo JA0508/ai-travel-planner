@@ -137,6 +137,8 @@ The repository currently contains a substantial planning foundation:
 - request IDs and process-time observability
 - idempotency support for selected mutation paths
 - persisted replan proposal preview/apply integrity
+- typed route edit and swap mutation proposals
+- immutable route-edit/swap revisions with compensating undo
 - fixture-driven product verification
 
 > Development branches may contain additional in-review capabilities. Required CI
@@ -424,6 +426,7 @@ From the repository root:
 
 ```bash
 backend/.venv/bin/python -m unittest discover -s backend/tests -t backend
+backend/.venv/bin/python -m tools.run_planner_evaluation --ci
 backend/.venv/bin/python -m tools.run_trip_mutation_evaluation --ci
 ```
 
@@ -484,6 +487,20 @@ Apply does not receive raw follow-up text and does not rerun the planner. The
 server validates proposal lifecycle, expiry, base revision, digest integrity, and
 stored preview content before creating the immutable `TripRevision`.
 
+Route edit and swap use the same proposal/apply infrastructure with typed
+commands instead of arbitrary itinerary uploads:
+
+```text
+POST /trips/{trip_id}/mutations/preview
+POST /trips/{trip_id}/mutation-proposals/{proposal_id}/apply
+```
+
+The command schema is versioned (`1.0`) and targets stable scheduled-item IDs.
+The backend deterministic mutation engine computes the preview snapshot,
+command digest, impact summary, and invalidated derived surfaces. Apply validates
+the persisted proposal and creates the revision without rerunning the engine,
+planner, geocoder, or route provider.
+
 ### Uncertainty semantics
 
 The product distinguishes:
@@ -508,6 +525,7 @@ Missing or stale data must not be presented as confirmed.
 - Trip and TripRevision persistence
 - planner trace and deterministic evaluation corpus
 - persisted mutation proposal integrity for conversational replan
+- typed route edit and swap mutation revisions
 
 ### Import-to-Executable v1
 
@@ -566,8 +584,8 @@ Current limitations include:
 - TripRevision persistence is local SQLite, not a cloud Trip Library
 - limited source-import pipeline
 - incomplete canonical place/provenance graph
-- typed route edits, swaps, manual reorder, and selected undo paths remain Dirty until
-  they are migrated to server-authoritative TripRevision mutations
+- Completion Undo, manual pending-stop insertion, and selected candidate-reject
+  workflows remain to be classified or migrated
 - no full booking inbox
 - no production disruption-monitoring infrastructure
 - no offline travel pack

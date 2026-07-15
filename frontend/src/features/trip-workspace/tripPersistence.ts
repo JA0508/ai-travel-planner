@@ -141,10 +141,21 @@ export function buildReplanProposalIdempotencyKey(
   proposalId: string,
   proposalDigest: string,
 ): string {
+  return `replan-proposal:${proposalId}:${digestSuffix(proposalDigest)}`;
+}
+
+export function buildMutationProposalIdempotencyKey(
+  proposalId: string,
+  proposalDigest: string,
+): string {
+  return `mutation-proposal:${proposalId}:${digestSuffix(proposalDigest)}`;
+}
+
+function digestSuffix(proposalDigest: string): string {
   let hash = 2166136261;
   for (let index = 0; index < proposalDigest.length; index += 1) {
     hash ^= proposalDigest.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return `replan-proposal:${proposalId}:${(hash >>> 0).toString(16)}`;
+  return (hash >>> 0).toString(16);
 }

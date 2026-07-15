@@ -7,7 +7,7 @@ from typing import Iterator
 
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
-CURRENT_SCHEMA_VERSION = "0002_trip_mutation_proposals"
+CURRENT_SCHEMA_VERSION = "0003_typed_mutation_commands"
 DEFAULT_TRIP_STORE_PATH = "data/trips.sqlite3"
 
 
@@ -47,7 +47,23 @@ def connect_sqlite(path: Path, *, busy_timeout_seconds: float | None = None) -> 
 
 def apply_migrations(connection: sqlite3.Connection) -> None:
     for migration_path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        version = migration_path.stem
+        if migration_already_applied(connection, version):
+            continue
         connection.executescript(migration_path.read_text(encoding="utf-8"))
+
+
+def migration_already_applied(connection: sqlite3.Connection, version: str) -> bool:
+    table = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+    ).fetchone()
+    if table is None:
+        return False
+    row = connection.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = ?",
+        (version,),
+    ).fetchone()
+    return row is not None
 
 
 def assert_schema_current(connection: sqlite3.Connection) -> None:

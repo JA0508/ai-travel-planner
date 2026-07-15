@@ -4,6 +4,7 @@ type TimelineItemType = "scenic" | "restaurant" | "hotel";
 type TimelineBlockType = "morning" | "afternoon" | "evening";
 
 type ScheduledItemLike = {
+  stable_id?: string | null;
   name: string;
   type: TimelineItemType;
   latitude?: number | null;

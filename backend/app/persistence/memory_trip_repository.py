@@ -111,6 +111,7 @@ class MemoryTripRepository:
             base_revision_id=None,
             source_type=RevisionSourceType.PLANNER_GENERATION.value,
             operation_type=operation_type,
+            operation_metadata={"operation_type": operation_type},
             request_digest=request_digest,
             idempotency_key_hash=None,
             actor_type="anonymous",
@@ -283,6 +284,7 @@ class MemoryTripRepository:
             base_revision_id=proposal.base_revision_id,
             source_type=proposal.source_type,
             operation_type=proposal.operation_type,
+            operation_metadata=copy.deepcopy(operation_metadata),
             request_digest=request_digest,
             idempotency_key_hash=idempotency_key_hash,
             actor_type="anonymous",
@@ -380,6 +382,7 @@ class MemoryTripRepository:
             base_revision_id=base_revision_id,
             source_type=source_type,
             operation_type=operation_type,
+            operation_metadata=copy.deepcopy(operation_metadata),
             request_digest=request_digest,
             idempotency_key_hash=idempotency_key_hash,
             actor_type="anonymous",
@@ -419,6 +422,10 @@ class MemoryTripRepository:
             trace_digest=proposal.trace_digest,
             validation_report=proposal.validation_report,
             expires_at=proposal.expires_at,
+            execution_kind=proposal.execution_kind,
+            command_digest=proposal.command_digest,
+            mutation_kind=proposal.mutation_kind,
+            mutation_engine_version=proposal.mutation_engine_version,
         )
         if expected != proposal.proposal_digest:
             raise ProposalIntegrityViolationError()

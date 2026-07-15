@@ -1,0 +1,610 @@
+from __future__ import annotations
+
+import copy
+import hashlib
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.evaluation.invariants import (
+    no_duplicate_scheduled_place,
+    no_schedule_overlap,
+    within_arrival_departure_boundaries,
+    within_day_availability,
+)
+from app.schemas import ItineraryResponse, TimeBlockType
+from .digests import (
+    TRIP_MUTATION_COMMAND_SCHEMA_VERSION,
+    TRIP_MUTATION_ENGINE_VERSION,
+    command_digest,
+    itinerary_content_digest,
+)
+from .errors import (
+    MutationCommandFailedError,
+    MutationCommandNoEffectError,
+    UnsupportedMutationCommandSchemaError,
+)
+
+
+MAX_MUTATION_COMMANDS = 25
+MAX_ORDERED_STOP_IDS = 100
+MAX_STOP_ID_LENGTH = 160
+
+
+class StopPlacement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    before_stop_id: str | None = Field(default=None, max_length=MAX_STOP_ID_LENGTH)
+    after_stop_id: str | None = Field(default=None, max_length=MAX_STOP_ID_LENGTH)
+    at_end: bool = False
+
+    @model_validator(mode="after")
+    def validate_single_placement(self) -> "StopPlacement":
+        selected = sum(
+            [
+                self.before_stop_id is not None,
+                self.after_stop_id is not None,
+                self.at_end,
+            ]
+        )
+        if selected != 1:
+            raise ValueError("Choose exactly one placement.")
+        return self
+
+
+class MoveStopCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["move_stop"]
+    stop_id: str = Field(..., min_length=1, max_length=MAX_STOP_ID_LENGTH)
+    target_day: int = Field(..., ge=1)
+    target_block: TimeBlockType | None = None
+    placement: StopPlacement = Field(default_factory=lambda: StopPlacement(at_end=True))
+
+
+class ReorderDayCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["reorder_day"]
+    day: int = Field(..., ge=1)
+    ordered_stop_ids: list[str] = Field(..., min_length=1, max_length=MAX_ORDERED_STOP_IDS)
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "ReorderDayCommand":
+        if len(set(self.ordered_stop_ids)) != len(self.ordered_stop_ids):
+            raise ValueError("ordered_stop_ids must be unique.")
+        return self
+
+
+class RemoveStopCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["remove_stop"]
+    stop_id: str = Field(..., min_length=1, max_length=MAX_STOP_ID_LENGTH)
+
+
+class SwapStopsCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["swap_stops"]
+    first_stop_id: str = Field(..., min_length=1, max_length=MAX_STOP_ID_LENGTH)
+    second_stop_id: str = Field(..., min_length=1, max_length=MAX_STOP_ID_LENGTH)
+
+    @model_validator(mode="after")
+    def validate_distinct_ids(self) -> "SwapStopsCommand":
+        if self.first_stop_id == self.second_stop_id:
+            raise ValueError("swap stop ids must be different.")
+        return self
+
+
+class ReplacementCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1)
+    type: Literal["scenic", "restaurant"]
+    reasoning_summary: str = Field(..., min_length=1)
+    itinerary_relation_summary: str = Field(..., min_length=1)
+
+
+class ReplaceStopCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["replace_stop"]
+    stop_id: str = Field(..., min_length=1, max_length=MAX_STOP_ID_LENGTH)
+    replacement: ReplacementCandidate
+
+
+TripMutationCommand = Annotated[
+    MoveStopCommand | ReorderDayCommand | RemoveStopCommand | SwapStopsCommand | ReplaceStopCommand,
+    Field(discriminator="type"),
+]
+
+
+class TripMutationCommandEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = TRIP_MUTATION_COMMAND_SCHEMA_VERSION
+    base_revision_id: str = Field(..., min_length=1)
+    mutation_kind: Literal["route_edit", "swap"]
+    commands: list[TripMutationCommand] = Field(..., min_length=1, max_length=MAX_MUTATION_COMMANDS)
+
+    @model_validator(mode="after")
+    def validate_schema_and_kind(self) -> "TripMutationCommandEnvelope":
+        if self.schema_version != TRIP_MUTATION_COMMAND_SCHEMA_VERSION:
+            raise UnsupportedMutationCommandSchemaError(self.schema_version)
+        command_types = {command.type for command in self.commands}
+        if self.mutation_kind == "swap" and not command_types.issubset({"swap_stops", "replace_stop"}):
+            raise ValueError("swap mutation_kind accepts only swap_stops or replace_stop commands.")
+        if self.mutation_kind == "route_edit" and command_types & {"swap_stops", "replace_stop"}:
+            raise ValueError("route_edit mutation_kind does not accept swap commands.")
+        return self
+
+
+class MutationPreview(BaseModel):
+    resulting_snapshot: dict[str, Any]
+    content_digest: str
+    command_digest: str
+    impact_summary: dict[str, Any]
+    validation_report: dict[str, Any]
+    invalidated_surfaces: list[str]
+    refresh_targets: list[str]
+
+
+class TripMutationEngine:
+    def preview(
+        self,
+        *,
+        base_snapshot: dict[str, Any],
+        envelope: TripMutationCommandEnvelope,
+    ) -> MutationPreview:
+        snapshot = ensure_stable_item_ids(base_snapshot)
+        baseline_ids = collect_item_ids(snapshot)
+        before_digest = itinerary_content_digest(snapshot)
+        impact = empty_impact()
+        for index, command in enumerate(envelope.commands):
+            try:
+                self._apply_command(snapshot, command, impact)
+            except MutationCommandNoEffectError:
+                raise
+            except MutationCommandFailedError:
+                raise
+            except Exception as exc:
+                raise MutationCommandFailedError(
+                    command_index=index,
+                    reason_code="invalid_mutation_command",
+                ) from exc
+        normalize_snapshot_after_mutation(snapshot, impact)
+        ItineraryResponse.model_validate(snapshot)
+        if itinerary_content_digest(snapshot) == before_digest:
+            raise MutationCommandNoEffectError()
+        validation_report = build_validation_report(snapshot, baseline_ids, envelope)
+        if validation_report["status"] == "invalid":
+            first_failure = next(
+                (
+                    item["code"]
+                    for item in validation_report["invariant_results"]
+                    if item["status"] == "fail"
+                ),
+                "mutation_validation_failed",
+            )
+            raise MutationCommandFailedError(command_index=0, reason_code=first_failure)
+        invalidated = build_invalidated_surfaces(impact)
+        digest = build_command_digest(envelope)
+        impact["invalidated_surfaces"] = invalidated
+        impact["route_recalculation_required"] = "route_segments" in invalidated
+        return MutationPreview(
+            resulting_snapshot=snapshot,
+            content_digest=itinerary_content_digest(snapshot),
+            command_digest=digest,
+            impact_summary=impact,
+            validation_report=validation_report,
+            invalidated_surfaces=invalidated,
+            refresh_targets=invalidated,
+        )
+
+    def _apply_command(
+        self,
+        snapshot: dict[str, Any],
+        command: TripMutationCommand,
+        impact: dict[str, Any],
+    ) -> None:
+        if isinstance(command, MoveStopCommand):
+            apply_move_stop(snapshot, command, impact)
+            return
+        if isinstance(command, ReorderDayCommand):
+            apply_reorder_day(snapshot, command, impact)
+            return
+        if isinstance(command, RemoveStopCommand):
+            apply_remove_stop(snapshot, command, impact)
+            return
+        if isinstance(command, SwapStopsCommand):
+            apply_swap_stops(snapshot, command, impact)
+            return
+        if isinstance(command, ReplaceStopCommand):
+            apply_replace_stop(snapshot, command, impact)
+            return
+        raise MutationCommandFailedError(command_index=0, reason_code="invalid_mutation_command")
+
+
+def build_command_digest(envelope: TripMutationCommandEnvelope) -> str:
+    return command_digest(
+        {
+            "schema_version": envelope.schema_version,
+            "mutation_kind": envelope.mutation_kind,
+            "base_revision_id": envelope.base_revision_id,
+            "commands": [command.model_dump(mode="json") for command in envelope.commands],
+        }
+    )
+
+
+def ensure_stable_item_ids(snapshot: dict[str, Any]) -> dict[str, Any]:
+    next_snapshot = copy.deepcopy(snapshot)
+    seen: set[str] = set()
+    for day in next_snapshot.get("days", []):
+        day_number = int(day.get("day") or 0)
+        flat_index = 0
+        for block in day.get("blocks", []):
+            block_type = str(block.get("block_type") or "")
+            for item in block.get("items", []):
+                stable_id = item.get("stable_id")
+                if not stable_id:
+                    stable_id = legacy_stable_item_id(day_number, block_type, item, flat_index)
+                    item["stable_id"] = stable_id
+                if stable_id in seen:
+                    item["stable_id"] = f"{stable_id}-{flat_index}"
+                seen.add(item["stable_id"])
+                flat_index += 1
+    return next_snapshot
+
+
+def legacy_stable_item_id(day: int, block_type: str, item: dict[str, Any], index: int) -> str:
+    payload = "|".join(
+        [
+            str(day),
+            block_type,
+            str(item.get("name") or ""),
+            str(item.get("type") or ""),
+            str(item.get("start_time") or ""),
+            str(item.get("end_time") or ""),
+            str(index),
+        ]
+    )
+    return f"stop_{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:20]}"
+
+
+def collect_item_ids(snapshot: dict[str, Any]) -> set[str]:
+    return {
+        str(item["stable_id"])
+        for day in snapshot.get("days", [])
+        for block in day.get("blocks", [])
+        for item in block.get("items", [])
+        if item.get("stable_id")
+    }
+
+
+def find_stop(snapshot: dict[str, Any], stop_id: str) -> tuple[dict[str, Any], dict[str, Any], int] | None:
+    for day in snapshot.get("days", []):
+        for block in day.get("blocks", []):
+            for index, item in enumerate(block.get("items", [])):
+                if item.get("stable_id") == stop_id:
+                    return day, block, index
+    return None
+
+
+def all_day_items(day: dict[str, Any]) -> list[dict[str, Any]]:
+    return [item for block in day.get("blocks", []) for item in block.get("items", [])]
+
+
+def require_stop(snapshot: dict[str, Any], stop_id: str, *, command_index: int = 0):
+    located = find_stop(snapshot, stop_id)
+    if located is None:
+        raise MutationCommandFailedError(
+            command_index=command_index,
+            reason_code="mutation_command_target_not_found",
+        )
+    return located
+
+
+def assert_mutable_stop(item: dict[str, Any], *, command_index: int = 0) -> None:
+    if item.get("is_fixed") is True or item.get("source_type") == "user_fixed":
+        raise MutationCommandFailedError(
+            command_index=command_index,
+            reason_code="fixed_event_mutation_forbidden",
+        )
+
+
+def find_day(snapshot: dict[str, Any], day_number: int) -> dict[str, Any] | None:
+    return next((day for day in snapshot.get("days", []) if day.get("day") == day_number), None)
+
+
+def find_block(day: dict[str, Any], block_type: str) -> dict[str, Any] | None:
+    return next((block for block in day.get("blocks", []) if str(block.get("block_type")) == block_type), None)
+
+
+def apply_move_stop(
+    snapshot: dict[str, Any],
+    command: MoveStopCommand,
+    impact: dict[str, Any],
+) -> None:
+    source_day, source_block, source_index = require_stop(snapshot, command.stop_id)
+    item = source_block["items"][source_index]
+    assert_mutable_stop(item)
+    target_day = find_day(snapshot, command.target_day)
+    if target_day is None:
+        raise MutationCommandFailedError(command_index=0, reason_code="mutation_command_target_not_found")
+    target_block_type = enum_value(command.target_block) or str(source_block.get("block_type"))
+    target_block = find_block(target_day, target_block_type)
+    if target_block is None:
+        raise MutationCommandFailedError(command_index=0, reason_code="invalid_stop_placement")
+    if target_day is source_day and target_block is source_block and is_same_block_noop_move(
+        source_block,
+        source_index,
+        command.placement,
+    ):
+        raise MutationCommandNoEffectError()
+    source_block["items"].pop(source_index)
+    item["day"] = command.target_day
+    insertion_index = resolve_insertion_index(target_day, target_block, command.placement, command.stop_id)
+    target_block["items"].insert(insertion_index, item)
+    impact["moved_stop_ids"].append(command.stop_id)
+    record_day_impact(impact, source_day.get("day"))
+    record_day_impact(impact, target_day.get("day"))
+
+
+def enum_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(getattr(value, "value", value))
+
+
+def is_same_block_noop_move(
+    block: dict[str, Any],
+    source_index: int,
+    placement: StopPlacement,
+) -> bool:
+    items = block.get("items", [])
+    if placement.at_end:
+        return source_index == len(items) - 1
+    if placement.before_stop_id:
+        return source_index + 1 < len(items) and items[source_index + 1].get("stable_id") == placement.before_stop_id
+    if placement.after_stop_id:
+        return source_index > 0 and items[source_index - 1].get("stable_id") == placement.after_stop_id
+    return False
+
+
+def resolve_insertion_index(
+    target_day: dict[str, Any],
+    target_block: dict[str, Any],
+    placement: StopPlacement,
+    stop_id: str,
+) -> int:
+    if placement.at_end:
+        return len(target_block.get("items", []))
+    anchor_id = placement.before_stop_id or placement.after_stop_id
+    if anchor_id == stop_id:
+        raise MutationCommandFailedError(command_index=0, reason_code="invalid_stop_placement")
+    if not anchor_id:
+        return len(target_block.get("items", []))
+    for block in target_day.get("blocks", []):
+        for index, item in enumerate(block.get("items", [])):
+            if item.get("stable_id") == anchor_id:
+                if block is not target_block:
+                    raise MutationCommandFailedError(command_index=0, reason_code="invalid_stop_placement")
+                return index if placement.before_stop_id else index + 1
+    raise MutationCommandFailedError(command_index=0, reason_code="mutation_command_target_not_found")
+
+
+def apply_reorder_day(
+    snapshot: dict[str, Any],
+    command: ReorderDayCommand,
+    impact: dict[str, Any],
+) -> None:
+    day = find_day(snapshot, command.day)
+    if day is None:
+        raise MutationCommandFailedError(command_index=0, reason_code="mutation_command_target_not_found")
+    items = all_day_items(day)
+    current_ids = [str(item.get("stable_id")) for item in items]
+    if set(current_ids) != set(command.ordered_stop_ids):
+        raise MutationCommandFailedError(command_index=0, reason_code="mutation_batch_failed")
+    item_by_id = {str(item.get("stable_id")): item for item in items}
+    ordered = [item_by_id[stop_id] for stop_id in command.ordered_stop_ids]
+    cursor = 0
+    for block in day.get("blocks", []):
+        count = len(block.get("items", []))
+        block["items"] = ordered[cursor : cursor + count]
+        cursor += count
+    impact["reordered_day_references"].append(str(command.day))
+    record_day_impact(impact, command.day)
+
+
+def apply_remove_stop(
+    snapshot: dict[str, Any],
+    command: RemoveStopCommand,
+    impact: dict[str, Any],
+) -> None:
+    day, block, index = require_stop(snapshot, command.stop_id)
+    item = block["items"][index]
+    assert_mutable_stop(item)
+    block["items"].pop(index)
+    impact["removed_stop_ids"].append(command.stop_id)
+    record_day_impact(impact, day.get("day"))
+
+
+def apply_swap_stops(
+    snapshot: dict[str, Any],
+    command: SwapStopsCommand,
+    impact: dict[str, Any],
+) -> None:
+    first_day, first_block, first_index = require_stop(snapshot, command.first_stop_id)
+    second_day, second_block, second_index = require_stop(snapshot, command.second_stop_id)
+    first = first_block["items"][first_index]
+    second = second_block["items"][second_index]
+    assert_mutable_stop(first)
+    assert_mutable_stop(second)
+    first_slot = slot_fields(first)
+    second_slot = slot_fields(second)
+    first_block["items"][first_index] = {**second, **first_slot}
+    second_block["items"][second_index] = {**first, **second_slot}
+    impact["swapped_stop_ids"].extend([command.first_stop_id, command.second_stop_id])
+    record_day_impact(impact, first_day.get("day"))
+    record_day_impact(impact, second_day.get("day"))
+
+
+def apply_replace_stop(
+    snapshot: dict[str, Any],
+    command: ReplaceStopCommand,
+    impact: dict[str, Any],
+) -> None:
+    day, block, index = require_stop(snapshot, command.stop_id)
+    item = block["items"][index]
+    assert_mutable_stop(item)
+    replacement = command.replacement
+    if item.get("name") == replacement.name and item.get("type") == replacement.type:
+        raise MutationCommandNoEffectError()
+    block["items"][index] = {
+        **item,
+        "name": replacement.name,
+        "type": replacement.type,
+        "is_fixed": False,
+        "placement_reason": (
+            f"{replacement.reasoning_summary} This was swapped into the same time slot after generation."
+        ),
+        "source_type": "auto_filled",
+        "source_label": "已替换",
+        "source_reason": replacement.itinerary_relation_summary,
+        "local_edit": {
+            "previous_name": item.get("name"),
+            "source": "completion_recommendation",
+            "status": "committed",
+            "reasoning_summary": replacement.reasoning_summary,
+            "itinerary_relation_summary": replacement.itinerary_relation_summary,
+            "original_type": item.get("type"),
+            "original_placement_reason": item.get("placement_reason"),
+            "original_source_type": item.get("source_type"),
+            "original_source_label": item.get("source_label"),
+            "original_source_reason": item.get("source_reason"),
+        },
+    }
+    impact["replaced_stop_ids"].append(command.stop_id)
+    record_day_impact(impact, day.get("day"))
+
+
+def slot_fields(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "day": item.get("day"),
+        "start_time": item.get("start_time"),
+        "end_time": item.get("end_time"),
+    }
+
+
+def normalize_snapshot_after_mutation(snapshot: dict[str, Any], impact: dict[str, Any]) -> None:
+    affected = {int(day) for day in impact["affected_day_references"] if str(day).isdigit()}
+    for day in snapshot.get("days", []):
+        if int(day.get("day") or 0) not in affected:
+            continue
+        previous_name = snapshot.get("planning_anchor_source", {}).get("source_name")
+        for block in day.get("blocks", []):
+            for item in block.get("items", []):
+                item["travel_from_name"] = previous_name
+                item["travel_distance_m"] = None
+                item["travel_duration_s"] = None
+                previous_name = item.get("name")
+    snapshot["completion_recommendation"] = None
+    snapshot["completion_intelligence"] = None
+    snapshot["planner_realism"] = None
+
+
+def build_validation_report(
+    snapshot: dict[str, Any],
+    baseline_ids: set[str],
+    envelope: TripMutationCommandEnvelope,
+) -> dict[str, Any]:
+    itinerary = ItineraryResponse.model_validate(snapshot)
+    current_ids = collect_item_ids(snapshot)
+    duplicated = len(current_ids) != sum(
+        1
+        for day in snapshot.get("days", [])
+        for block in day.get("blocks", [])
+        for item in block.get("items", [])
+    )
+    invariant_results = [
+        {"code": "COMMAND_SCHEMA_VALID", "status": "pass", "evidence": {"schema_version": envelope.schema_version}},
+        {"code": "COMMANDS_REFERENCE_BASE_REVISION", "status": "pass", "evidence": {"base_revision_id": envelope.base_revision_id}},
+        {
+            "code": "STABLE_ITEM_IDENTITY",
+            "status": "fail" if duplicated else "pass",
+            "evidence": {"before_count": len(baseline_ids), "after_count": len(current_ids)},
+        },
+        no_schedule_overlap(itinerary).model_dump(mode="json"),
+        within_day_availability(itinerary).model_dump(mode="json"),
+        within_arrival_departure_boundaries(itinerary).model_dump(mode="json"),
+        no_duplicate_scheduled_place(itinerary).model_dump(mode="json"),
+        {
+            "code": "NO_DANGLING_ROUTE_REFERENCE",
+            "status": "pass" if no_dangling_route_reference(snapshot) else "fail",
+            "evidence": {},
+        },
+        {
+            "code": "ROUTE_UNKNOWN_NOT_ZERO",
+            "status": "pass" if route_unknown_not_zero(snapshot) else "fail",
+            "evidence": {},
+        },
+    ]
+    status = "invalid" if any(item["status"] == "fail" for item in invariant_results) else "valid"
+    return {"schema_version": "1.0", "status": status, "invariant_results": invariant_results, "warnings": []}
+
+
+def no_dangling_route_reference(snapshot: dict[str, Any]) -> bool:
+    known = {
+        str(item.get("name"))
+        for day in snapshot.get("days", [])
+        for block in day.get("blocks", [])
+        for item in block.get("items", [])
+    }
+    anchor = snapshot.get("planning_anchor_source", {}).get("source_name")
+    if anchor:
+        known.add(str(anchor))
+    for day in snapshot.get("days", []):
+        for block in day.get("blocks", []):
+            for item in block.get("items", []):
+                ref = item.get("travel_from_name")
+                if ref is not None and str(ref) not in known:
+                    return False
+    return True
+
+
+def route_unknown_not_zero(snapshot: dict[str, Any]) -> bool:
+    for day in snapshot.get("days", []):
+        for block in day.get("blocks", []):
+            for item in block.get("items", []):
+                if item.get("travel_from_name") and item.get("travel_duration_s") == 0:
+                    return False
+    return True
+
+
+def empty_impact() -> dict[str, Any]:
+    return {
+        "affected_day_references": [],
+        "moved_stop_ids": [],
+        "removed_stop_ids": [],
+        "reordered_day_references": [],
+        "swapped_stop_ids": [],
+        "replaced_stop_ids": [],
+        "fixed_items_touched": [],
+        "route_recalculation_required": False,
+        "invalidated_surfaces": [],
+        "warning_codes": [],
+    }
+
+
+def record_day_impact(impact: dict[str, Any], day: Any) -> None:
+    value = str(day)
+    if value not in impact["affected_day_references"]:
+        impact["affected_day_references"].append(value)
+
+
+def build_invalidated_surfaces(impact: dict[str, Any]) -> list[str]:
+    surfaces = ["route_segments", "trip_readiness", "planner_realism", "completion_intelligence"]
+    if impact["removed_stop_ids"] or impact["replaced_stop_ids"]:
+        surfaces.append("selection")
+    return surfaces

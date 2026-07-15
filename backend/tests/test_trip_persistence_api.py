@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import sqlite3
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +20,7 @@ from app.schemas import (
     TripIntentEnvelopeSource,
 )
 from app.trips.dependencies import reset_trip_repository_cache_for_tests
+from tests.test_trip_mutation_commands import command_itinerary
 
 
 class TripPersistenceApiTests(unittest.TestCase):
@@ -440,6 +443,264 @@ class TripPersistenceApiTests(unittest.TestCase):
         history = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
         self.assertEqual([revision["revision_number"] for revision in history], [3, 2, 1])
 
+    def test_route_edit_typed_mutation_preview_apply_reload_and_undo(self) -> None:
+        client = TestClient(app)
+        with patch(
+            "app.trips.service.build_itinerary_response",
+            return_value=command_itinerary(),
+        ):
+            created = client.post(
+                "/trips/plan",
+                json={
+                    "itinerary_request": {
+                        "city": "上海",
+                        "trip_days": 1,
+                        "scenic_spots": [],
+                        "restaurants": [],
+                    }
+                },
+            )
+        trip_id = created.json()["trip"]["id"]
+        base_revision_id = created.json()["current_revision"]["id"]
+        base_names = flattened_names(created.json()["itinerary"])
+        self.assertEqual(base_names, ["上海博物馆", "豫园", "外滩"])
+        yu_id = stop_id_by_name(created.json()["itinerary"], "豫园")
+        museum_id = stop_id_by_name(created.json()["itinerary"], "上海博物馆")
+
+        preview = client.post(
+            f"/trips/{trip_id}/mutations/preview",
+            json={
+                "base_revision_id": base_revision_id,
+                "mutation_kind": "route_edit",
+                "commands": [
+                    {
+                        "type": "move_stop",
+                        "stop_id": yu_id,
+                        "target_day": 1,
+                        "target_block": "morning",
+                        "placement": {"before_stop_id": museum_id},
+                    }
+                ],
+            },
+            headers={"Origin": "http://testserver"},
+        )
+        proposal = preview.json()["proposal"]
+        applied = client.post(
+            f"/trips/{trip_id}/mutation-proposals/{proposal['id']}/apply",
+            json={
+                "base_revision_id": base_revision_id,
+                "proposal_digest": proposal["proposal_digest"],
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "route-edit-apply",
+            },
+        )
+        reloaded = client.get(f"/trips/{trip_id}")
+        revision_2 = applied.json()["current_revision"]["id"]
+        undone = client.post(
+            f"/trips/{trip_id}/revisions/{revision_2}/undo",
+            json={"base_revision_id": revision_2},
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "route-edit-undo",
+            },
+        )
+
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(proposal["source_type"], "route_edit")
+        self.assertEqual(proposal["execution_kind"], "typed_command")
+        self.assertEqual(proposal["command_schema_version"], "1.0")
+        self.assertEqual(proposal["mutation_kind"], "route_edit")
+        self.assertEqual(proposal["commands"][0]["type"], "move_stop")
+        self.assertIn("route_segments", proposal["invalidated_surfaces"])
+        self.assertEqual(applied.status_code, 200)
+        self.assertEqual(applied.json()["current_revision"]["source_type"], "route_edit")
+        self.assertEqual(applied.json()["current_revision"]["content_digest"], proposal["preview_content_digest"])
+        self.assertEqual(
+            operation_metadata_for_revision(
+                Path(self.temp_dir.name) / "api-trip-store.sqlite3",
+                applied.json()["current_revision"]["id"],
+            )["command_digest"],
+            proposal["command_digest"],
+        )
+        self.assertEqual(flattened_names(applied.json()["itinerary"]), ["豫园", "上海博物馆", "外滩"])
+        self.assertEqual(flattened_names(reloaded.json()["itinerary"]), ["豫园", "上海博物馆", "外滩"])
+        self.assertEqual(undone.status_code, 200)
+        self.assertEqual(undone.json()["current_revision"]["source_type"], "mutation_undo")
+        self.assertEqual(flattened_names(undone.json()["itinerary"]), base_names)
+        self.assertEqual(undone.json()["current_revision"]["restored_from_revision_id"], base_revision_id)
+
+    def test_swap_typed_mutation_is_idempotent_and_preserves_stable_identity(self) -> None:
+        client = TestClient(app)
+        with patch(
+            "app.trips.service.build_itinerary_response",
+            return_value=command_itinerary(),
+        ):
+            created = client.post(
+                "/trips/plan",
+                json={
+                    "itinerary_request": {
+                        "city": "上海",
+                        "trip_days": 1,
+                        "scenic_spots": [],
+                        "restaurants": [],
+                    }
+                },
+            )
+        trip_id = created.json()["trip"]["id"]
+        base_revision_id = created.json()["current_revision"]["id"]
+        museum_id = stop_id_by_name(created.json()["itinerary"], "上海博物馆")
+        bund_id = stop_id_by_name(created.json()["itinerary"], "外滩")
+
+        preview = client.post(
+            f"/trips/{trip_id}/mutations/preview",
+            json={
+                "base_revision_id": base_revision_id,
+                "mutation_kind": "swap",
+                "commands": [
+                    {"type": "swap_stops", "first_stop_id": museum_id, "second_stop_id": bund_id}
+                ],
+            },
+            headers={"Origin": "http://testserver"},
+        )
+        proposal = preview.json()["proposal"]
+        first = client.post(
+            f"/trips/{trip_id}/mutation-proposals/{proposal['id']}/apply",
+            json={
+                "base_revision_id": base_revision_id,
+                "proposal_digest": proposal["proposal_digest"],
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "swap-apply",
+            },
+        )
+        retried = client.post(
+            f"/trips/{trip_id}/mutation-proposals/{proposal['id']}/apply",
+            json={
+                "base_revision_id": base_revision_id,
+                "proposal_digest": proposal["proposal_digest"],
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "swap-apply",
+            },
+        )
+        duplicate_with_new_key = client.post(
+            f"/trips/{trip_id}/mutation-proposals/{proposal['id']}/apply",
+            json={
+                "base_revision_id": base_revision_id,
+                "proposal_digest": proposal["proposal_digest"],
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "swap-apply-after-lost-response",
+            },
+        )
+        revision_2 = first.json()["current_revision"]["id"]
+        undone = client.post(
+            f"/trips/{trip_id}/revisions/{revision_2}/undo",
+            json={"base_revision_id": revision_2},
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "undo-swap",
+            },
+        )
+
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(proposal["source_type"], "swap")
+        self.assertEqual(proposal["mutation_kind"], "swap")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["current_revision"]["source_type"], "swap")
+        museum = find_item(first.json()["itinerary"], "上海博物馆")
+        bund = find_item(first.json()["itinerary"], "外滩")
+        self.assertEqual(museum["stable_id"], museum_id)
+        self.assertEqual(bund["stable_id"], bund_id)
+        self.assertEqual(museum["start_time"], "14:30:00")
+        self.assertEqual(bund["start_time"], "09:00:00")
+        self.assertEqual(first.json()["current_revision"]["id"], retried.json()["current_revision"]["id"])
+        self.assertTrue(retried.json()["persistence"]["idempotent_replay"])
+        self.assertEqual(first.json()["current_revision"]["id"], duplicate_with_new_key.json()["current_revision"]["id"])
+        self.assertEqual(undone.status_code, 200)
+        self.assertEqual(undone.json()["current_revision"]["source_type"], "mutation_undo")
+        self.assertEqual(undone.json()["current_revision"]["restored_from_revision_id"], base_revision_id)
+        history = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+        self.assertEqual([revision["revision_number"] for revision in history], [3, 2, 1])
+
+    def test_typed_mutation_rejects_fixed_item_and_stale_base_without_revision(self) -> None:
+        client = TestClient(app)
+        with patch(
+            "app.trips.service.build_itinerary_response",
+            return_value=command_itinerary(fixed_museum=True),
+        ):
+            created = client.post(
+                "/trips/plan",
+                json={
+                    "itinerary_request": {
+                        "city": "上海",
+                        "trip_days": 1,
+                        "scenic_spots": [],
+                        "restaurants": [],
+                    }
+                },
+            )
+        trip_id = created.json()["trip"]["id"]
+        base_revision_id = created.json()["current_revision"]["id"]
+        museum_id = stop_id_by_name(created.json()["itinerary"], "上海博物馆")
+        yu_id = stop_id_by_name(created.json()["itinerary"], "豫园")
+        fixed_preview = client.post(
+            f"/trips/{trip_id}/mutations/preview",
+            json={
+                "base_revision_id": base_revision_id,
+                "mutation_kind": "route_edit",
+                "commands": [{"type": "remove_stop", "stop_id": museum_id}],
+            },
+            headers={"Origin": "http://testserver"},
+        )
+        valid_preview = client.post(
+            f"/trips/{trip_id}/mutations/preview",
+            json={
+                "base_revision_id": base_revision_id,
+                "mutation_kind": "route_edit",
+                "commands": [{"type": "remove_stop", "stop_id": yu_id}],
+            },
+            headers={"Origin": "http://testserver"},
+        )
+        proposal = valid_preview.json()["proposal"]
+        applied = client.post(
+            f"/trips/{trip_id}/mutation-proposals/{proposal['id']}/apply",
+            json={
+                "base_revision_id": base_revision_id,
+                "proposal_digest": proposal["proposal_digest"],
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "remove-yu",
+            },
+        )
+        stale_preview = client.post(
+            f"/trips/{trip_id}/mutations/preview",
+            json={
+                "base_revision_id": base_revision_id,
+                "mutation_kind": "route_edit",
+                "commands": [{"type": "remove_stop", "stop_id": yu_id}],
+            },
+            headers={"Origin": "http://testserver"},
+        )
+
+        self.assertEqual(fixed_preview.status_code, 422)
+        self.assertEqual(fixed_preview.json()["error"]["code"], "mutation_command_failed")
+        self.assertEqual(
+            fixed_preview.json()["error"]["reason_code"],
+            "fixed_event_mutation_forbidden",
+        )
+        self.assertEqual(valid_preview.status_code, 200)
+        self.assertEqual(applied.status_code, 200)
+        self.assertEqual(stale_preview.status_code, 409)
+        self.assertEqual(stale_preview.json()["error"]["code"], "stale_mutation_proposal")
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 2)
+
 
 def simple_itinerary(trip_days: int = 1, *, with_intent: bool = False) -> ItineraryResponse:
     return ItineraryResponse(
@@ -451,6 +712,44 @@ def simple_itinerary(trip_days: int = 1, *, with_intent: bool = False) -> Itiner
         trip_intent=simple_trip_intent(trip_days) if with_intent else None,
         days=[],
     )
+
+
+def flattened_names(itinerary: dict) -> list[str]:
+    return [
+        item["name"]
+        for day in itinerary["days"]
+        for block in day["blocks"]
+        for item in block["items"]
+    ]
+
+
+def find_item(itinerary: dict, name: str) -> dict:
+    return next(
+        item
+        for day in itinerary["days"]
+        for block in day["blocks"]
+        for item in block["items"]
+        if item["name"] == name
+    )
+
+
+def stop_id_by_name(itinerary: dict, name: str) -> str:
+    return find_item(itinerary, name)["stable_id"]
+
+
+def operation_metadata_for_revision(database_path: Path, revision_id: str) -> dict:
+    connection = sqlite3.connect(database_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            "SELECT operation_metadata_json FROM revision_operations WHERE revision_id = ?",
+            (revision_id,),
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        raise AssertionError(f"Missing operation metadata for revision {revision_id}")
+    return json.loads(row["operation_metadata_json"])
 
 
 def simple_trip_intent(trip_days: int) -> TripIntentEnvelope:

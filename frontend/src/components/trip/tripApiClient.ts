@@ -10,6 +10,7 @@ export type TripApiResult<TData> =
       message: string;
       code?: string;
       recoverable?: boolean;
+      context?: Record<string, unknown>;
       aborted?: boolean;
     };
 
@@ -56,6 +57,7 @@ export async function postTripJson<TData>(
       message: extractApiDetail(data) ?? tripError?.message ?? fallbackMessage,
       code: tripError?.code,
       recoverable: tripError?.recoverable,
+      context: tripError?.context,
     };
   }
 
@@ -103,6 +105,7 @@ export async function getTripJson<TData>(
       message: extractApiDetail(data) ?? tripError?.message ?? fallbackMessage,
       code: tripError?.code,
       recoverable: tripError?.recoverable,
+      context: tripError?.context,
     };
   }
 
@@ -123,6 +126,7 @@ function extractTripError(data: unknown): {
   code?: string;
   message: string;
   recoverable?: boolean;
+  context?: Record<string, unknown>;
 } | null {
   if (typeof data !== "object" || data === null || !("error" in data)) {
     return null;
@@ -138,8 +142,15 @@ function extractTripError(data: unknown): {
   const recoverable = "recoverable" in error
     ? Boolean((error as { recoverable?: unknown }).recoverable)
     : undefined;
+  const context = Object.fromEntries(
+    Object.entries(error).filter(
+      ([key]) => !["code", "message", "recoverable"].includes(key),
+    ),
+  );
   const formatted = [code, message].filter(Boolean).join(": ");
-  return formatted ? { code: code || undefined, message: formatted, recoverable } : null;
+  return formatted
+    ? { code: code || undefined, message: formatted, recoverable, context }
+    : null;
 }
 
 async function readJsonSafely(response: Response): Promise<unknown> {

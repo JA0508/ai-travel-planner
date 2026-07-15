@@ -16,6 +16,7 @@ type AvailabilitySummaryLike = {
 };
 
 type ScheduledItemLike = {
+  stable_id?: string | null;
   name: string;
   type: TimelineItemType;
   start_time: string;
@@ -61,6 +62,7 @@ type TravelEdgeLike = {
 };
 
 export type DayTimelineSwapTarget = {
+  stable_id?: string | null;
   day: number;
   block_type: TimelineBlockType;
   start_time: string;
@@ -249,6 +251,7 @@ export function buildDayTimelineViewModel<
             const flexibilityBadge = getScheduledItemFlexibilityBadge(item);
             const canSwap = canSwapScheduledItem(item, generationContext);
             const swapTarget: DayTimelineSwapTarget = {
+              stable_id: item.stable_id ?? null,
               day: day.day,
               block_type: block.block_type,
               start_time: item.start_time,
