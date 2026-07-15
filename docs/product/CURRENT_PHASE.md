@@ -6,9 +6,10 @@ Server-Authoritative Trip Mutation Revisions
 
 ## Active objective
 
-Persist route edit and swap as typed, server-authoritative Trip mutation
-commands with deterministic preview, persisted proposal apply, stable stop
-identity, derived-state invalidation, idempotent retry, and compensating undo.
+Close the remaining high-risk dirty mutation paths by persisting candidate intake
+and workflow decisions, admitting candidates through typed server-authoritative
+Trip mutation proposals, returning repair-required state for missing execution
+facts, and creating compensating revisions for saved completion undo.
 
 ## Current stable capabilities
 
@@ -27,15 +28,16 @@ identity, derived-state invalidation, idempotent retry, and compensating undo.
 - F-001a Trip + TripRevision Persistence Foundation
 - F-001b persisted server-authoritative replan
 - F-001b.1 Persisted Replan Proposal Integrity and Safe Undo Gate
+- F-001b.2 Typed Route Edit and Swap Mutation Revisions
 
 ## In review
 
-- F-001b.2 Typed Route Edit and Swap Mutation Revisions
+- F-001b.3 Candidate Admission, Completion Undo, and Mutation Closure
 
 ## Next approved work
 
-1. F-001b.3 Completion Undo and Remaining Mutation Closure
-2. F-002/F-003 Import-to-Executable
+1. F-002/F-003 Import-to-Executable
+2. F-020b Planner Trace Review and Evaluation Expansion
 
 ## Explicitly not in scope
 

@@ -16,6 +16,7 @@ from app.trips.digests import (
     mutation_proposal_digest,
 )
 from app.trips.errors import (
+    CandidateNotFoundError,
     IdempotencyConflictError,
     ImmutableRevisionViolationError,
     MutationProposalCancelledError,
@@ -33,15 +34,20 @@ from app.trips.errors import (
     TripNotFoundError,
 )
 from app.trips.models import (
+    CandidateDecisionResult,
+    CandidateRegistrationResult,
     CreateRevisionResult,
     ProposalStatus,
     RevisionSourceType,
+    TripCandidateDecisionRecord,
+    TripCandidateRecord,
     TripAggregate,
     TripLifecycleStatus,
     TripMutationProposalRecord,
     TripRecord,
     TripRevisionRecord,
 )
+from app.trips.candidates import generate_candidate_decision_id
 
 
 class SQLiteTripRepository:
@@ -184,6 +190,193 @@ class SQLiteTripRepository:
                 (trip_id,),
             ).fetchall()
         return [row_to_revision(row) for row in rows]
+
+    def create_candidate(
+        self,
+        *,
+        candidate: TripCandidateRecord,
+        decision: TripCandidateDecisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CandidateRegistrationResult:
+        with self._transaction() as connection:
+            existing_idempotency = connection.execute(
+                """
+                SELECT * FROM candidate_idempotency_records
+                WHERE trip_id = ? AND idempotency_key_hash = ?
+                """,
+                (candidate.trip_id, idempotency_key_hash),
+            ).fetchone()
+            if existing_idempotency is not None:
+                if existing_idempotency["request_digest"] != request_digest:
+                    raise IdempotencyConflictError()
+                stored_candidate = self._get_candidate_in_connection(
+                    connection,
+                    candidate.trip_id,
+                    existing_idempotency["result_candidate_id"],
+                )
+                stored_decision = (
+                    self._get_candidate_decision_in_connection(
+                        connection,
+                        candidate.trip_id,
+                        existing_idempotency["result_decision_id"],
+                    )
+                    if existing_idempotency["result_decision_id"]
+                    else None
+                )
+                return CandidateRegistrationResult(
+                    candidate=stored_candidate,
+                    decision=stored_decision,
+                    idempotent_replay=True,
+                )
+
+            duplicate = connection.execute(
+                """
+                SELECT * FROM trip_candidates
+                WHERE trip_id = ? AND content_digest = ?
+                """,
+                (candidate.trip_id, candidate.content_digest),
+            ).fetchone()
+            if duplicate is not None:
+                stored_candidate = row_to_candidate(duplicate)
+                connection.execute(
+                    """
+                    INSERT INTO candidate_idempotency_records(
+                      trip_id, idempotency_key_hash, request_digest,
+                      result_candidate_id, result_decision_id, created_at
+                    )
+                    VALUES (?, ?, ?, ?, NULL, ?)
+                    """,
+                    (
+                        candidate.trip_id,
+                        idempotency_key_hash,
+                        request_digest,
+                        stored_candidate.id,
+                        utc_now(),
+                    ),
+                )
+                return CandidateRegistrationResult(candidate=stored_candidate, deduplicated=True)
+
+            self._insert_candidate(connection, candidate)
+            self._insert_candidate_decision(connection, decision)
+            connection.execute(
+                """
+                INSERT INTO candidate_idempotency_records(
+                  trip_id, idempotency_key_hash, request_digest,
+                  result_candidate_id, result_decision_id, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate.trip_id,
+                    idempotency_key_hash,
+                    request_digest,
+                    candidate.id,
+                    decision.id,
+                    decision.created_at,
+                ),
+            )
+            return CandidateRegistrationResult(candidate=candidate, decision=decision)
+
+    def get_candidate(self, *, trip_id: str, candidate_id: str) -> TripCandidateRecord:
+        with closing(self.connection_factory()) as connection:
+            return self._get_candidate_in_connection(connection, trip_id, candidate_id)
+
+    def list_candidates(self, *, trip_id: str) -> list[TripCandidateRecord]:
+        with closing(self.connection_factory()) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM trip_candidates
+                WHERE trip_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (trip_id,),
+            ).fetchall()
+        return [row_to_candidate(row) for row in rows]
+
+    def list_candidate_decisions(
+        self,
+        *,
+        trip_id: str,
+        candidate_id: str | None = None,
+    ) -> list[TripCandidateDecisionRecord]:
+        with closing(self.connection_factory()) as connection:
+            if candidate_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM trip_candidate_decisions
+                    WHERE trip_id = ?
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (trip_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM trip_candidate_decisions
+                    WHERE trip_id = ? AND candidate_id = ?
+                    ORDER BY created_at ASC, id ASC
+                    """,
+                    (trip_id, candidate_id),
+                ).fetchall()
+        return [row_to_candidate_decision(row) for row in rows]
+
+    def create_candidate_decision(
+        self,
+        *,
+        decision: TripCandidateDecisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CandidateDecisionResult:
+        with self._transaction() as connection:
+            idempotency_row = connection.execute(
+                """
+                SELECT * FROM candidate_idempotency_records
+                WHERE trip_id = ? AND idempotency_key_hash = ?
+                """,
+                (decision.trip_id, idempotency_key_hash),
+            ).fetchone()
+            if idempotency_row is not None:
+                if idempotency_row["request_digest"] != request_digest:
+                    raise IdempotencyConflictError()
+                stored_decision = self._get_candidate_decision_in_connection(
+                    connection,
+                    decision.trip_id,
+                    idempotency_row["result_decision_id"],
+                )
+                return CandidateDecisionResult(
+                    candidate=self._get_candidate_in_connection(
+                        connection,
+                        decision.trip_id,
+                        stored_decision.candidate_id,
+                    ),
+                    decision=stored_decision,
+                    idempotent_replay=True,
+                )
+            candidate = self._get_candidate_in_connection(
+                connection,
+                decision.trip_id,
+                decision.candidate_id,
+            )
+            self._insert_candidate_decision(connection, decision)
+            connection.execute(
+                """
+                INSERT INTO candidate_idempotency_records(
+                  trip_id, idempotency_key_hash, request_digest,
+                  result_candidate_id, result_decision_id, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision.trip_id,
+                    idempotency_key_hash,
+                    request_digest,
+                    candidate.id,
+                    decision.id,
+                    decision.created_at,
+                ),
+            )
+            return CandidateDecisionResult(candidate=candidate, decision=decision)
 
     def get_idempotent_revision(
         self,
@@ -435,6 +628,25 @@ class SQLiteTripRepository:
                 """,
                 (revision_id, now, proposal_id, trip_id),
             )
+            candidate_admission = operation_metadata.get("candidate_admission")
+            if isinstance(candidate_admission, dict):
+                candidate_id = str(candidate_admission.get("candidate_id") or "")
+                if candidate_id:
+                    self._get_candidate_in_connection(connection, trip_id, candidate_id)
+                    self._insert_candidate_decision(
+                        connection,
+                        TripCandidateDecisionRecord(
+                            id=generate_candidate_decision_id(),
+                            trip_id=trip_id,
+                            candidate_id=candidate_id,
+                            decision_type="scheduled",
+                            reason_code="SCHEDULED_IN_REVISION",
+                            base_revision_id=base_revision_id,
+                            related_revision_id=revision_id,
+                            source="mutation_apply",
+                            created_at=now,
+                        ),
+                    )
             connection.execute(
                 """
                 UPDATE trips
@@ -581,7 +793,11 @@ class SQLiteTripRepository:
             connection.execute("COMMIT")
         except sqlite3.IntegrityError as exc:
             connection.execute("ROLLBACK")
-            if "immutable_revision_violation" in str(exc) or "immutable_proposal_violation" in str(exc):
+            if (
+                "immutable_revision_violation" in str(exc)
+                or "immutable_proposal_violation" in str(exc)
+                or "immutable_candidate_violation" in str(exc)
+            ):
                 raise ImmutableRevisionViolationError() from exc
             if "schema_migrations" in str(exc):
                 raise PersistenceSchemaMismatchError() from exc
@@ -590,7 +806,11 @@ class SQLiteTripRepository:
             connection.execute("ROLLBACK")
             if "locked" in str(exc).lower() or "busy" in str(exc).lower():
                 raise PersistenceTemporarilyUnavailableError() from exc
-            if "immutable_revision_violation" in str(exc) or "immutable_proposal_violation" in str(exc):
+            if (
+                "immutable_revision_violation" in str(exc)
+                or "immutable_proposal_violation" in str(exc)
+                or "immutable_candidate_violation" in str(exc)
+            ):
                 raise ImmutableRevisionViolationError() from exc
             raise
         except Exception:
@@ -656,6 +876,75 @@ class SQLiteTripRepository:
             ),
         )
 
+    def _insert_candidate(
+        self,
+        connection: sqlite3.Connection,
+        candidate: TripCandidateRecord,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO trip_candidates(
+              id, trip_id, candidate_type, display_name, normalized_name,
+              canonical_place_id, provider_place_id, category, coordinates_json,
+              address_summary, estimated_duration_minutes, preferred_time_block,
+              explicit_day_reference, source_kind, source_ref, evidence_refs_json,
+              location_state, route_state, duration_state, confidence,
+              content_digest, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                candidate.id,
+                candidate.trip_id,
+                candidate.candidate_type,
+                candidate.display_name,
+                candidate.normalized_name,
+                candidate.canonical_place_id,
+                candidate.provider_place_id,
+                candidate.category,
+                canonical_json(candidate.coordinates) if candidate.coordinates is not None else None,
+                candidate.address_summary,
+                candidate.estimated_duration_minutes,
+                candidate.preferred_time_block,
+                candidate.explicit_day_reference,
+                candidate.source_kind,
+                candidate.source_ref,
+                canonical_json(candidate.evidence_refs),
+                candidate.location_state,
+                candidate.route_state,
+                candidate.duration_state,
+                candidate.confidence,
+                candidate.content_digest,
+                candidate.created_at,
+            ),
+        )
+
+    def _insert_candidate_decision(
+        self,
+        connection: sqlite3.Connection,
+        decision: TripCandidateDecisionRecord,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO trip_candidate_decisions(
+              id, trip_id, candidate_id, decision_type, reason_code,
+              base_revision_id, related_revision_id, source, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                decision.id,
+                decision.trip_id,
+                decision.candidate_id,
+                decision.decision_type,
+                decision.reason_code,
+                decision.base_revision_id,
+                decision.related_revision_id,
+                decision.source,
+                decision.created_at,
+            ),
+        )
+
     def _get_revision_in_connection(
         self,
         connection: sqlite3.Connection,
@@ -683,6 +972,34 @@ class SQLiteTripRepository:
         if row is None:
             raise MutationProposalNotFoundError(proposal_id)
         return row_to_proposal(row)
+
+    def _get_candidate_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        trip_id: str,
+        candidate_id: str,
+    ) -> TripCandidateRecord:
+        row = connection.execute(
+            "SELECT * FROM trip_candidates WHERE id = ? AND trip_id = ?",
+            (candidate_id, trip_id),
+        ).fetchone()
+        if row is None:
+            raise CandidateNotFoundError(candidate_id)
+        return row_to_candidate(row)
+
+    def _get_candidate_decision_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        trip_id: str,
+        decision_id: str,
+    ) -> TripCandidateDecisionRecord:
+        row = connection.execute(
+            "SELECT * FROM trip_candidate_decisions WHERE id = ? AND trip_id = ?",
+            (decision_id, trip_id),
+        ).fetchone()
+        if row is None:
+            raise CandidateNotFoundError(decision_id)
+        return row_to_candidate_decision(row)
 
     def _assert_proposal_integrity(self, proposal: TripMutationProposalRecord) -> None:
         expected = mutation_proposal_digest(
@@ -781,4 +1098,45 @@ def row_to_proposal(row: sqlite3.Row) -> TripMutationProposalRecord:
         applied_revision_id=row["applied_revision_id"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def row_to_candidate(row: sqlite3.Row) -> TripCandidateRecord:
+    return TripCandidateRecord(
+        id=row["id"],
+        trip_id=row["trip_id"],
+        candidate_type=row["candidate_type"],
+        display_name=row["display_name"],
+        normalized_name=row["normalized_name"],
+        canonical_place_id=row["canonical_place_id"],
+        provider_place_id=row["provider_place_id"],
+        category=row["category"],
+        coordinates=json.loads(row["coordinates_json"]) if row["coordinates_json"] else None,
+        address_summary=row["address_summary"],
+        estimated_duration_minutes=row["estimated_duration_minutes"],
+        preferred_time_block=row["preferred_time_block"],
+        explicit_day_reference=row["explicit_day_reference"],
+        source_kind=row["source_kind"],
+        source_ref=row["source_ref"],
+        evidence_refs=json.loads(row["evidence_refs_json"]),
+        location_state=row["location_state"],
+        route_state=row["route_state"],
+        duration_state=row["duration_state"],
+        confidence=row["confidence"],
+        content_digest=row["content_digest"],
+        created_at=row["created_at"],
+    )
+
+
+def row_to_candidate_decision(row: sqlite3.Row) -> TripCandidateDecisionRecord:
+    return TripCandidateDecisionRecord(
+        id=row["id"],
+        trip_id=row["trip_id"],
+        candidate_id=row["candidate_id"],
+        decision_type=row["decision_type"],
+        reason_code=row["reason_code"],
+        base_revision_id=row["base_revision_id"],
+        related_revision_id=row["related_revision_id"],
+        source=row["source"],
+        created_at=row["created_at"],
     )

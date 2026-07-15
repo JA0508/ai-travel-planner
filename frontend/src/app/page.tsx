@@ -35,6 +35,19 @@ import {
   buildSwapReplaceCommandEnvelope,
   type TripMutationCommandEnvelope,
 } from "@/features/trip-workspace/routeWorkspaceMutationCommands";
+import {
+  buildCandidateAdmissionEnvelope,
+  buildCompletionCandidatePayload,
+  buildManualCandidatePayload,
+  candidateIdempotencyKey,
+  groupCandidates,
+  type CandidateAdmissionCommandEnvelope,
+  type CandidateDecisionResponse,
+  type CandidateListResponse,
+  type CandidateRegistrationResponse,
+  type CandidateWorkspaceState,
+  type TripCandidate,
+} from "@/features/trip-workspace/tripCandidates";
 import { ConversationalReplanPanel } from "@/components/trip/replanning/ConversationalReplanPanel";
 import type {
   ReplanExecutionResult,
@@ -1281,6 +1294,9 @@ export default function HomePage() {
   const [completionTaskCandidatePreviews, setCompletionTaskCandidatePreviews] =
     useState<Record<string, CompletionTaskCandidatePreviewResponse>>({});
   const [previewingCompletionTaskId, setPreviewingCompletionTaskId] = useState<string | null>(null);
+  const [candidateWorkspace, setCandidateWorkspace] = useState<CandidateWorkspaceState>({
+    status: "idle",
+  });
   const resultSectionRef = useRef<HTMLElement | null>(null);
   const shouldRevealResultRef = useRef(false);
   const isAvailabilityPreviewStale =
@@ -1473,6 +1489,7 @@ export default function HomePage() {
     }
     setTripPersistence(markSavedFromRevision(revision));
     setHasSavedSession(true);
+    void refreshCandidates(ref.tripId);
   }
 
   async function hydrateFromPersistedMutation(
@@ -1502,6 +1519,7 @@ export default function HomePage() {
     }
     setTripPersistence({ status: "none" });
     setRevisionHistory([]);
+    setCandidateWorkspace({ status: "idle" });
     setHasSavedSession(false);
   }
 
@@ -1572,6 +1590,152 @@ export default function HomePage() {
     if (response.ok) {
       setRevisionHistory(response.data.revisions);
     }
+  }
+
+  async function refreshCandidates(tripId: string) {
+    setCandidateWorkspace({ status: "loading" });
+    const response = await getTripJson<CandidateListResponse>(
+      TRIP_API_ENDPOINTS.listTripCandidates(tripId),
+      "获取候选地点失败",
+    );
+    if (!response.ok) {
+      setCandidateWorkspace({
+        status: "error",
+        code: response.code ?? "candidate_fetch_failed",
+        message: response.message,
+      });
+      return;
+    }
+    setCandidateWorkspace(groupCandidates(response.data.candidates));
+  }
+
+  async function registerManualCandidate(name: string, type: "scenic" | "restaurant") {
+    if (tripPersistence.status !== "saved") {
+      setError("候选地点需要先有已保存的 TripRevision 才能持久化。");
+      return null;
+    }
+    const payload = buildManualCandidatePayload(name, type);
+    const response = await postTripJson<CandidateRegistrationResponse>(
+      TRIP_API_ENDPOINTS.registerTripCandidate(tripPersistence.tripId),
+      payload,
+      "保存候选地点失败",
+      undefined,
+      {
+        headers: {
+          "X-Idempotency-Key": candidateIdempotencyKey(
+            "candidate-manual",
+            tripPersistence.tripId,
+            `${payload.display_name}:${payload.category ?? ""}`,
+          ),
+        },
+      },
+    );
+    if (!response.ok) {
+      setError(response.message);
+      return null;
+    }
+    await refreshCandidates(tripPersistence.tripId);
+    return response.data.candidate;
+  }
+
+  async function registerCompletionCandidate(option: ItineraryCompletionOption) {
+    if (tripPersistence.status !== "saved") {
+      return null;
+    }
+    const payload = buildCompletionCandidatePayload(option);
+    const response = await postTripJson<CandidateRegistrationResponse>(
+      TRIP_API_ENDPOINTS.registerTripCandidate(tripPersistence.tripId),
+      payload,
+      "保存补全候选失败",
+      undefined,
+      {
+        headers: {
+          "X-Idempotency-Key": candidateIdempotencyKey(
+            "candidate-completion",
+            tripPersistence.tripId,
+            `${payload.display_name}:${payload.explicit_day_reference ?? ""}:${payload.preferred_time_block ?? ""}`,
+          ),
+        },
+      },
+    );
+    if (!response.ok) {
+      setError(response.message);
+      return null;
+    }
+    await refreshCandidates(tripPersistence.tripId);
+    return response.data.candidate;
+  }
+
+  async function recordCandidateDecision(
+    candidate: TripCandidate,
+    decision: "reject" | "defer" | "restore_pending",
+    reasonCode = "USER_REJECTED",
+  ) {
+    if (tripPersistence.status !== "saved") {
+      setError("候选决策需要已保存的 TripRevision 作为审计上下文。");
+      return;
+    }
+    const response = await postTripJson<CandidateDecisionResponse>(
+      TRIP_API_ENDPOINTS.recordTripCandidateDecision(tripPersistence.tripId, candidate.id),
+      {
+        decision,
+        reason_code: decision === "restore_pending" ? "RESTORED_TO_PENDING" : reasonCode,
+        base_revision_id: tripPersistence.currentRevisionId,
+      },
+      "保存候选决策失败",
+      undefined,
+      {
+        headers: {
+          "X-Idempotency-Key": candidateIdempotencyKey(
+            `candidate-${decision}`,
+            tripPersistence.tripId,
+            `${candidate.id}:${tripPersistence.currentRevisionId}`,
+          ),
+        },
+      },
+    );
+    if (!response.ok) {
+      setError(response.message);
+      return;
+    }
+    await refreshCandidates(tripPersistence.tripId);
+    setError(null);
+  }
+
+  async function admitCandidate(candidate: TripCandidate) {
+    if (tripPersistence.status !== "saved") {
+      setError("当前行程有未保存变更，无法把候选加入正式行程。");
+      return;
+    }
+    const day = Number(candidate.explicit_day_reference || 1) || 1;
+    const block =
+      candidate.preferred_time_block === "morning" ||
+      candidate.preferred_time_block === "afternoon" ||
+      candidate.preferred_time_block === "evening"
+        ? candidate.preferred_time_block
+        : "afternoon";
+    const envelope = buildCandidateAdmissionEnvelope(
+      tripPersistence.currentRevisionId,
+      candidate,
+      day,
+      block,
+    );
+    const applied = await applyPersistedMutationWithPreview(tripPersistence, envelope);
+    if (!applied.ok) {
+      if (applied.code === "candidate_admission_repair_required") {
+        setError(`候选还不能直接加入行程：${formatCandidateRepairMessage(applied.context)}`);
+        return;
+      }
+      markPersistedMutationFailure(tripPersistence, applied);
+      return;
+    }
+    await hydrateFromPersistedMutation(
+      applied.data.trip,
+      applied.data.current_revision,
+      applied.data.itinerary,
+    );
+    await refreshCandidates(applied.data.trip.id);
+    setError(null);
   }
 
   async function handleRestoreRevision(revision: TripRevisionMetadata) {
@@ -2621,6 +2785,25 @@ function buildRegenerationSemanticsViewModel(
         setError(null);
         return;
       }
+      const manualStops = [
+        ...editedDays.flatMap((day) =>
+          day.stops.filter((stop) => !stop.item.stable_id || stop.originalDay < 1),
+        ),
+        ...unplannedStops,
+      ];
+      if (manualStops.length > 0) {
+        for (const stop of manualStops) {
+          await registerManualCandidate(
+            stop.item.name,
+            stop.item.type === "restaurant" ? "restaurant" : "scenic",
+          );
+        }
+        setCompletionTaskStatus(
+          `已保存 ${manualStops.length} 个待安排候选；它们还没有进入正式行程，加入前需要通过候选验证。`,
+        );
+        setError(null);
+        return;
+      }
     }
 
     setResult((current) => {
@@ -3084,7 +3267,7 @@ function buildRegenerationSemanticsViewModel(
 
   async function applyPersistedMutationWithPreview(
     persistedBase: Extract<TripPersistenceState, { status: "saved" }>,
-    envelope: TripMutationCommandEnvelope,
+    envelope: TripMutationCommandEnvelope | CandidateAdmissionCommandEnvelope,
   ): Promise<TripApiResult<PersistedMutationApplyResponse>> {
     const preview = await postTripJson<PersistedMutationPreviewResponse>(
       TRIP_API_ENDPOINTS.previewPersistedMutation(persistedBase.tripId),
@@ -3570,7 +3753,7 @@ function buildRegenerationSemanticsViewModel(
     }
   }
 
-  function handleRejectCompletionTaskCandidate(
+  async function handleRejectCompletionTaskCandidate(
     task: CompletionTaskCard,
     option: ItineraryCompletionOption,
   ) {
@@ -3625,6 +3808,13 @@ function buildRegenerationSemanticsViewModel(
     });
     setCompletionTaskStatus(`已记住不再优先推荐：${option.name}`);
     setError(null);
+    if (tripPersistence.status === "saved") {
+      const candidate = await registerCompletionCandidate(option);
+      if (candidate) {
+        await recordCandidateDecision(candidate, "reject", "USER_REJECTED");
+      }
+      return;
+    }
     markWorkspaceDirty("completion_candidate_reject");
   }
 
@@ -3634,6 +3824,52 @@ function buildRegenerationSemanticsViewModel(
     );
     if (!edit) {
       return;
+    }
+    if (tripPersistence.status === "saved") {
+      const currentRevision =
+        revisionHistory.find((revision) => revision.id === tripPersistence.currentRevisionId) ?? null;
+      if (currentRevision?.source_type === "completion_patch") {
+        const response = await postTripJson<UndoPersistedMutationResponse>(
+          TRIP_API_ENDPOINTS.undoPersistedRevision(tripPersistence.tripId, currentRevision.id),
+          {
+            base_revision_id: tripPersistence.currentRevisionId,
+          },
+          "撤销补全失败",
+          undefined,
+          {
+            headers: {
+              "X-Idempotency-Key": `undo-completion:${currentRevision.id}:${tripPersistence.currentRevisionId}`,
+            },
+          },
+        );
+        if (!response.ok) {
+          if (response.code === "undo_target_not_current" || response.code === "stale_base_revision") {
+            setTripPersistence({
+              status: "conflict",
+              tripId: tripPersistence.tripId,
+              providedBaseRevisionId: tripPersistence.currentRevisionId,
+              currentRevisionId: tripPersistence.currentRevisionId,
+              message: response.message,
+            });
+          }
+          setError(response.message);
+          return;
+        }
+        await hydrateFromPersistedMutation(
+          response.data.trip,
+          response.data.current_revision,
+          response.data.itinerary,
+        );
+        setCompletionTaskEdits((current) =>
+          current.filter((candidate) => candidate.task_instance_key !== taskInstanceKey),
+        );
+        setRecentCompletionTaskItemKey((current) =>
+          current === edit.inserted_item_key ? null : current,
+        );
+        setCompletionTaskStatus(`已撤销本次补全：${edit.inserted_item.name}`);
+        setError(null);
+        return;
+      }
     }
 
     const localUndoResult = result
@@ -4882,6 +5118,18 @@ function buildRegenerationSemanticsViewModel(
                           onRejectOption={handleRejectCompletionTaskCandidate}
                         />
                       ) : null}
+                      <CandidateWorkspacePanel
+                        state={candidateWorkspace}
+                        onRefresh={() => {
+                          if (tripPersistence.status === "saved") {
+                            void refreshCandidates(tripPersistence.tripId);
+                          }
+                        }}
+                        onAdmit={(candidate) => void admitCandidate(candidate)}
+                        onReject={(candidate) => void recordCandidateDecision(candidate, "reject", "USER_REJECTED")}
+                        onDefer={(candidate) => void recordCandidateDecision(candidate, "defer", "USER_DEFERRED")}
+                        onRestore={(candidate) => void recordCandidateDecision(candidate, "restore_pending", "RESTORED_TO_PENDING")}
+                      />
                       {result.completion_intelligence.score_breakdown ? (
                         <details
                           style={{
@@ -9745,6 +9993,208 @@ function formatActiveConstraintsSummary(values: {
 
   return parts.join(" · ");
 }
+
+function CandidateWorkspacePanel({
+  state,
+  onRefresh,
+  onAdmit,
+  onReject,
+  onDefer,
+  onRestore,
+}: {
+  state: CandidateWorkspaceState;
+  onRefresh: () => void;
+  onAdmit: (candidate: TripCandidate) => void;
+  onReject: (candidate: TripCandidate) => void;
+  onDefer: (candidate: TripCandidate) => void;
+  onRestore: (candidate: TripCandidate) => void;
+}) {
+  if (state.status === "idle") {
+    return null;
+  }
+  const pending = state.status === "ready" ? state.pending : [];
+  const rejected = state.status === "ready" ? state.rejected : [];
+  const deferred = state.status === "ready" ? state.deferred : [];
+  const scheduled = state.status === "ready" ? state.scheduled : [];
+  return (
+    <section style={candidatePanelStyle}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <p style={candidateEyebrowStyle}>Candidate boundary</p>
+          <h3 style={candidateTitleStyle}>待安排候选</h3>
+        </div>
+        <button type="button" onClick={onRefresh} className="ec-interactive-pill" style={miniGhostButtonStyle}>
+          Refresh
+        </button>
+      </div>
+      {state.status === "loading" ? (
+        <p style={candidateMutedStyle}>正在读取候选池...</p>
+      ) : state.status === "error" ? (
+        <p style={candidateErrorStyle}>{state.message}</p>
+      ) : (
+        <div style={{ display: "grid", gap: 12 }}>
+          <CandidateBucket
+            title={`Pending · ${pending.length}`}
+            candidates={pending}
+            empty="还没有待安排候选。"
+            actions={(candidate) => (
+              <>
+                <button type="button" onClick={() => onAdmit(candidate)} style={candidatePrimaryButtonStyle}>
+                  Add to itinerary
+                </button>
+                <button type="button" onClick={() => onReject(candidate)} style={candidateSecondaryButtonStyle}>
+                  Reject
+                </button>
+                <button type="button" onClick={() => onDefer(candidate)} style={candidateSecondaryButtonStyle}>
+                  Defer
+                </button>
+              </>
+            )}
+          />
+          <CandidateBucket
+            title={`Rejected / Deferred · ${rejected.length + deferred.length}`}
+            candidates={[...rejected, ...deferred]}
+            empty="没有被拒绝或暂缓的候选。"
+            actions={(candidate) => (
+              <button type="button" onClick={() => onRestore(candidate)} style={candidateSecondaryButtonStyle}>
+                Restore pending
+              </button>
+            )}
+          />
+          {scheduled.length > 0 ? (
+            <CandidateBucket
+              title={`Scheduled · ${scheduled.length}`}
+              candidates={scheduled}
+              empty=""
+              actions={() => null}
+            />
+          ) : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CandidateBucket({
+  title,
+  candidates,
+  empty,
+  actions,
+}: {
+  title: string;
+  candidates: TripCandidate[];
+  empty: string;
+  actions: (candidate: TripCandidate) => ReactNode;
+}) {
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      <strong style={{ color: "var(--ec-ink)", fontSize: 13 }}>{title}</strong>
+      {candidates.length === 0 ? (
+        <p style={candidateMutedStyle}>{empty}</p>
+      ) : (
+        candidates.map((candidate) => (
+          <article key={candidate.id} style={candidateCardStyle}>
+            <div style={{ minWidth: 0 }}>
+              <p style={{ margin: 0, color: "var(--ec-ink)", fontWeight: 900, fontSize: 14 }}>
+                {candidate.display_name}
+              </p>
+              <p style={candidateMutedStyle}>
+                {candidate.source_kind} · location {candidate.location_state} · duration {candidate.duration_state}
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{actions(candidate)}</div>
+          </article>
+        ))
+      )}
+    </div>
+  );
+}
+
+function formatCandidateRepairMessage(context?: Record<string, unknown>): string {
+  const repair = context?.repair;
+  if (!repair || typeof repair !== "object") {
+    return "需要补充候选事实或调整插入位置。";
+  }
+  const missing = Array.isArray((repair as { missing_fact_codes?: unknown }).missing_fact_codes)
+    ? ((repair as { missing_fact_codes: unknown[] }).missing_fact_codes).join(", ")
+    : "";
+  const conflicts = Array.isArray((repair as { conflict_codes?: unknown }).conflict_codes)
+    ? ((repair as { conflict_codes: unknown[] }).conflict_codes).join(", ")
+    : "";
+  return [missing, conflicts].filter(Boolean).join("；") || "需要补充候选事实或调整插入位置。";
+}
+
+const candidatePanelStyle: CSSProperties = {
+  display: "grid",
+  gap: 14,
+  padding: 16,
+  borderRadius: 24,
+  background: "linear-gradient(180deg, rgba(255,253,249,0.92), rgba(239,248,243,0.72))",
+  border: "1px solid rgba(123,160,127,0.18)",
+};
+
+const candidateEyebrowStyle: CSSProperties = {
+  margin: 0,
+  color: "var(--ec-slate)",
+  fontSize: 11,
+  fontWeight: 900,
+  letterSpacing: "0.1em",
+  textTransform: "uppercase",
+};
+
+const candidateTitleStyle: CSSProperties = {
+  margin: 0,
+  color: "var(--ec-ink)",
+  fontFamily: '"Iowan Old Style", Georgia, "Times New Roman", serif',
+  fontSize: 21,
+  lineHeight: 1.15,
+};
+
+const candidateMutedStyle: CSSProperties = {
+  margin: 0,
+  color: "var(--ec-slate)",
+  fontSize: 12,
+  lineHeight: 1.55,
+};
+
+const candidateErrorStyle: CSSProperties = {
+  margin: 0,
+  color: "#9d302a",
+  fontSize: 12,
+  lineHeight: 1.55,
+  fontWeight: 800,
+};
+
+const candidateCardStyle: CSSProperties = {
+  display: "grid",
+  gap: 10,
+  padding: 12,
+  borderRadius: 16,
+  background: "rgba(255,255,255,0.74)",
+  border: "1px solid rgba(21,21,21,0.08)",
+};
+
+const candidatePrimaryButtonStyle: CSSProperties = {
+  border: "1px solid rgba(154, 106, 47, 0.18)",
+  borderRadius: 999,
+  padding: "7px 10px",
+  backgroundColor: "rgba(154, 106, 47, 0.12)",
+  color: "#7d5426",
+  cursor: "pointer",
+  fontSize: 12,
+  fontWeight: 900,
+};
+
+const candidateSecondaryButtonStyle: CSSProperties = {
+  border: "1px solid rgba(123, 160, 127, 0.18)",
+  borderRadius: 999,
+  padding: "7px 10px",
+  backgroundColor: "rgba(255,255,255,0.72)",
+  color: "#587663",
+  cursor: "pointer",
+  fontSize: 12,
+  fontWeight: 800,
+};
 
 function getPlanningReadiness(values: {
   hotel: string;

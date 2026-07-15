@@ -14,6 +14,9 @@ test("documents refresh policy for every current route workspace mutation kind",
     [
       "backend_replan_apply",
       "backend_replan_undo",
+      "candidate_admission",
+      "candidate_intake",
+      "candidate_workflow_decision",
       "completion_task_apply",
       "completion_task_undo",
       "local_replan_mutation",
@@ -67,12 +70,12 @@ test("completion task apply remains backend-authoritative with idempotent execut
   assert.match(pageSource, /X-Idempotency-Key/);
 });
 
-test("completion undo preserves local result if derived refresh fails", () => {
+test("saved completion undo is a server-authoritative compensating revision", () => {
   const policy = getRouteWorkspaceRefreshPolicy("completion_task_undo");
 
-  assert.equal(policy.itineraryUpdate, "local_patch");
-  assert.equal(policy.refreshEndpoint, "refreshItinerarySurfaces");
-  assert.equal(policy.failureBehavior, "preserve_local_itinerary");
+  assert.equal(policy.itineraryUpdate, "backend_authoritative");
+  assert.equal(policy.refreshEndpoint, "undoPersistedRevision");
+  assert.equal(policy.failureBehavior, "use_backend_error");
 });
 
 test("saved route edit commit is server-authoritative through typed mutation proposal", () => {
@@ -95,6 +98,30 @@ test("saved swap apply is server-authoritative through typed replacement command
   assert.match(pageSource, /buildSwapReplaceCommandEnvelope/);
 });
 
+test("candidate intake and workflow decisions mutate only the server candidate workspace", () => {
+  const intake = getRouteWorkspaceRefreshPolicy("candidate_intake");
+  const decision = getRouteWorkspaceRefreshPolicy("candidate_workflow_decision");
+
+  assert.equal(intake.itineraryUpdate, "backend_authoritative");
+  assert.equal(intake.refreshEndpoint, "registerTripCandidate");
+  assert.deepEqual(intake.refreshedSurfaces, ["candidate_workspace"]);
+  assert.equal(decision.refreshEndpoint, "recordTripCandidateDecision");
+  assert.deepEqual(decision.refreshedSurfaces, ["candidate_workspace"]);
+});
+
+test("candidate admission is a typed persisted mutation that refreshes itinerary and candidate workspace", () => {
+  const policy = getRouteWorkspaceRefreshPolicy("candidate_admission");
+  const pageSource = readFileSync(new URL("../../app/page.tsx", import.meta.url), "utf8");
+  const candidateSource = readFileSync(new URL("./tripCandidates.ts", import.meta.url), "utf8");
+
+  assert.equal(policy.itineraryUpdate, "backend_authoritative");
+  assert.equal(policy.refreshEndpoint, "applyPersistedMutationProposal");
+  assert.ok(policy.refreshedSurfaces.includes("itinerary"));
+  assert.ok(policy.refreshedSurfaces.includes("candidate_workspace"));
+  assert.match(pageSource, /buildCandidateAdmissionEnvelope/);
+  assert.match(candidateSource, /mutation_kind: "candidate_admission"/);
+});
+
 test("all refresh policies use known mutation ids", () => {
   const mutationKinds: RouteWorkspaceMutationKind[] = [
     "route_edit_commit",
@@ -104,6 +131,9 @@ test("all refresh policies use known mutation ids", () => {
     "completion_task_apply",
     "completion_task_undo",
     "swap_apply",
+    "candidate_intake",
+    "candidate_workflow_decision",
+    "candidate_admission",
   ];
 
   for (const mutationKind of mutationKinds) {

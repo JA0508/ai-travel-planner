@@ -32,6 +32,14 @@ export const TRIP_API_ENDPOINTS = {
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/mutation-proposals/${encodeURIComponent(proposalId)}/apply`,
     ),
+  listTripCandidates: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/candidates`),
+  registerTripCandidate: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/candidates`),
+  recordTripCandidateDecision: (tripId: string, candidateId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/candidates/${encodeURIComponent(candidateId)}/decisions`,
+    ),
   undoPersistedRevision: (tripId: string, revisionId: string) =>
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/revisions/${encodeURIComponent(revisionId)}/undo`,

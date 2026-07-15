@@ -4,6 +4,12 @@ import argparse
 import json
 import sys
 import unittest
+from pathlib import Path
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 
 TARGET_TESTS = [
@@ -21,6 +27,22 @@ TARGET_TESTS = [
     "test_swap_typed_mutation_is_idempotent_and_preserves_stable_identity",
     "tests.test_trip_persistence_api.TripPersistenceApiTests."
     "test_typed_mutation_rejects_fixed_item_and_stale_base_without_revision",
+    "tests.test_trip_persistence_api.TripPersistenceApiTests."
+    "test_candidate_registration_persists_without_revision_and_deduplicates",
+    "tests.test_trip_persistence_api.TripPersistenceApiTests."
+    "test_candidate_reject_and_defer_are_workflow_decisions_without_revision",
+    "tests.test_trip_persistence_api.TripPersistenceApiTests."
+    "test_candidate_decision_idempotent_retry_returns_same_decision_without_revision",
+    "tests.test_trip_persistence_api.TripPersistenceApiTests."
+    "test_rejected_candidate_admission_is_rejected_without_revision",
+    "tests.test_trip_persistence_api.TripPersistenceApiTests."
+    "test_cross_trip_candidate_admission_is_rejected_without_revision",
+    "tests.test_trip_persistence_api.TripPersistenceApiTests."
+    "test_valid_candidate_admission_creates_revision_and_scheduled_decision",
+    "tests.test_trip_persistence_api.TripPersistenceApiTests."
+    "test_missing_location_candidate_admission_returns_repair_required_without_revision",
+    "tests.test_trip_persistence_api.TripPersistenceApiTests."
+    "test_completion_undo_creates_compensating_revision",
     "tests.test_trip_mutation_commands.TripMutationCommandTests."
     "test_stable_ids_are_added_deterministically_to_legacy_snapshots",
     "tests.test_trip_mutation_commands.TripMutationCommandTests."
@@ -74,6 +96,15 @@ def main() -> int:
             "failed_batch_has_no_partial_mutation",
             "different_key_duplicate_proposal_apply_creates_one_revision",
             "typed_mutations_invalidate_derived_workspace_surfaces",
+            "candidate_registration_is_persistent_without_revision_creation",
+            "candidate_deduplication_uses_content_digest",
+            "candidate_reject_defer_restore_are_workflow_decisions",
+            "candidate_decisions_are_idempotent_without_revision_creation",
+            "rejected_candidate_admission_is_rejected_before_revision",
+            "cross_trip_candidate_ids_are_not_admissible",
+            "candidate_admission_creates_typed_revision_and_scheduled_decision",
+            "candidate_admission_requires_repair_for_missing_execution_facts",
+            "completion_undo_creates_compensating_revision",
         ],
     }
     if args.json:

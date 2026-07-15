@@ -12,10 +12,14 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.planner.trace import PlannerInputSnapshot, PlannerResultSummary, PlannerTrace
 from app.schemas import (
+    CompletionTaskActionResponse,
     ItineraryResponse,
     PlanningAnchorSource,
     RegenerationIntentSummary,
     ReplanItineraryResponse,
+    ScheduledPOI,
+    POIType,
+    TimeBlockType,
     TripIntentEnvelope,
     TripIntentEnvelopeSource,
 )
@@ -700,6 +704,322 @@ class TripPersistenceApiTests(unittest.TestCase):
         self.assertEqual(stale_preview.status_code, 409)
         self.assertEqual(stale_preview.json()["error"]["code"], "stale_mutation_proposal")
         self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 2)
+
+    def test_candidate_registration_persists_without_revision_and_deduplicates(self) -> None:
+        client, trip_id, base_revision_id = create_command_trip()
+
+        first = register_candidate(client, trip_id, "思南书局")
+        duplicate = register_candidate(client, trip_id, "思南书局", key="candidate-duplicate")
+        candidates = client.get(f"/trips/{trip_id}/candidates")
+        history = client.get(f"/trips/{trip_id}/revisions")
+
+        self.assertEqual(first.status_code, 201)
+        self.assertFalse(first.json()["deduplicated"])
+        self.assertEqual(duplicate.status_code, 201)
+        self.assertTrue(duplicate.json()["deduplicated"])
+        self.assertEqual(first.json()["candidate"]["id"], duplicate.json()["candidate"]["id"])
+        self.assertEqual(candidates.status_code, 200)
+        self.assertEqual(len(candidates.json()["candidates"]), 1)
+        self.assertEqual(candidates.json()["candidates"][0]["workflow_state"], "pending")
+        self.assertEqual([revision["id"] for revision in history.json()["revisions"]], [base_revision_id])
+
+    def test_candidate_reject_and_defer_are_workflow_decisions_without_revision(self) -> None:
+        client, trip_id, base_revision_id = create_command_trip()
+        candidate = register_candidate(client, trip_id, "外白渡桥").json()["candidate"]
+
+        rejected = client.post(
+            f"/trips/{trip_id}/candidates/{candidate['id']}/decisions",
+            json={
+                "decision": "reject",
+                "reason_code": "NOT_INTERESTED",
+                "base_revision_id": base_revision_id,
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "reject-candidate"},
+        )
+        restored = client.post(
+            f"/trips/{trip_id}/candidates/{candidate['id']}/decisions",
+            json={
+                "decision": "restore_pending",
+                "reason_code": "RESTORED_TO_PENDING",
+                "base_revision_id": base_revision_id,
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "restore-candidate"},
+        )
+        deferred = client.post(
+            f"/trips/{trip_id}/candidates/{candidate['id']}/decisions",
+            json={
+                "decision": "defer",
+                "reason_code": "USER_DEFERRED",
+                "base_revision_id": base_revision_id,
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "defer-candidate"},
+        )
+
+        self.assertEqual(rejected.status_code, 200)
+        self.assertEqual(rejected.json()["candidate"]["workflow_state"], "rejected")
+        self.assertEqual(restored.status_code, 200)
+        self.assertEqual(restored.json()["candidate"]["workflow_state"], "pending")
+        self.assertEqual(deferred.status_code, 200)
+        self.assertEqual(deferred.json()["candidate"]["workflow_state"], "deferred")
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 1)
+
+    def test_candidate_decision_idempotent_retry_returns_same_decision_without_revision(self) -> None:
+        client, trip_id, base_revision_id = create_command_trip()
+        candidate = register_candidate(client, trip_id, "武康大楼").json()["candidate"]
+
+        first = client.post(
+            f"/trips/{trip_id}/candidates/{candidate['id']}/decisions",
+            json={
+                "decision": "reject",
+                "reason_code": "NOT_INTERESTED",
+                "base_revision_id": base_revision_id,
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "reject-wukang"},
+        )
+        retried = client.post(
+            f"/trips/{trip_id}/candidates/{candidate['id']}/decisions",
+            json={
+                "decision": "reject",
+                "reason_code": "NOT_INTERESTED",
+                "base_revision_id": base_revision_id,
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "reject-wukang"},
+        )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(retried.status_code, 200)
+        self.assertEqual(first.json()["decision"]["id"], retried.json()["decision"]["id"])
+        self.assertTrue(retried.json()["idempotent_replay"])
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 1)
+
+    def test_rejected_candidate_admission_is_rejected_without_revision(self) -> None:
+        client, trip_id, base_revision_id = create_command_trip()
+        candidate = register_candidate(client, trip_id, "思南公馆", with_facts=True).json()["candidate"]
+        client.post(
+            f"/trips/{trip_id}/candidates/{candidate['id']}/decisions",
+            json={
+                "decision": "reject",
+                "reason_code": "NOT_INTERESTED",
+                "base_revision_id": base_revision_id,
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "reject-before-admit"},
+        )
+        preview = preview_candidate_admission(client, trip_id, base_revision_id, candidate["id"])
+
+        self.assertEqual(preview.status_code, 422)
+        self.assertEqual(preview.json()["error"]["reason_code"], "candidate_rejected")
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 1)
+
+    def test_cross_trip_candidate_admission_is_rejected_without_revision(self) -> None:
+        source_client, source_trip_id, _source_revision_id = create_command_trip()
+        target_client, target_trip_id, target_revision_id = create_command_trip()
+        source_candidate = register_candidate(
+            source_client,
+            source_trip_id,
+            "徐家汇书院",
+            key="source-candidate",
+            with_facts=True,
+        ).json()["candidate"]
+
+        preview = preview_candidate_admission(
+            target_client,
+            target_trip_id,
+            target_revision_id,
+            source_candidate["id"],
+        )
+
+        self.assertEqual(preview.status_code, 404)
+        self.assertEqual(preview.json()["error"]["code"], "candidate_not_found")
+        self.assertEqual(len(target_client.get(f"/trips/{target_trip_id}/revisions").json()["revisions"]), 1)
+
+    def test_valid_candidate_admission_creates_revision_and_scheduled_decision(self) -> None:
+        client, trip_id, base_revision_id = create_command_trip()
+        candidate = register_candidate(client, trip_id, "思南公馆", with_facts=True).json()["candidate"]
+        preview = preview_candidate_admission(client, trip_id, base_revision_id, candidate["id"])
+        proposal = preview.json()["proposal"]
+        applied = client.post(
+            f"/trips/{trip_id}/mutation-proposals/{proposal['id']}/apply",
+            json={
+                "base_revision_id": base_revision_id,
+                "proposal_digest": proposal["proposal_digest"],
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "candidate-admission",
+            },
+        )
+        retried = client.post(
+            f"/trips/{trip_id}/mutation-proposals/{proposal['id']}/apply",
+            json={
+                "base_revision_id": base_revision_id,
+                "proposal_digest": proposal["proposal_digest"],
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "candidate-admission",
+            },
+        )
+        candidates = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
+        metadata = operation_metadata_for_revision(
+            Path(self.temp_dir.name) / "api-trip-store.sqlite3",
+            applied.json()["current_revision"]["id"],
+        )
+
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(proposal["source_type"], "candidate_admission")
+        self.assertEqual(applied.status_code, 200)
+        self.assertEqual(applied.json()["current_revision"]["source_type"], "candidate_admission")
+        self.assertIn("思南公馆", flattened_names(applied.json()["itinerary"]))
+        self.assertEqual(applied.json()["current_revision"]["id"], retried.json()["current_revision"]["id"])
+        self.assertTrue(retried.json()["persistence"]["idempotent_replay"])
+        self.assertEqual(candidates[0]["workflow_state"], "scheduled")
+        self.assertEqual(metadata["candidate_admission"]["candidate_id"], candidate["id"])
+
+    def test_missing_location_candidate_admission_returns_repair_required_without_revision(self) -> None:
+        client, trip_id, base_revision_id = create_command_trip()
+        candidate = register_candidate(client, trip_id, "只有名字的咖啡馆").json()["candidate"]
+        preview = preview_candidate_admission(client, trip_id, base_revision_id, candidate["id"])
+
+        self.assertEqual(preview.status_code, 409)
+        self.assertEqual(preview.json()["error"]["code"], "candidate_admission_repair_required")
+        self.assertIn("candidate_missing_location", str(preview.json()["error"]["repair"]))
+        self.assertNotIn("(0, 0)", str(preview.json()))
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 1)
+
+    def test_completion_undo_creates_compensating_revision(self) -> None:
+        client, trip_id, base_revision_id = create_command_trip()
+        inserted = ScheduledPOI.model_validate(find_item(command_itinerary().model_dump(mode="json"), "豫园"))
+        next_itinerary = command_itinerary().model_copy(
+            update={
+                "days": command_itinerary().days,
+            }
+        )
+        with patch(
+            "app.trips.service.execute_completion_task_action",
+            return_value=CompletionTaskActionResponse(
+                task_id="fill-afternoon",
+                applied=True,
+                summary="Inserted completion item.",
+                inserted_item=inserted,
+                itinerary=next_itinerary,
+            ),
+        ):
+            applied = client.post(
+                f"/trips/{trip_id}/completion-task",
+                json={
+                    "base_revision_id": base_revision_id,
+                    "task_id": "fill-afternoon",
+                    "task_instance_key": "fill-afternoon-1",
+                    "day": 1,
+                    "block_type": "afternoon",
+                },
+                headers={
+                    "Origin": "http://testserver",
+                    "X-Idempotency-Key": "completion-apply",
+                },
+            )
+        revision_2 = applied.json()["current_revision"]["id"]
+        undone = client.post(
+            f"/trips/{trip_id}/revisions/{revision_2}/undo",
+            json={"base_revision_id": revision_2},
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "completion-undo",
+            },
+        )
+        retried = client.post(
+            f"/trips/{trip_id}/revisions/{revision_2}/undo",
+            json={"base_revision_id": revision_2},
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "completion-undo",
+            },
+        )
+
+        self.assertEqual(applied.status_code, 200)
+        self.assertEqual(applied.json()["current_revision"]["source_type"], "completion_patch")
+        self.assertEqual(undone.status_code, 200)
+        self.assertEqual(undone.json()["current_revision"]["source_type"], "completion_undo")
+        self.assertEqual(undone.json()["current_revision"]["restored_from_revision_id"], base_revision_id)
+        self.assertEqual(undone.json()["current_revision"]["id"], retried.json()["current_revision"]["id"])
+        self.assertEqual([revision["revision_number"] for revision in client.get(f"/trips/{trip_id}/revisions").json()["revisions"]], [3, 2, 1])
+
+
+def create_command_trip() -> tuple[TestClient, str, str]:
+    client = TestClient(app)
+    with patch(
+        "app.trips.service.build_itinerary_response",
+        return_value=command_itinerary(),
+    ):
+        created = client.post(
+            "/trips/plan",
+            json={
+                "itinerary_request": {
+                    "city": "上海",
+                    "trip_days": 1,
+                    "scenic_spots": [],
+                    "restaurants": [],
+                }
+            },
+        )
+    return client, created.json()["trip"]["id"], created.json()["current_revision"]["id"]
+
+
+def register_candidate(
+    client: TestClient,
+    trip_id: str,
+    name: str,
+    *,
+    key: str = "candidate-register",
+    with_facts: bool = False,
+):
+    payload = {
+        "candidate_type": "place",
+        "display_name": name,
+        "category": "scenic",
+        "source_kind": "manual_entry",
+    }
+    if with_facts:
+        payload.update(
+            {
+                "coordinates": {"latitude": 31.214, "longitude": 121.454},
+                "estimated_duration_minutes": 75,
+                "preferred_time_block": "afternoon",
+                "explicit_day_reference": "1",
+                "address_summary": "上海市黄浦区",
+            }
+        )
+    return client.post(
+        f"/trips/{trip_id}/candidates",
+        json=payload,
+        headers={"Origin": "http://testserver", "X-Idempotency-Key": key},
+    )
+
+
+def preview_candidate_admission(
+    client: TestClient,
+    trip_id: str,
+    base_revision_id: str,
+    candidate_id: str,
+):
+    return client.post(
+        f"/trips/{trip_id}/mutations/preview",
+        json={
+            "base_revision_id": base_revision_id,
+            "mutation_kind": "candidate_admission",
+            "commands": [
+                {
+                    "type": "add_candidate_stop",
+                    "candidate_id": candidate_id,
+                    "target_day": 1,
+                    "target_block": "afternoon",
+                    "requested_start_time": "16:15:00",
+                    "placement": {"at_end": True},
+                }
+            ],
+        },
+        headers={"Origin": "http://testserver"},
+    )
 
 
 def simple_itinerary(trip_days: int = 1, *, with_intent: bool = False) -> ItineraryResponse:

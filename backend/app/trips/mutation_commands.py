@@ -20,6 +20,7 @@ from .digests import (
     itinerary_content_digest,
 )
 from .errors import (
+    CandidateAdmissionRepairRequiredError,
     MutationCommandFailedError,
     MutationCommandNoEffectError,
     UnsupportedMutationCommandSchemaError,
@@ -114,8 +115,24 @@ class ReplaceStopCommand(BaseModel):
     replacement: ReplacementCandidate
 
 
+class AddCandidateStopCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["add_candidate_stop"]
+    candidate_id: str = Field(..., min_length=1, max_length=MAX_STOP_ID_LENGTH)
+    target_day: int = Field(..., ge=1)
+    target_block: TimeBlockType
+    placement: StopPlacement = Field(default_factory=lambda: StopPlacement(at_end=True))
+    requested_start_time: str | None = Field(default=None, max_length=16)
+
+
 TripMutationCommand = Annotated[
-    MoveStopCommand | ReorderDayCommand | RemoveStopCommand | SwapStopsCommand | ReplaceStopCommand,
+    MoveStopCommand
+    | ReorderDayCommand
+    | RemoveStopCommand
+    | SwapStopsCommand
+    | ReplaceStopCommand
+    | AddCandidateStopCommand,
     Field(discriminator="type"),
 ]
 
@@ -125,7 +142,7 @@ class TripMutationCommandEnvelope(BaseModel):
 
     schema_version: str = TRIP_MUTATION_COMMAND_SCHEMA_VERSION
     base_revision_id: str = Field(..., min_length=1)
-    mutation_kind: Literal["route_edit", "swap"]
+    mutation_kind: Literal["route_edit", "swap", "candidate_admission"]
     commands: list[TripMutationCommand] = Field(..., min_length=1, max_length=MAX_MUTATION_COMMANDS)
 
     @model_validator(mode="after")
@@ -137,6 +154,10 @@ class TripMutationCommandEnvelope(BaseModel):
             raise ValueError("swap mutation_kind accepts only swap_stops or replace_stop commands.")
         if self.mutation_kind == "route_edit" and command_types & {"swap_stops", "replace_stop"}:
             raise ValueError("route_edit mutation_kind does not accept swap commands.")
+        if self.mutation_kind == "candidate_admission" and command_types != {"add_candidate_stop"}:
+            raise ValueError("candidate_admission accepts only add_candidate_stop commands.")
+        if self.mutation_kind != "candidate_admission" and "add_candidate_stop" in command_types:
+            raise ValueError("add_candidate_stop requires candidate_admission mutation_kind.")
         return self
 
 
@@ -156,6 +177,7 @@ class TripMutationEngine:
         *,
         base_snapshot: dict[str, Any],
         envelope: TripMutationCommandEnvelope,
+        candidates_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> MutationPreview:
         snapshot = ensure_stable_item_ids(base_snapshot)
         baseline_ids = collect_item_ids(snapshot)
@@ -163,7 +185,9 @@ class TripMutationEngine:
         impact = empty_impact()
         for index, command in enumerate(envelope.commands):
             try:
-                self._apply_command(snapshot, command, impact)
+                self._apply_command(snapshot, command, impact, candidates_by_id or {})
+            except CandidateAdmissionRepairRequiredError:
+                raise
             except MutationCommandNoEffectError:
                 raise
             except MutationCommandFailedError:
@@ -174,7 +198,7 @@ class TripMutationEngine:
                     reason_code="invalid_mutation_command",
                 ) from exc
         normalize_snapshot_after_mutation(snapshot, impact)
-        ItineraryResponse.model_validate(snapshot)
+        snapshot = ItineraryResponse.model_validate(snapshot).model_dump(mode="json")
         if itinerary_content_digest(snapshot) == before_digest:
             raise MutationCommandNoEffectError()
         validation_report = build_validation_report(snapshot, baseline_ids, envelope)
@@ -207,6 +231,7 @@ class TripMutationEngine:
         snapshot: dict[str, Any],
         command: TripMutationCommand,
         impact: dict[str, Any],
+        candidates_by_id: dict[str, dict[str, Any]],
     ) -> None:
         if isinstance(command, MoveStopCommand):
             apply_move_stop(snapshot, command, impact)
@@ -222,6 +247,9 @@ class TripMutationEngine:
             return
         if isinstance(command, ReplaceStopCommand):
             apply_replace_stop(snapshot, command, impact)
+            return
+        if isinstance(command, AddCandidateStopCommand):
+            apply_add_candidate_stop(snapshot, command, impact, candidates_by_id)
             return
         raise MutationCommandFailedError(command_index=0, reason_code="invalid_mutation_command")
 
@@ -489,6 +517,105 @@ def apply_replace_stop(
     record_day_impact(impact, day.get("day"))
 
 
+def apply_add_candidate_stop(
+    snapshot: dict[str, Any],
+    command: AddCandidateStopCommand,
+    impact: dict[str, Any],
+    candidates_by_id: dict[str, dict[str, Any]],
+) -> None:
+    candidate = candidates_by_id.get(command.candidate_id)
+    if candidate is None:
+        raise MutationCommandFailedError(command_index=0, reason_code="candidate_not_found")
+    workflow_state = str(candidate.get("workflow_state") or "pending")
+    if workflow_state == "rejected":
+        raise MutationCommandFailedError(command_index=0, reason_code="candidate_rejected")
+    if workflow_state == "scheduled":
+        raise MutationCommandFailedError(command_index=0, reason_code="candidate_already_scheduled")
+    missing_fact_codes: list[str] = []
+    if candidate.get("coordinates") is None:
+        missing_fact_codes.append("candidate_missing_location")
+    if candidate.get("estimated_duration_minutes") is None:
+        missing_fact_codes.append("candidate_missing_duration")
+    if missing_fact_codes:
+        suggested_actions = []
+        if "candidate_missing_location" in missing_fact_codes:
+            suggested_actions.append("resolve_location")
+        if "candidate_missing_duration" in missing_fact_codes:
+            suggested_actions.append("provide_duration")
+        raise CandidateAdmissionRepairRequiredError(
+            candidate_id=command.candidate_id,
+            repair={
+                "candidate_id": command.candidate_id,
+                "conflict_codes": ["missing_candidate_facts"],
+                "blocking_item_ids": [],
+                "affected_day_references": [str(command.target_day)],
+                "available_windows": [],
+                "missing_fact_codes": missing_fact_codes,
+                "suggested_actions": suggested_actions,
+            },
+        )
+    if candidate_duplicates_existing_place(snapshot, candidate):
+        raise CandidateAdmissionRepairRequiredError(
+            candidate_id=command.candidate_id,
+            repair={
+                "candidate_id": command.candidate_id,
+                "conflict_codes": ["duplicate_existing_place"],
+                "blocking_item_ids": [],
+                "affected_day_references": [str(command.target_day)],
+                "available_windows": [],
+                "missing_fact_codes": [],
+                "suggested_actions": ["replace_existing_flexible_stop", "choose_another_position"],
+            },
+        )
+    target_day = find_day(snapshot, command.target_day)
+    if target_day is None:
+        raise MutationCommandFailedError(command_index=0, reason_code="mutation_command_target_not_found")
+    target_block = find_block(target_day, enum_value(command.target_block) or "")
+    if target_block is None:
+        raise MutationCommandFailedError(command_index=0, reason_code="invalid_stop_placement")
+    coordinates = candidate["coordinates"]
+    duration_minutes = int(candidate["estimated_duration_minutes"])
+    start_time = command.requested_start_time or str(target_block.get("start_time") or "09:00:00")
+    end_time = add_minutes_to_hhmmss(start_time, duration_minutes)
+    item = {
+        "stable_id": stable_scheduled_id_for_candidate(command.candidate_id, command.target_day),
+        "name": candidate["display_name"],
+        "type": scheduled_type_for_candidate(candidate),
+        "city": None,
+        "latitude": coordinates["latitude"],
+        "longitude": coordinates["longitude"],
+        "duration_minutes": duration_minutes,
+        "day": command.target_day,
+        "start_time": start_time,
+        "end_time": end_time,
+        "is_fixed": False,
+        "placement_reason": "由候选地点通过 server-authoritative admission command 加入行程。",
+        "source_type": "user_seed",
+        "source_label": "候选加入",
+        "source_reason": f"candidate:{command.candidate_id}; source:{candidate.get('source_kind')}",
+        "travel_from_name": None,
+        "travel_distance_m": None,
+        "travel_duration_s": None,
+        "selection_top_candidates": [],
+        "selection_rejected_candidates": [],
+        "candidate_id": command.candidate_id,
+        "candidate_provenance": {
+            "source_kind": candidate.get("source_kind"),
+            "source_ref": candidate.get("source_ref"),
+            "evidence_refs": candidate.get("evidence_refs") or [],
+            "content_digest": candidate.get("content_digest"),
+            "location_state": candidate.get("location_state"),
+            "duration_state": candidate.get("duration_state"),
+            "confidence": candidate.get("confidence"),
+        },
+    }
+    insertion_index = resolve_insertion_index(target_day, target_block, command.placement, item["stable_id"])
+    target_block.setdefault("items", []).insert(insertion_index, item)
+    impact["admitted_candidate_ids"].append(command.candidate_id)
+    impact["scheduled_item_ids"].append(item["stable_id"])
+    record_day_impact(impact, target_day.get("day"))
+
+
 def slot_fields(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "day": item.get("day"),
@@ -590,6 +717,8 @@ def empty_impact() -> dict[str, Any]:
         "reordered_day_references": [],
         "swapped_stop_ids": [],
         "replaced_stop_ids": [],
+        "admitted_candidate_ids": [],
+        "scheduled_item_ids": [],
         "fixed_items_touched": [],
         "route_recalculation_required": False,
         "invalidated_surfaces": [],
@@ -605,6 +734,39 @@ def record_day_impact(impact: dict[str, Any], day: Any) -> None:
 
 def build_invalidated_surfaces(impact: dict[str, Any]) -> list[str]:
     surfaces = ["route_segments", "trip_readiness", "planner_realism", "completion_intelligence"]
-    if impact["removed_stop_ids"] or impact["replaced_stop_ids"]:
+    if impact["removed_stop_ids"] or impact["replaced_stop_ids"] or impact["admitted_candidate_ids"]:
         surfaces.append("selection")
     return surfaces
+
+
+def candidate_duplicates_existing_place(snapshot: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    normalized = str(candidate.get("normalized_name") or "").strip()
+    for day in snapshot.get("days", []):
+        for block in day.get("blocks", []):
+            for item in block.get("items", []):
+                if normalized and compact_text(str(item.get("name") or "")) == normalized:
+                    return True
+    return False
+
+
+def compact_text(value: str) -> str:
+    return "".join(value.strip().casefold().split())
+
+
+def stable_scheduled_id_for_candidate(candidate_id: str, day: int) -> str:
+    digest = hashlib.sha256(f"{candidate_id}|{day}".encode("utf-8")).hexdigest()[:20]
+    return f"stop_cand_{digest}"
+
+
+def scheduled_type_for_candidate(candidate: dict[str, Any]) -> str:
+    if candidate.get("candidate_type") == "meal":
+        return "restaurant"
+    return "scenic"
+
+
+def add_minutes_to_hhmmss(value: str, minutes: int) -> str:
+    parts = value.split(":")
+    hour = int(parts[0])
+    minute = int(parts[1]) if len(parts) > 1 else 0
+    total = hour * 60 + minute + minutes
+    return f"{(total // 60) % 24:02d}:{total % 60:02d}:00"
