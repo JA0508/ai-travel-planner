@@ -12,12 +12,18 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 IMPORT_EXTRACTION_SCHEMA_VERSION = "1.0"
 IMPORT_EXTRACTOR_VERSION = "deterministic-text-v1"
 IMPORT_RESOLVER_VERSION = "deterministic-place-v1"
+URL_IMPORT_POLICY_VERSION = "secure-url-policy-v1"
+URL_IMPORT_FETCHER_VERSION = "secure-url-fetcher-v1"
+URL_DOCUMENT_TEXT_TRANSFORMER_VERSION = "document-text-v1"
 MAX_CONTEXT_CHARS = 80
 
 
 class ImportJobStatus(str, Enum):
     CREATED = "created"
+    FETCHING = "fetching"
+    EXTRACTING_CONTENT = "extracting_content"
     EXTRACTING = "extracting"
+    EXTRACTING_MENTIONS = "extracting_mentions"
     RESOLVING = "resolving"
     REVIEW_READY = "review_ready"
     PARTIAL = "partial"
@@ -52,8 +58,29 @@ class ReviewAction(str, Enum):
 
 
 LEGAL_IMPORT_TRANSITIONS: dict[str, set[str]] = {
-    ImportJobStatus.CREATED.value: {ImportJobStatus.EXTRACTING.value, ImportJobStatus.CANCELLED.value},
+    ImportJobStatus.CREATED.value: {
+        ImportJobStatus.FETCHING.value,
+        ImportJobStatus.EXTRACTING.value,
+        ImportJobStatus.CANCELLED.value,
+        ImportJobStatus.FAILED.value,
+    },
+    ImportJobStatus.FETCHING.value: {
+        ImportJobStatus.EXTRACTING_CONTENT.value,
+        ImportJobStatus.PARTIAL.value,
+        ImportJobStatus.FAILED.value,
+    },
+    ImportJobStatus.EXTRACTING_CONTENT.value: {
+        ImportJobStatus.EXTRACTING.value,
+        ImportJobStatus.EXTRACTING_MENTIONS.value,
+        ImportJobStatus.PARTIAL.value,
+        ImportJobStatus.FAILED.value,
+    },
     ImportJobStatus.EXTRACTING.value: {
+        ImportJobStatus.RESOLVING.value,
+        ImportJobStatus.PARTIAL.value,
+        ImportJobStatus.FAILED.value,
+    },
+    ImportJobStatus.EXTRACTING_MENTIONS.value: {
         ImportJobStatus.RESOLVING.value,
         ImportJobStatus.PARTIAL.value,
         ImportJobStatus.FAILED.value,
@@ -85,6 +112,13 @@ class TextImportCreateRequest(BaseModel):
     original_label: str | None = Field(default=None, max_length=160)
 
 
+class URLImportCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(..., min_length=1, max_length=2048)
+    refresh: bool = False
+
+
 class ImportReviewDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -106,11 +140,11 @@ class ImportCommitRequest(BaseModel):
 class SourceArtifactResponse(BaseModel):
     id: str
     trip_id: str
-    artifact_type: Literal["text"]
-    mime_type: Literal["text/plain"]
+    artifact_type: str
+    mime_type: str
     content_checksum: str
     byte_size: int
-    charset: Literal["utf-8"]
+    charset: str
     privacy_level: str
     original_label: str | None = None
     created_at: str
@@ -120,7 +154,7 @@ class ImportJobResponse(BaseModel):
     id: str
     trip_id: str
     artifact_id: str
-    input_type: Literal["text"]
+    input_type: str
     status: str
     extraction_schema_version: str
     extractor_version: str
@@ -200,10 +234,64 @@ class TextImportCreateResponse(BaseModel):
     idempotent_replay: bool = False
 
 
+class SafeRedirectHopResponse(BaseModel):
+    from_url: str
+    to_url: str
+    status_code: int
+    validation: str
+
+
+class URLFetchSnapshotResponse(BaseModel):
+    id: str
+    import_job_id: str
+    raw_artifact_id: str
+    request_url_sanitized: str
+    normalized_request_url: str
+    final_url_sanitized: str
+    redirect_chain: list[SafeRedirectHopResponse] = Field(default_factory=list)
+    robots_status: str
+    robots_checked_at: str
+    status_code: int
+    content_type: str
+    declared_charset: str | None = None
+    effective_charset: str | None = None
+    content_language: str | None = None
+    compressed_bytes: int
+    decoded_bytes: int
+    body_checksum: str
+    fetcher_version: str
+    policy_version: str
+    fetched_at: str
+    warning_codes: list[str] = Field(default_factory=list)
+    cache_status: str
+    page_title: str | None = None
+    source_host: str | None = None
+    final_host: str | None = None
+    recovery_actions: list[str] = Field(default_factory=list)
+
+
+class ArtifactDerivationResponse(BaseModel):
+    id: str
+    parent_artifact_id: str
+    child_artifact_id: str
+    derivation_type: str
+    transformer_version: str
+    input_checksum: str
+    output_checksum: str
+    created_at: str
+
+
+class URLImportCreateResponse(TextImportCreateResponse):
+    source_fetch: URLFetchSnapshotResponse | None = None
+    derivation: ArtifactDerivationResponse | None = None
+
+
 class ImportReviewResponse(BaseModel):
     artifact: SourceArtifactResponse
     job: ImportJobResponse
     mentions: list[ExtractedMentionResponse]
+    source_fetch: URLFetchSnapshotResponse | None = None
+    derivation: ArtifactDerivationResponse | None = None
 
 
 class ImportCommitResponse(BaseModel):
@@ -366,6 +454,47 @@ class ImportCommitRecord:
     created_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class URLFetchSnapshotRecord:
+    id: str
+    import_job_id: str
+    raw_artifact_id: str
+    request_url_sanitized: str
+    normalized_request_url: str
+    final_url_sanitized: str
+    final_url: str
+    redirect_chain: list[dict[str, Any]]
+    robots_status: str
+    robots_checked_at: str
+    status_code: int
+    content_type: str
+    declared_charset: str | None
+    effective_charset: str | None
+    content_language: str | None
+    compressed_bytes: int
+    decoded_bytes: int
+    body_checksum: str
+    header_metadata: dict[str, Any]
+    fetcher_version: str
+    policy_version: str
+    fetched_at: str
+    warning_codes: list[str]
+    cache_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactDerivationRecord:
+    id: str
+    parent_artifact_id: str
+    child_artifact_id: str
+    derivation_type: str
+    transformer_version: str
+    input_checksum: str
+    output_checksum: str
+    metadata: dict[str, Any]
+    created_at: str
+
+
 def generate_artifact_id() -> str:
     return f"src_{uuid4().hex}"
 
@@ -392,6 +521,14 @@ def generate_review_decision_id() -> str:
 
 def generate_import_commit_id() -> str:
     return f"imp_commit_{uuid4().hex}"
+
+
+def generate_url_fetch_snapshot_id() -> str:
+    return f"url_fetch_{uuid4().hex}"
+
+
+def generate_artifact_derivation_id() -> str:
+    return f"art_der_{uuid4().hex}"
 
 
 def source_checksum(content: bytes) -> str:

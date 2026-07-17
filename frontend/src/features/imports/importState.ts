@@ -1,4 +1,4 @@
-import type { ImportCommitResult, ImportJob, ImportMention, SourceArtifact } from "./importTypes";
+import type { ArtifactDerivation, ImportCommitResult, ImportJob, ImportMention, SourceArtifact, URLFetchSnapshot } from "./importTypes";
 
 export type ImportWorkspaceState =
   | { status: "idle" }
@@ -10,6 +10,8 @@ export type ImportWorkspaceState =
       job: ImportJob;
       sourceText: string;
       mentions: ImportMention[];
+      sourceFetch?: URLFetchSnapshot | null;
+      derivation?: ArtifactDerivation | null;
       activeMentionId: string | null;
       reviewVersion: number;
     }
@@ -20,7 +22,15 @@ export type ImportWorkspaceState =
 
 export type ImportWorkspaceAction =
   | { type: "submit" }
-  | { type: "review"; artifact: SourceArtifact; job: ImportJob; mentions: ImportMention[]; sourceText: string }
+  | {
+      type: "review";
+      artifact: SourceArtifact;
+      job: ImportJob;
+      mentions: ImportMention[];
+      sourceText: string;
+      sourceFetch?: URLFetchSnapshot | null;
+      derivation?: ArtifactDerivation | null;
+    }
   | { type: "select"; mentionId: string }
   | { type: "committing"; jobId: string; idempotencyKey: string }
   | { type: "committed"; result: ImportCommitResult }
@@ -42,6 +52,8 @@ export function importWorkspaceReducer(
         job: action.job,
         sourceText: action.sourceText,
         mentions: action.mentions,
+        sourceFetch: action.sourceFetch ?? null,
+        derivation: action.derivation ?? null,
         activeMentionId: action.mentions[0]?.id ?? null,
         reviewVersion: action.job.review_version,
       };

@@ -7,12 +7,26 @@ from app.core.runtime_config import (
     get_import_artifact_root,
     get_import_artifact_store_mode,
     get_import_max_resolution_candidates,
+    get_import_url_allowed_ports,
+    get_import_url_connect_timeout_seconds,
+    get_import_url_fetcher_mode,
+    get_import_url_max_compressed_bytes,
+    get_import_url_max_decoded_bytes,
+    get_import_url_max_redirects,
+    get_import_url_max_text_bytes,
+    get_import_url_read_timeout_seconds,
+    get_import_url_robots_fail_closed,
+    get_import_url_total_timeout_seconds,
+    get_import_url_user_agent,
 )
 from app.imports.artifacts import ArtifactStore, LocalPrivateArtifactStore, MemoryArtifactStore
+from app.imports.document_extraction import DeterministicDocumentTextExtractor
 from app.imports.extraction import DeterministicTextImportExtractor
 from app.imports.repository import ImportRepository, MemoryImportRepository, SQLiteImportRepository
 from app.imports.resolution import DeterministicPlaceMentionResolver
 from app.imports.service import TextImportService
+from app.imports.url_fetcher import FixtureHostResolver, FixtureHTTPTransport, SecureURLFetcher, URLFetchLimits
+from app.imports.url_policy import URLNetworkPolicy
 from app.persistence.database import (
     SQLiteConnectionFactory,
     get_trip_store_busy_timeout_seconds,
@@ -56,7 +70,32 @@ def get_text_import_service() -> TextImportService:
         resolver=DeterministicPlaceMentionResolver(
             max_candidates=get_import_max_resolution_candidates()
         ),
+        url_fetcher=get_url_fetcher(),
+        document_extractor=DeterministicDocumentTextExtractor(),
     )
+
+
+def get_url_fetcher() -> SecureURLFetcher:
+    limits = URLFetchLimits(
+        max_redirects=get_import_url_max_redirects(),
+        max_compressed_bytes=get_import_url_max_compressed_bytes(),
+        max_decoded_bytes=get_import_url_max_decoded_bytes(),
+        max_text_bytes=get_import_url_max_text_bytes(),
+        connect_timeout_seconds=get_import_url_connect_timeout_seconds(),
+        read_timeout_seconds=get_import_url_read_timeout_seconds(),
+        total_timeout_seconds=get_import_url_total_timeout_seconds(),
+        robots_fail_closed=get_import_url_robots_fail_closed(),
+    )
+    policy = URLNetworkPolicy(allowed_ports=get_import_url_allowed_ports())
+    if get_import_url_fetcher_mode() == "fixture":
+        return SecureURLFetcher(
+            resolver=FixtureHostResolver(),
+            transport=FixtureHTTPTransport(),
+            policy=policy,
+            limits=limits,
+            user_agent=get_import_url_user_agent(),
+        )
+    return SecureURLFetcher(policy=policy, limits=limits, user_agent=get_import_url_user_agent())
 
 
 def reset_import_dependencies_for_tests() -> None:

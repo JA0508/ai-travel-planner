@@ -1,11 +1,11 @@
 export type SourceArtifact = {
   id: string;
   trip_id: string;
-  artifact_type: "text";
-  mime_type: "text/plain";
+  artifact_type: "text" | "url_document" | "derived_text" | string;
+  mime_type: string;
   content_checksum: string;
   byte_size: number;
-  charset: "utf-8";
+  charset: string;
   privacy_level: string;
   original_label?: string | null;
   created_at: string;
@@ -15,7 +15,7 @@ export type ImportJob = {
   id: string;
   trip_id: string;
   artifact_id: string;
-  input_type: "text";
+  input_type: "text" | "url" | string;
   status: "created" | "extracting" | "resolving" | "review_ready" | "partial" | "failed" | "committed" | "cancelled" | string;
   extraction_schema_version: string;
   extractor_version: string;
@@ -95,10 +95,57 @@ export type TextImportCreateResponse = {
   idempotent_replay: boolean;
 };
 
+export type URLFetchSnapshot = {
+  id: string;
+  import_job_id: string;
+  raw_artifact_id: string;
+  request_url_sanitized: string;
+  normalized_request_url: string;
+  final_url_sanitized: string;
+  redirect_chain: Array<{ from_url: string; to_url: string; status_code: number; validation: string }>;
+  robots_status: string;
+  robots_checked_at: string;
+  status_code: number;
+  content_type: string;
+  declared_charset?: string | null;
+  effective_charset?: string | null;
+  content_language?: string | null;
+  compressed_bytes: number;
+  decoded_bytes: number;
+  body_checksum: string;
+  fetcher_version: string;
+  policy_version: string;
+  fetched_at: string;
+  warning_codes: string[];
+  cache_status: string;
+  page_title?: string | null;
+  source_host?: string | null;
+  final_host?: string | null;
+  recovery_actions: string[];
+};
+
+export type ArtifactDerivation = {
+  id: string;
+  parent_artifact_id: string;
+  child_artifact_id: string;
+  derivation_type: string;
+  transformer_version: string;
+  input_checksum: string;
+  output_checksum: string;
+  created_at: string;
+};
+
+export type URLImportCreateResponse = TextImportCreateResponse & {
+  source_fetch?: URLFetchSnapshot | null;
+  derivation?: ArtifactDerivation | null;
+};
+
 export type ImportReviewResponse = {
   artifact: SourceArtifact;
   job: ImportJob;
   mentions: ImportMention[];
+  source_fetch?: URLFetchSnapshot | null;
+  derivation?: ArtifactDerivation | null;
 };
 
 export type ImportCommitResult = {

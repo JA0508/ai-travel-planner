@@ -28,6 +28,7 @@ class CandidateSourceKind(str, Enum):
     COMPLETION = "completion"
     PLACE_INTELLIGENCE = "place_intelligence"
     TEXT_IMPORT = "text_import"
+    URL_IMPORT = "url_import"
 
 
 class CandidateDecisionType(str, Enum):

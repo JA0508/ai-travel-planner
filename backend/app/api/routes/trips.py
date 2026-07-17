@@ -15,6 +15,8 @@ from app.imports.domain import (
     ImportReviewResponse,
     TextImportCreateRequest,
     TextImportCreateResponse,
+    URLImportCreateRequest,
+    URLImportCreateResponse,
 )
 from app.trips.access import capability_cookie_name
 from app.trips.dependencies import get_trip_persistence_service, get_trip_repository
@@ -197,6 +199,31 @@ def create_text_import(
         return trip_error_response(exc)
 
 
+@router.post(
+    "/{trip_id}/imports/url",
+    response_model=URLImportCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_url_import(
+    trip_id: str,
+    payload: URLImportCreateRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> URLImportCreateResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_text_import_service().create_url_import(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
 @router.get("/{trip_id}/imports/{import_job_id}", response_model=ImportReviewResponse)
 def get_text_import(
     trip_id: str,
@@ -228,7 +255,7 @@ def get_text_import_artifact(
         return PlainTextResponse(
             text,
             media_type="text/plain; charset=utf-8",
-            headers={"Cache-Control": "private, no-store"},
+            headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
         )
     except TripError as exc:
         return trip_error_response(exc)

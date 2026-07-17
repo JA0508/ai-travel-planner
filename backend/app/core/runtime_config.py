@@ -14,6 +14,11 @@ DEFAULT_TRIP_REPLAN_PROPOSAL_TTL_SECONDS = 900.0
 DEFAULT_IMPORT_TEXT_MAX_BYTES = 100 * 1024
 DEFAULT_IMPORT_MAX_MENTIONS = 60
 DEFAULT_IMPORT_MAX_RESOLUTION_CANDIDATES = 5
+DEFAULT_IMPORT_URL_MAX_REDIRECTS = 5
+DEFAULT_IMPORT_URL_MAX_COMPRESSED_BYTES = 2 * 1024 * 1024
+DEFAULT_IMPORT_URL_MAX_DECODED_BYTES = 5 * 1024 * 1024
+DEFAULT_IMPORT_URL_MAX_TEXT_BYTES = 500 * 1024
+DEFAULT_IMPORT_URL_CACHE_TTL_SECONDS = 900
 
 
 def parse_cors_allow_origins(raw_value: str | None) -> list[str]:
@@ -87,6 +92,68 @@ def get_import_text_max_bytes() -> int:
     return parse_positive_int_env("IMPORT_TEXT_MAX_BYTES", DEFAULT_IMPORT_TEXT_MAX_BYTES)
 
 
+def get_import_url_enabled() -> bool:
+    return os.getenv("IMPORT_URL_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
+
+
+def get_import_url_fetcher_mode() -> str:
+    return os.getenv("IMPORT_URL_FETCHER_MODE", "network").strip().lower() or "network"
+
+
+def get_import_url_max_redirects() -> int:
+    return parse_positive_int_env("IMPORT_URL_MAX_REDIRECTS", DEFAULT_IMPORT_URL_MAX_REDIRECTS)
+
+
+def get_import_url_max_compressed_bytes() -> int:
+    return parse_positive_int_env("IMPORT_URL_MAX_COMPRESSED_BYTES", DEFAULT_IMPORT_URL_MAX_COMPRESSED_BYTES)
+
+
+def get_import_url_max_decoded_bytes() -> int:
+    return parse_positive_int_env("IMPORT_URL_MAX_DECODED_BYTES", DEFAULT_IMPORT_URL_MAX_DECODED_BYTES)
+
+
+def get_import_url_max_text_bytes() -> int:
+    return parse_positive_int_env("IMPORT_URL_MAX_TEXT_BYTES", DEFAULT_IMPORT_URL_MAX_TEXT_BYTES)
+
+
+def get_import_url_cache_ttl_seconds() -> int:
+    return parse_positive_int_env("IMPORT_URL_CACHE_TTL_SECONDS", DEFAULT_IMPORT_URL_CACHE_TTL_SECONDS)
+
+
+def get_import_url_connect_timeout_seconds() -> float:
+    return parse_positive_float_env("IMPORT_URL_CONNECT_TIMEOUT_SECONDS", 5.0)
+
+
+def get_import_url_read_timeout_seconds() -> float:
+    return parse_positive_float_env("IMPORT_URL_READ_TIMEOUT_SECONDS", 10.0)
+
+
+def get_import_url_total_timeout_seconds() -> float:
+    return parse_positive_float_env("IMPORT_URL_TOTAL_TIMEOUT_SECONDS", 20.0)
+
+
+def get_import_url_allowed_ports() -> set[int]:
+    raw_value = os.getenv("IMPORT_URL_ALLOWED_PORTS", "80,443")
+    ports: set[int] = set()
+    for value in raw_value.split(","):
+        try:
+            port = int(value.strip())
+        except ValueError:
+            continue
+        if 1 <= port <= 65535:
+            ports.add(port)
+    return ports or {80, 443}
+
+
+def get_import_url_user_agent() -> str:
+    value = os.getenv("IMPORT_URL_USER_AGENT", "AITravelPlannerURLImporter/1.0").strip()
+    return value or "AITravelPlannerURLImporter/1.0"
+
+
+def get_import_url_robots_fail_closed() -> bool:
+    return os.getenv("IMPORT_URL_ROBOTS_FAIL_CLOSED", "true").strip().lower() not in {"0", "false", "no"}
+
+
 def get_import_artifact_store_mode() -> str:
     return os.getenv("IMPORT_ARTIFACT_STORE_MODE", "local").strip().lower() or "local"
 
@@ -119,10 +186,18 @@ def get_import_max_resolution_candidates() -> int:
 
 
 def get_import_configuration_summary() -> dict[str, Any]:
-    from app.imports.domain import IMPORT_EXTRACTION_SCHEMA_VERSION
+    from app.imports.domain import IMPORT_EXTRACTION_SCHEMA_VERSION, URL_IMPORT_FETCHER_VERSION, URL_IMPORT_POLICY_VERSION
+
+    fetcher_mode = get_import_url_fetcher_mode()
+    app_env = os.getenv("APP_ENV", "development").strip().lower()
 
     return {
         "text_enabled": get_import_text_enabled(),
+        "url_enabled": get_import_url_enabled(),
+        "url_fetcher_mode": fetcher_mode,
+        "url_policy_version": URL_IMPORT_POLICY_VERSION,
+        "url_fetcher_version": URL_IMPORT_FETCHER_VERSION,
+        "robots_fail_closed": get_import_url_robots_fail_closed(),
         "processing_mode": get_import_processing_mode(),
         "artifact_store": get_import_artifact_store_mode(),
         "extraction_schema_version": IMPORT_EXTRACTION_SCHEMA_VERSION,
@@ -131,7 +206,7 @@ def get_import_configuration_summary() -> dict[str, Any]:
         "max_text_bytes": get_import_text_max_bytes(),
         "max_mentions": get_import_max_mentions(),
         "max_resolution_candidates": get_import_max_resolution_candidates(),
-        "status": "healthy",
+        "status": "unhealthy" if app_env == "production" and fetcher_mode == "fixture" else "healthy",
     }
 
 

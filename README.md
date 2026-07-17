@@ -143,8 +143,9 @@ The repository currently contains a substantial planning foundation:
 - typed candidate admission with repair-required semantics
 - saved completion undo as a compensating TripRevision
 - text SourceArtifact import with span-level mention provenance
+- secure URL import for public static HTML/plain-text sources
 - Import Review Inbox for confirming imported place mentions into TripCandidate
-- import evaluation gate with fixture-driven invariants
+- import evaluation gate with fixture-driven text and URL invariants
 - fixture-driven product verification
 
 > Development branches may contain additional in-review capabilities. Required CI
@@ -333,6 +334,19 @@ Important backend settings include:
 - `TRIP_ALLOWED_ORIGINS`
 - `IMPORT_TEXT_ENABLED`
 - `IMPORT_TEXT_MAX_BYTES`
+- `IMPORT_URL_ENABLED`
+- `IMPORT_URL_FETCHER_MODE`
+- `IMPORT_URL_MAX_REDIRECTS`
+- `IMPORT_URL_CONNECT_TIMEOUT_SECONDS`
+- `IMPORT_URL_READ_TIMEOUT_SECONDS`
+- `IMPORT_URL_TOTAL_TIMEOUT_SECONDS`
+- `IMPORT_URL_MAX_COMPRESSED_BYTES`
+- `IMPORT_URL_MAX_DECODED_BYTES`
+- `IMPORT_URL_MAX_TEXT_BYTES`
+- `IMPORT_URL_CACHE_TTL_SECONDS`
+- `IMPORT_URL_ALLOWED_PORTS`
+- `IMPORT_URL_USER_AGENT`
+- `IMPORT_URL_ROBOTS_FAIL_CLOSED`
 - `IMPORT_ARTIFACT_STORE_MODE`
 - `IMPORT_ARTIFACT_ROOT`
 - `IMPORT_PROCESSING_MODE`
@@ -361,6 +375,16 @@ Text import stores pasted source as a private `SourceArtifact` and returns only
 metadata through normal JSON responses. Raw source text is retrieved through a
 capability-protected, private/no-store artifact endpoint for review display.
 The local artifact root is ignored by Git; do not commit imported source bytes.
+
+URL import supports public static `text/html`, `text/plain`, and
+`application/xhtml+xml` sources. The server normalizes URLs, rejects sensitive
+query parameters, blocks private/internal destinations, validates DNS and actual
+peer addresses, manually revalidates redirects, obeys robots.txt with
+fail-closed behavior, and applies stream/decompression limits. Raw fetched bytes
+are stored as private `url_document` artifacts; review displays only a derived
+plain-text artifact and safe provenance metadata. Login-only pages, JavaScript
+shells, PDF/image URLs, robots-blocked pages, and oversized content fail with a
+Paste Text recovery path.
 
 ### 3. Configure the frontend
 
@@ -555,6 +579,16 @@ POST /trips/{trip_id}/imports/{import_id}/mentions/{mention_id}/decisions
 POST /trips/{trip_id}/imports/{import_id}/commit
 ```
 
+URL import enters the same review inbox through:
+
+```text
+POST /trips/{trip_id}/imports/url
+```
+
+The URL endpoint returns `source_fetch` provenance and an `ArtifactDerivation`
+that links raw URL document bytes to the derived text artifact. Existing review,
+artifact, decision, and commit endpoints are reused for URL-derived imports.
+
 Import creates `SourceArtifact`, `ImportJob`, `ExtractedMention`, and
 `ResolvedPlaceCandidate` records. Review decisions are append-only and protected
 by `base_review_version` plus `X-Idempotency-Key`. Commit only turns confirmed
@@ -562,10 +596,12 @@ place mentions into `TripCandidate` records with evidence refs such as
 `artifact:{artifact_id}#mention:{mention_id}`. It does not create a
 `TripRevision`, schedule a stop, mutate TripIntent, or run the planner.
 
-The current extractor is intentionally deterministic and limited. It recognizes
-explicit text lists, known local-catalog places, fixed-event/time phrases, and
-instruction-like source text. URL, image, PDF, OCR, and full Intent Compiler
-flows are not implemented in this slice.
+The current extractors are intentionally deterministic and limited. Text import
+recognizes explicit text lists, known local-catalog places, fixed-event/time
+phrases, and instruction-like source text. URL import derives deterministic
+plain text from static HTML/plain-text documents, then reuses the same mention
+extraction, place resolution, review, and commit path. Image, PDF, OCR, and full
+Intent Compiler flows are not implemented in this slice.
 
 ### Uncertainty semantics
 
@@ -596,7 +632,8 @@ Missing or stale data must not be presented as confirmed.
 ### Import-to-Executable v1
 
 - Text Import Review Inbox
-- URL/image/PDF import adapters
+- URL Import Adapter
+- image/PDF import adapters
 - canonical POI resolution
 - Trip Intent Compiler
 - explainable planner trace
