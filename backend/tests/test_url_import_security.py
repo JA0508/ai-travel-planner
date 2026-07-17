@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +10,16 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.imports.dependencies import reset_import_dependencies_for_tests
-from app.imports.url_fetcher import FixtureHTTPTransport, FixtureHostResolver, FixturePage, SecureURLFetcher, URLFetchLimits
+from app.imports.url_fetcher import (
+    FixtureHTTPTransport,
+    FixtureHostResolver,
+    FixturePage,
+    SecureURLFetcher,
+    SocketHTTPTransport,
+    URLFetchLimits,
+    decode_content,
+    read_http_response,
+)
 from app.imports.url_policy import ResolvedAddress, URLNetworkPolicy
 from app.main import app
 from app.persistence.database import SQLiteConnectionFactory
@@ -49,8 +60,15 @@ class URLImportSecurityTests(unittest.TestCase):
             ("file:///etc/passwd", "import_url_scheme_unsupported"),
             ("https://user:pass@example.com/guide", "import_url_userinfo_forbidden"),
             ("https://example.com/guide?access_token=abc", "import_url_contains_sensitive_parameters"),
+            ("https://example.com/guide?signature=abc", "import_url_contains_sensitive_parameters"),
             ("https://localhost/guide", "import_url_destination_blocked"),
+            ("https://localhost./guide", "import_url_host_invalid"),
             ("https://127.1/guide", "import_url_host_invalid"),
+            ("https://2130706433/guide", "import_url_destination_blocked"),
+            ("https://0x7f000001/guide", "import_url_destination_blocked"),
+            ("https://017700000001/guide", "import_url_destination_blocked"),
+            ("https://example.com:22/guide", "import_url_port_forbidden"),
+            ("https://[::1]/guide", "import_url_destination_blocked"),
             ("https://[::ffff:127.0.0.1]/guide", "import_url_destination_blocked"),
         ]
         for url, code in cases:
@@ -74,6 +92,28 @@ class URLImportSecurityTests(unittest.TestCase):
                 approved=[ResolvedAddress(host="example.com", port=443, ip="93.184.216.34", family=0)],
             )
         self.assertEqual(mismatch.exception.code, "import_url_peer_address_mismatch")
+
+    def test_policy_rejects_reserved_metadata_and_non_global_ip_classes(self) -> None:
+        policy = URLNetworkPolicy()
+        blocked = [
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "192.0.2.1",
+            "198.18.0.1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "ff02::1",
+            "::ffff:169.254.169.254",
+        ]
+        for ip in blocked:
+            with self.subTest(ip=ip), self.assertRaises(TripError):
+                policy.validate_resolved_addresses([ResolvedAddress(host="example.com", port=443, ip=ip, family=0)])
 
     def test_url_import_reuses_review_pipeline_and_preserves_provenance(self) -> None:
         client, trip_id = create_saved_trip()
@@ -131,6 +171,122 @@ class URLImportSecurityTests(unittest.TestCase):
         with self.assertRaises(TripError) as raised:
             fetcher.fetch("https://rebinding.invalid/guide")
         self.assertEqual(raised.exception.code, "import_url_peer_address_mismatch")
+
+    def test_socket_transport_connects_to_approved_ip_and_ignores_proxy_env(self) -> None:
+        policy = URLNetworkPolicy()
+        url = policy.normalize_url("http://example.com/guide")
+        address = ResolvedAddress(host="example.com", port=80, ip="93.184.216.34", family=0)
+        captured: list[tuple[str, int]] = []
+
+        def fake_create_connection(target, timeout):
+            captured.append(target)
+            return FakeSocket(
+                [
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello",
+                ],
+                peer_ip="93.184.216.34",
+            )
+
+        with patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:8888", "HTTPS_PROXY": "http://127.0.0.1:8888"}):
+            with patch("socket.create_connection", side_effect=fake_create_connection):
+                response = SocketHTTPTransport().get(
+                    url=url,
+                    address=address,
+                    user_agent="test-agent",
+                    limits=URLFetchLimits(),
+                )
+
+        self.assertEqual(captured, [("93.184.216.34", 80)])
+        self.assertEqual(response.peer_ip, "93.184.216.34")
+        self.assertEqual(response.body, b"hello")
+
+    def test_robots_disallow_prevents_page_request(self) -> None:
+        pages = {
+            "https://blocked.invalid/robots.txt": FixturePage(body=b"User-agent: *\nDisallow: /\n"),
+            "https://blocked.invalid/guide": FixturePage(body=b"<article>Should not be fetched</article>"),
+        }
+        transport = CountingFixtureHTTPTransport(pages)
+        fetcher = SecureURLFetcher(
+            resolver=FixtureHostResolver({"blocked.invalid": ["93.184.216.34"]}),
+            transport=transport,
+            limits=URLFetchLimits(),
+        )
+        with self.assertRaises(TripError) as raised:
+            fetcher.fetch("https://blocked.invalid/guide")
+        self.assertEqual(raised.exception.code, "import_url_robots_disallowed")
+        self.assertEqual(transport.calls, ["https://blocked.invalid/robots.txt"])
+
+    def test_redirect_escape_targets_are_revalidated(self) -> None:
+        pages = {
+            "https://fixture.invalid/robots.txt": FixturePage(body=b"User-agent: *\nAllow: /\n"),
+            "https://fixture.invalid/private-redirect": FixturePage(
+                status_code=302,
+                headers={"location": "http://127.0.0.1/metadata"},
+                body=b"",
+            ),
+        }
+        fetcher = SecureURLFetcher(
+            resolver=FixtureHostResolver({"fixture.invalid": ["93.184.216.34"]}),
+            transport=FixtureHTTPTransport(pages),
+            limits=URLFetchLimits(),
+        )
+        with self.assertRaises(TripError) as raised:
+            fetcher.fetch("https://fixture.invalid/private-redirect")
+        self.assertEqual(raised.exception.code, "import_url_destination_blocked")
+
+    def test_streaming_limits_content_length_and_decompression_are_enforced(self) -> None:
+        limits = URLFetchLimits(max_compressed_bytes=12, max_decoded_bytes=40, max_compression_ratio=4)
+        content_length_stream = FakeSocket(
+            [b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\n"],
+        )
+        with self.assertRaises(TripError) as raised:
+            read_http_response(content_length_stream, limits)
+        self.assertEqual(raised.exception.code, "import_url_content_too_large")
+
+        streaming_overflow = FakeSocket(
+            [
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n123456",
+                b"7890123",
+            ],
+        )
+        with self.assertRaises(TripError) as streamed:
+            read_http_response(streaming_overflow, limits)
+        self.assertEqual(streamed.exception.code, "import_url_content_too_large")
+
+        malformed = gzip.compress(b"hello")[:6]
+        with self.assertRaises(TripError) as malformed_error:
+            decode_content(malformed, "gzip", limits=URLFetchLimits(max_decoded_bytes=100))
+        self.assertEqual(malformed_error.exception.code, "import_url_invalid_content_encoding")
+
+        decoded_over = gzip.compress(b"x" * 80)
+        with self.assertRaises(TripError) as decoded_error:
+            decode_content(decoded_over, "gzip", limits=URLFetchLimits(max_decoded_bytes=40, max_compression_ratio=1000))
+        self.assertEqual(decoded_error.exception.code, "import_url_decompressed_too_large")
+
+        ratio_over = gzip.compress(b"x" * 2000)
+        with self.assertRaises(TripError) as ratio_error:
+            decode_content(ratio_over, "gzip", limits=URLFetchLimits(max_decoded_bytes=5000, max_compression_ratio=2))
+        self.assertEqual(ratio_error.exception.code, "import_url_decompressed_too_large")
+
+    def test_sensitive_url_rejection_does_not_create_import_records_or_echo_secret(self) -> None:
+        client, trip_id = create_saved_trip()
+        response = create_url_import(
+            client,
+            trip_id,
+            "https://fixture.invalid/guide?signature=private-secret",
+            key="url-sensitive",
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["error"]["code"], "import_url_contains_sensitive_parameters")
+        self.assertNotIn("private-secret", response.text)
+        factory = SQLiteConnectionFactory(Path(self.temp_dir.name) / "trip-store.sqlite3")
+        with factory.connect() as connection:
+            import_jobs = connection.execute("SELECT COUNT(*) FROM import_jobs").fetchone()[0]
+            artifacts = connection.execute("SELECT COUNT(*) FROM source_artifacts").fetchone()[0]
+            snapshots = connection.execute("SELECT COUNT(*) FROM url_fetch_snapshots").fetchone()[0]
+        self.assertEqual(import_jobs, 0)
+        self.assertEqual(artifacts, 0)
+        self.assertEqual(snapshots, 0)
 
     def test_url_commit_creates_candidate_without_trip_revision(self) -> None:
         client, trip_id = create_saved_trip()
@@ -192,3 +348,41 @@ def create_url_import(client: TestClient, trip_id: str, url: str, *, key: str = 
         json={"url": url},
         headers={"Origin": "http://testserver", "X-Idempotency-Key": key},
     )
+
+
+class CountingFixtureHTTPTransport(FixtureHTTPTransport):
+    def __init__(self, pages: dict[str, FixturePage]) -> None:
+        super().__init__(pages)
+        self.calls: list[str] = []
+
+    def get(self, *, url, address, user_agent, limits):
+        self.calls.append(url.normalized_url)
+        return super().get(url=url, address=address, user_agent=user_agent, limits=limits)
+
+
+class FakeSocket:
+    def __init__(self, chunks: list[bytes], *, peer_ip: str = "93.184.216.34") -> None:
+        self.chunks = list(chunks)
+        self.peer_ip = peer_ip
+        self.sent = b""
+
+    def recv(self, size: int) -> bytes:
+        if not self.chunks:
+            return b""
+        chunk = self.chunks.pop(0)
+        if len(chunk) > size:
+            self.chunks.insert(0, chunk[size:])
+            return chunk[:size]
+        return chunk
+
+    def sendall(self, data: bytes) -> None:
+        self.sent += data
+
+    def getpeername(self):
+        return (self.peer_ip, 80)
+
+    def settimeout(self, timeout: float) -> None:
+        return None
+
+    def close(self) -> None:
+        return None

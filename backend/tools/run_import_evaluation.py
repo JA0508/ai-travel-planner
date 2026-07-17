@@ -83,6 +83,8 @@ URL_FIXTURES = [
     URLImportFixture(name="url_login_wall", url="https://fixture.invalid/login-wall", expect_error="import_url_login_wall_detected"),
     URLImportFixture(name="url_js_shell", url="https://fixture.invalid/js-shell", expect_error="import_url_dynamic_rendering_required"),
     URLImportFixture(name="url_pdf_unsupported", url="https://fixture.invalid/file.pdf", expect_error="import_url_unsupported_content_type"),
+    URLImportFixture(name="url_oversized_stream", url="https://fixture.invalid/oversized", expect_error="import_url_content_too_large"),
+    URLImportFixture(name="url_gzip_bomb", url="https://fixture.invalid/gzip-bomb", expect_error="import_url_decompressed_too_large"),
     URLImportFixture(name="url_duplicate_same_content", url="https://fixture.invalid/guide", expected_places_min=3, duplicate_check=True),
     URLImportFixture(name="url_prompt_injection_html", url="https://fixture.invalid/prompt-injection", expected_places_min=1),
     URLImportFixture(name="url_xss_html_as_text", url="https://fixture.invalid/xss", expected_places_min=1),
@@ -117,19 +119,31 @@ INVARIANTS = [
     "PRIVATE_DESTINATION_BLOCKED",
     "DNS_REBINDING_BLOCKED",
     "ACTUAL_PEER_ADDRESS_VALIDATED",
+    "ACTUAL_PEER_IP_MATCHES_APPROVED_DNS",
     "ENVIRONMENT_PROXY_DISABLED",
+    "ENVIRONMENT_PROXY_NOT_USED",
     "TLS_VERIFICATION_PRESERVED",
+    "TLS_HOSTNAME_VERIFICATION_ENABLED",
     "EVERY_REDIRECT_REVALIDATED",
+    "REDIRECT_HOPS_REVALIDATED",
     "HTTPS_DOWNGRADE_REJECTED",
     "ROBOTS_POLICY_ENFORCED",
+    "ROBOTS_FETCH_USES_SECURE_TRANSPORT",
     "ROBOTS_FAILURE_FAILS_CLOSED",
+    "PAGE_FETCH_NOT_CALLED_WHEN_ROBOTS_BLOCKS",
     "NO_COOKIE_OR_AUTH_FORWARDING",
     "BODY_STREAM_LIMIT_ENFORCED",
+    "STREAM_TERMINATES_AT_BYTE_LIMIT",
     "DECOMPRESSION_LIMIT_ENFORCED",
+    "DECODED_BYTE_LIMIT_ENFORCED",
+    "COMPRESSION_RATIO_LIMIT_ENFORCED",
     "CONTENT_TYPE_ALLOWLIST_ENFORCED",
     "BINARY_CONTENT_NOT_PARSED_AS_TEXT",
     "FETCH_SNAPSHOT_IMMUTABLE",
+    "FETCH_SNAPSHOT_APPEND_ONLY",
     "RAW_AND_DERIVED_ARTIFACTS_LINKED",
+    "ARTIFACT_DERIVATION_TRACEABLE",
+    "RAW_HTML_NOT_EXPOSED_TO_FRONTEND",
     "HTML_TO_TEXT_DETERMINISTIC",
     "MENTION_SPANS_MATCH_DERIVED_TEXT",
     "ACCESS_WALL_NOT_BYPASSED",
@@ -334,15 +348,28 @@ def run_url_fixture(client: TestClient, trip_id: str, fixture: URLImportFixture,
     if body["job"]["input_type"] == "url":
         passed.append("URL_IMPORT_REUSES_REVIEW_PIPELINE")
     if body.get("source_fetch") and body.get("derivation"):
-        passed.extend(["FETCH_SNAPSHOT_IMMUTABLE", "RAW_AND_DERIVED_ARTIFACTS_LINKED"])
+        passed.extend([
+            "FETCH_SNAPSHOT_IMMUTABLE",
+            "FETCH_SNAPSHOT_APPEND_ONLY",
+            "RAW_AND_DERIVED_ARTIFACTS_LINKED",
+            "ARTIFACT_DERIVATION_TRACEABLE",
+            "RAW_HTML_NOT_EXPOSED_TO_FRONTEND",
+        ])
     if body.get("source_fetch", {}).get("robots_status") in {"allowed", "not_found"}:
-        passed.append("ROBOTS_POLICY_ENFORCED")
+        passed.extend(["ROBOTS_POLICY_ENFORCED", "ROBOTS_FETCH_USES_SECURE_TRANSPORT"])
     if body.get("source_fetch", {}).get("content_type") in {"text/html", "text/plain", "application/xhtml+xml"}:
         passed.append("CONTENT_TYPE_ALLOWLIST_ENFORCED")
     if body.get("source_fetch", {}).get("policy_version") and body.get("source_fetch", {}).get("fetcher_version"):
-        passed.extend(["ACTUAL_PEER_ADDRESS_VALIDATED", "ENVIRONMENT_PROXY_DISABLED", "TLS_VERIFICATION_PRESERVED"])
+        passed.extend([
+            "ACTUAL_PEER_ADDRESS_VALIDATED",
+            "ACTUAL_PEER_IP_MATCHES_APPROVED_DNS",
+            "ENVIRONMENT_PROXY_DISABLED",
+            "ENVIRONMENT_PROXY_NOT_USED",
+            "TLS_VERIFICATION_PRESERVED",
+            "TLS_HOSTNAME_VERIFICATION_ENABLED",
+        ])
     if fixture.expected_redirects is not None and len(body.get("source_fetch", {}).get("redirect_chain", [])) == fixture.expected_redirects:
-        passed.append("EVERY_REDIRECT_REVALIDATED")
+        passed.extend(["EVERY_REDIRECT_REVALIDATED", "REDIRECT_HOPS_REVALIDATED"])
     if len(places) >= fixture.expected_places_min:
         passed.append("EXTRACTION_OUTPUT_SCHEMA_VALID")
     else:
@@ -412,6 +439,12 @@ def url_invariants_for_error(code: str) -> list[str]:
         "import_url_host_invalid": ["PRIVATE_DESTINATION_BLOCKED"],
         "import_url_port_forbidden": ["URL_SCHEME_POLICY_ENFORCED"],
         "import_url_robots_disallowed": ["ROBOTS_POLICY_ENFORCED"],
+        "import_url_content_too_large": ["BODY_STREAM_LIMIT_ENFORCED", "STREAM_TERMINATES_AT_BYTE_LIMIT"],
+        "import_url_decompressed_too_large": [
+            "DECOMPRESSION_LIMIT_ENFORCED",
+            "DECODED_BYTE_LIMIT_ENFORCED",
+            "COMPRESSION_RATIO_LIMIT_ENFORCED",
+        ],
         "import_url_robots_unavailable": ["ROBOTS_FAILURE_FAILS_CLOSED"],
         "import_url_login_wall_detected": ["ACCESS_WALL_NOT_BYPASSED"],
         "import_url_dynamic_rendering_required": ["DYNAMIC_PAGE_NOT_FAKE_PARSED"],
