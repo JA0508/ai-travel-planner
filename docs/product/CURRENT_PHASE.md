@@ -2,14 +2,14 @@
 
 ## Current phase
 
-F-002b Secure URL Import Adapter
+F-002c Image/PDF Artifact Intake and Safe Document Classification
 
 ## Active objective
 
-Extend the source-to-review import boundary from pasted text to public static
-web pages: validate URL/network policy, obey robots.txt, fetch bounded content,
-persist immutable fetch snapshots and raw artifacts, derive reviewable text, and
-reuse the existing human review boundary before TripCandidate creation.
+Extend the source artifact boundary to binary images and PDFs without OCR:
+stream bounded uploads, quarantine originals, perform content-based detection,
+run isolated structural inspection, persist explicit findings, and create only
+sanitized image previews or PDF structural manifests before future extraction.
 
 ## Current stable capabilities
 
@@ -30,14 +30,15 @@ reuse the existing human review boundary before TripCandidate creation.
 - F-001b.1 Persisted Replan Proposal Integrity and Safe Undo Gate
 - F-001b.2 Typed Route Edit and Swap Mutation Revisions
 - F-001b.3 Candidate Admission, Completion Undo, and Mutation Closure
+- F-002b Secure URL Import Adapter
 
 ## In review
 
-- F-002b Secure URL Import Adapter
+- F-002c Image/PDF Artifact Intake and Safe Document Classification — in review
 
 ## Next approved work
 
-1. F-002c Image/PDF Artifact Intake and Safe Document Classification
+1. F-002d Layout-Aware OCR and Document Text Extraction
 2. F-020b Planner Trace Review and Evaluation Expansion
 
 ## Explicitly not in scope
@@ -45,5 +46,5 @@ reuse the existing human review boundary before TripCandidate creation.
 - Counterfactual scenario explorer
 - Collaboration
 - Booking inbox
-- image/PDF/OCR import
+- OCR and document text extraction from image/PDF artifacts
 - F-004 Intent Compiler

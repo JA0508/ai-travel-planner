@@ -10,6 +10,8 @@ from typing import Any, Protocol
 
 from app.imports.domain import (
     ArtifactDerivationRecord,
+    ArtifactInspectionFindingRecord,
+    ArtifactInspectionRecord,
     ExtractedMentionRecord,
     ImportCommitRecord,
     ImportJobRecord,
@@ -56,6 +58,32 @@ class ImportRepository(Protocol):
         ...
 
     def get_artifact_derivation_for_child(self, *, child_artifact_id: str) -> ArtifactDerivationRecord | None:
+        ...
+
+    def get_artifact_derivations_for_parent(self, *, parent_artifact_id: str) -> list[ArtifactDerivationRecord]:
+        ...
+
+    def create_completed_artifact_inspection(
+        self,
+        *,
+        inspection: ArtifactInspectionRecord,
+        findings: list[ArtifactInspectionFindingRecord],
+        child_artifact: SourceArtifactRecord | None,
+        derivation: ArtifactDerivationRecord | None,
+        final_job_status: str,
+        updated_at: str,
+    ) -> ArtifactInspectionRecord:
+        ...
+
+    def get_latest_artifact_inspection_for_job(
+        self,
+        *,
+        trip_id: str,
+        import_job_id: str,
+    ) -> ArtifactInspectionRecord | None:
+        ...
+
+    def list_artifact_inspection_findings(self, *, inspection_id: str) -> list[ArtifactInspectionFindingRecord]:
         ...
 
     def create_job(self, job: ImportJobRecord) -> ImportJobRecord:
@@ -352,6 +380,184 @@ class SQLiteImportRepository:
                 (child_artifact_id,),
             ).fetchone()
         return row_to_artifact_derivation(row) if row else None
+
+    def get_artifact_derivations_for_parent(self, *, parent_artifact_id: str) -> list[ArtifactDerivationRecord]:
+        with closing(self.connection_factory()) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM artifact_derivations
+                WHERE parent_artifact_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (parent_artifact_id,),
+            ).fetchall()
+        return [row_to_artifact_derivation(row) for row in rows]
+
+    def create_completed_artifact_inspection(
+        self,
+        *,
+        inspection: ArtifactInspectionRecord,
+        findings: list[ArtifactInspectionFindingRecord],
+        child_artifact: SourceArtifactRecord | None,
+        derivation: ArtifactDerivationRecord | None,
+        final_job_status: str,
+        updated_at: str,
+    ) -> ArtifactInspectionRecord:
+        with self._transaction() as connection:
+            job_row = connection.execute(
+                "SELECT * FROM import_jobs WHERE trip_id = ? AND id = ?",
+                (inspection.trip_id, inspection.import_job_id),
+            ).fetchone()
+            if job_row is None:
+                raise TripError("import_not_found", "Import job was not found.", 404)
+            job = row_to_job(job_row)
+            if job.artifact_id != inspection.artifact_id or job.status != "inspecting":
+                raise TripError("import_artifact_not_ready", "Artifact inspection cannot be completed from the current job state.", 409)
+            if child_artifact is not None:
+                connection.execute(
+                    """
+                    INSERT INTO source_artifacts(
+                      id, trip_id, artifact_type, mime_type, content_checksum,
+                      byte_size, charset, privacy_level, storage_key, original_label, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        child_artifact.id,
+                        child_artifact.trip_id,
+                        child_artifact.artifact_type,
+                        child_artifact.mime_type,
+                        child_artifact.content_checksum,
+                        child_artifact.byte_size,
+                        child_artifact.charset,
+                        child_artifact.privacy_level,
+                        child_artifact.storage_key,
+                        child_artifact.original_label,
+                        child_artifact.created_at,
+                    ),
+                )
+            connection.execute(
+                """
+                INSERT INTO artifact_inspections(
+                  id, trip_id, import_job_id, artifact_id, attempt, schema_version,
+                  inspector_version, declared_kind, detected_kind, declared_mime_type,
+                  detected_mime_type, status, classification, byte_size, content_checksum,
+                  metadata_json, sanitized_artifact_id, manifest_artifact_id,
+                  warning_codes_json, error_code, started_at, completed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    inspection.id,
+                    inspection.trip_id,
+                    inspection.import_job_id,
+                    inspection.artifact_id,
+                    inspection.attempt,
+                    inspection.schema_version,
+                    inspection.inspector_version,
+                    inspection.declared_kind,
+                    inspection.detected_kind,
+                    inspection.declared_mime_type,
+                    inspection.detected_mime_type,
+                    inspection.status,
+                    inspection.classification,
+                    inspection.byte_size,
+                    inspection.content_checksum,
+                    json_dumps(inspection.metadata),
+                    inspection.sanitized_artifact_id,
+                    inspection.manifest_artifact_id,
+                    json_dumps(inspection.warning_codes),
+                    inspection.error_code,
+                    inspection.started_at,
+                    inspection.completed_at,
+                ),
+            )
+            for item in findings:
+                connection.execute(
+                    """
+                    INSERT INTO artifact_inspection_findings(
+                      id, inspection_id, code, severity, category, evidence_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item.id,
+                        item.inspection_id,
+                        item.code,
+                        item.severity,
+                        item.category,
+                        json_dumps(item.evidence),
+                        item.created_at,
+                    ),
+                )
+            if derivation is not None:
+                connection.execute(
+                    """
+                    INSERT INTO artifact_derivations(
+                      id, parent_artifact_id, child_artifact_id, derivation_type,
+                      transformer_version, input_checksum, output_checksum,
+                      metadata_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        derivation.id,
+                        derivation.parent_artifact_id,
+                        derivation.child_artifact_id,
+                        derivation.derivation_type,
+                        derivation.transformer_version,
+                        derivation.input_checksum,
+                        derivation.output_checksum,
+                        json_dumps(derivation.metadata),
+                        derivation.created_at,
+                    ),
+                )
+            connection.execute(
+                """
+                UPDATE import_jobs
+                SET status = ?, updated_at = ?, warning_codes_json = ?, error_code = ?
+                WHERE trip_id = ? AND id = ?
+                """,
+                (
+                    final_job_status,
+                    updated_at,
+                    json_dumps(inspection.warning_codes),
+                    inspection.error_code,
+                    inspection.trip_id,
+                    inspection.import_job_id,
+                ),
+            )
+        return inspection
+
+    def get_latest_artifact_inspection_for_job(
+        self,
+        *,
+        trip_id: str,
+        import_job_id: str,
+    ) -> ArtifactInspectionRecord | None:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM artifact_inspections
+                WHERE trip_id = ? AND import_job_id = ?
+                ORDER BY completed_at DESC, attempt DESC, id DESC
+                LIMIT 1
+                """,
+                (trip_id, import_job_id),
+            ).fetchone()
+        return row_to_artifact_inspection(row) if row else None
+
+    def list_artifact_inspection_findings(self, *, inspection_id: str) -> list[ArtifactInspectionFindingRecord]:
+        with closing(self.connection_factory()) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM artifact_inspection_findings
+                WHERE inspection_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (inspection_id,),
+            ).fetchall()
+        return [row_to_artifact_inspection_finding(row) for row in rows]
 
     def create_job(self, job: ImportJobRecord) -> ImportJobRecord:
         with self._transaction() as connection:
@@ -901,6 +1107,8 @@ class MemoryImportRepository:
         self.commits: dict[str, ImportCommitRecord] = {}
         self.url_fetch_snapshots: dict[str, URLFetchSnapshotRecord] = {}
         self.artifact_derivations: dict[str, ArtifactDerivationRecord] = {}
+        self.artifact_inspections: dict[str, ArtifactInspectionRecord] = {}
+        self.artifact_inspection_findings: dict[str, ArtifactInspectionFindingRecord] = {}
 
     def get_artifact(self, *, trip_id: str, artifact_id: str) -> SourceArtifactRecord:
         artifact = self.artifacts.get(artifact_id)
@@ -947,6 +1155,56 @@ class MemoryImportRepository:
     def get_artifact_derivation_for_child(self, *, child_artifact_id: str) -> ArtifactDerivationRecord | None:
         derivation = self.artifact_derivations.get(child_artifact_id)
         return copy.deepcopy(derivation) if derivation else None
+
+    def get_artifact_derivations_for_parent(self, *, parent_artifact_id: str) -> list[ArtifactDerivationRecord]:
+        return sorted(
+            [copy.deepcopy(item) for item in self.artifact_derivations.values() if item.parent_artifact_id == parent_artifact_id],
+            key=lambda item: (item.created_at, item.id),
+        )
+
+    def create_completed_artifact_inspection(
+        self,
+        *,
+        inspection: ArtifactInspectionRecord,
+        findings: list[ArtifactInspectionFindingRecord],
+        child_artifact: SourceArtifactRecord | None,
+        derivation: ArtifactDerivationRecord | None,
+        final_job_status: str,
+        updated_at: str,
+    ) -> ArtifactInspectionRecord:
+        job = self.get_job(trip_id=inspection.trip_id, import_job_id=inspection.import_job_id)
+        if job.artifact_id != inspection.artifact_id or job.status != "inspecting":
+            raise TripError("import_artifact_not_ready", "Artifact inspection cannot be completed from the current job state.", 409)
+        if child_artifact is not None:
+            self.artifacts[child_artifact.id] = copy.deepcopy(child_artifact)
+        self.artifact_inspections[inspection.id] = copy.deepcopy(inspection)
+        for item in findings:
+            self.artifact_inspection_findings[item.id] = copy.deepcopy(item)
+        if derivation is not None:
+            self.artifact_derivations[derivation.child_artifact_id] = copy.deepcopy(derivation)
+        self.jobs[job.id] = replace(
+            job,
+            status=final_job_status,
+            updated_at=updated_at,
+            warning_codes=list(inspection.warning_codes),
+            error_code=inspection.error_code,
+        )
+        return copy.deepcopy(inspection)
+
+    def get_latest_artifact_inspection_for_job(self, *, trip_id: str, import_job_id: str) -> ArtifactInspectionRecord | None:
+        inspections = [
+            item for item in self.artifact_inspections.values()
+            if item.trip_id == trip_id and item.import_job_id == import_job_id
+        ]
+        if not inspections:
+            return None
+        return copy.deepcopy(sorted(inspections, key=lambda item: (item.completed_at, item.attempt, item.id), reverse=True)[0])
+
+    def list_artifact_inspection_findings(self, *, inspection_id: str) -> list[ArtifactInspectionFindingRecord]:
+        return sorted(
+            [copy.deepcopy(item) for item in self.artifact_inspection_findings.values() if item.inspection_id == inspection_id],
+            key=lambda item: (item.created_at, item.id),
+        )
 
     def create_job(self, job: ImportJobRecord) -> ImportJobRecord:
         self.jobs[job.id] = copy.deepcopy(job)
@@ -1155,6 +1413,45 @@ def row_to_artifact_derivation(row) -> ArtifactDerivationRecord:
         input_checksum=row["input_checksum"],
         output_checksum=row["output_checksum"],
         metadata=dict(json_loads(row["metadata_json"], {})),
+        created_at=row["created_at"],
+    )
+
+
+def row_to_artifact_inspection(row) -> ArtifactInspectionRecord:
+    return ArtifactInspectionRecord(
+        id=row["id"],
+        trip_id=row["trip_id"],
+        import_job_id=row["import_job_id"],
+        artifact_id=row["artifact_id"],
+        attempt=row["attempt"],
+        schema_version=row["schema_version"],
+        inspector_version=row["inspector_version"],
+        declared_kind=row["declared_kind"],
+        detected_kind=row["detected_kind"],
+        declared_mime_type=row["declared_mime_type"],
+        detected_mime_type=row["detected_mime_type"],
+        status=row["status"],
+        classification=row["classification"],
+        byte_size=row["byte_size"],
+        content_checksum=row["content_checksum"],
+        metadata=dict(json_loads(row["metadata_json"], {})),
+        sanitized_artifact_id=row["sanitized_artifact_id"],
+        manifest_artifact_id=row["manifest_artifact_id"],
+        warning_codes=list(json_loads(row["warning_codes_json"], [])),
+        error_code=row["error_code"],
+        started_at=row["started_at"],
+        completed_at=row["completed_at"],
+    )
+
+
+def row_to_artifact_inspection_finding(row) -> ArtifactInspectionFindingRecord:
+    return ArtifactInspectionFindingRecord(
+        id=row["id"],
+        inspection_id=row["inspection_id"],
+        code=row["code"],
+        severity=row["severity"],
+        category=row["category"],
+        evidence=dict(json_loads(row["evidence_json"], {})),
         created_at=row["created_at"],
     )
 

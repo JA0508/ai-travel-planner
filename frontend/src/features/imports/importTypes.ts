@@ -15,8 +15,8 @@ export type ImportJob = {
   id: string;
   trip_id: string;
   artifact_id: string;
-  input_type: "text" | "url" | string;
-  status: "created" | "extracting" | "resolving" | "review_ready" | "partial" | "failed" | "committed" | "cancelled" | string;
+  input_type: "text" | "url" | "image" | "pdf" | string;
+  status: "created" | "receiving" | "quarantined" | "inspecting" | "artifact_ready" | "needs_password" | "rejected" | "extracting" | "resolving" | "review_ready" | "partial" | "failed" | "committed" | "cancelled" | string;
   extraction_schema_version: string;
   extractor_version: string;
   resolver_version: string;
@@ -159,5 +159,50 @@ export type ImportCommitResult = {
   ignored_mentions: number;
   unresolved_mentions: number;
   committed_at: string;
+  idempotent_replay: boolean;
+};
+
+export type SafeFinding = {
+  id: string;
+  inspection_id: string;
+  code: string;
+  severity: "info" | "warning" | "block";
+  category: string;
+  evidence: Record<string, string | number | boolean | null>;
+  created_at: string;
+};
+
+export type BinaryInspectionView = {
+  id: string;
+  trip_id: string;
+  import_job_id: string;
+  artifact_id: string;
+  attempt: number;
+  schema_version: string;
+  inspector_version: string;
+  declared_kind: "image" | "pdf" | string;
+  detected_kind: "image" | "pdf" | string;
+  declared_mime_type?: string | null;
+  detected_mime_type: string;
+  status: "artifact_ready" | "needs_password" | "rejected" | "inspection_failed" | string;
+  classification: "artifact_ready" | "needs_password" | "rejected" | "inspection_failed" | string;
+  byte_size: number;
+  content_checksum: string;
+  metadata: Record<string, string | number | boolean | null>;
+  sanitized_artifact_id?: string | null;
+  manifest_artifact_id?: string | null;
+  findings: SafeFinding[];
+  warning_codes: string[];
+  error_code?: string | null;
+  started_at: string;
+  completed_at: string;
+};
+
+export type BinaryImportCreateResponse = {
+  artifact: SourceArtifact;
+  job: ImportJob;
+  inspection: BinaryInspectionView;
+  derivation?: ArtifactDerivation | null;
+  duplicate_artifact: boolean;
   idempotent_replay: boolean;
 };

@@ -1,20 +1,36 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import tempfile
 from collections import defaultdict
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from fastapi import UploadFile
+
 from app.imports.artifacts import ArtifactStore, make_storage_key
+from app.imports.binary_detection import detect_binary_file
+from app.imports.binary_upload import delete_staged_file, stream_upload_to_staging
 from app.imports.document_extraction import DocumentTextExtractor, FetchedDocument
 from app.imports.domain import (
+    ARTIFACT_INSPECTION_SCHEMA_VERSION,
+    ARTIFACT_INSPECTOR_VERSION,
+    IMAGE_SANITIZER_VERSION,
     ArtifactDerivationRecord,
     ArtifactDerivationResponse,
+    ArtifactInspectionFindingRecord,
+    ArtifactInspectionFindingResponse,
+    ArtifactInspectionRecord,
+    ArtifactInspectionResponse,
+    BinaryImportCreateResponse,
     IMPORT_EXTRACTION_SCHEMA_VERSION,
     IMPORT_EXTRACTOR_VERSION,
     IMPORT_RESOLVER_VERSION,
     MAX_CONTEXT_CHARS,
+    PDF_MANIFEST_TRANSFORMER_VERSION,
     URL_DOCUMENT_TEXT_TRANSFORMER_VERSION,
     URL_IMPORT_FETCHER_VERSION,
     URL_IMPORT_POLICY_VERSION,
@@ -46,6 +62,8 @@ from app.imports.domain import (
     URLImportCreateResponse,
     generate_artifact_id,
     generate_artifact_derivation_id,
+    generate_artifact_inspection_finding_id,
+    generate_artifact_inspection_id,
     generate_import_attempt_id,
     generate_import_commit_id,
     generate_import_job_id,
@@ -57,6 +75,7 @@ from app.imports.domain import (
     source_checksum,
 )
 from app.imports.extraction import TextImportExtractor
+from app.imports.inspection_runner import ArtifactInspectionRunner, WorkerInspectionResult
 from app.imports.repository import ImportRepository
 from app.imports.resolution import PlaceMentionResolver
 from app.imports.url_fetcher import SecureURLFetcher
@@ -425,6 +444,176 @@ class TextImportService:
             derivation=derivation_to_response(derivation),
         )
 
+    async def create_binary_import(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        idempotency_key: str | None,
+        upload_file: UploadFile,
+        declared_kind: str,
+        original_label: str | None,
+    ) -> BinaryImportCreateResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        if not get_import_binary_enabled_inline():
+            raise TripError("import_binary_type_unsupported", "Binary artifact import is disabled.", 503)
+        self._require_trip_access(trip_id, capability)
+        max_stream_bytes = max(get_import_binary_max_image_bytes_inline(), get_import_binary_max_pdf_bytes_inline())
+        staging_root = Path(get_import_binary_staging_root_inline()) / trip_id / generate_import_attempt_id()
+        staged = await stream_upload_to_staging(
+            upload_file=upload_file,
+            staging_root=staging_root,
+            max_bytes=max_stream_bytes,
+            chunk_bytes=get_import_binary_upload_chunk_bytes_inline(),
+            original_label=original_label,
+        )
+        try:
+            detection = detect_binary_file(
+                path=staged.path,
+                declared_kind=declared_kind,
+                content_type=upload_file.content_type,
+                original_label=original_label or upload_file.filename,
+            )
+            if detection.detected_kind == "image" and staged.byte_size > get_import_binary_max_image_bytes_inline():
+                raise TripError("import_binary_too_large", "Image artifact exceeds the configured byte limit.", 413)
+            if detection.detected_kind == "pdf" and staged.byte_size > get_import_binary_max_pdf_bytes_inline():
+                raise TripError("import_binary_too_large", "PDF artifact exceeds the configured byte limit.", 413)
+            req_digest = request_digest(
+                {
+                    "operation": "create_binary_import",
+                    "trip_id": trip_id,
+                    "checksum": staged.checksum,
+                    "byte_size": staged.byte_size,
+                    "declared_kind": detection.declared_kind,
+                }
+            )
+            key_hash = hash_idempotency_key(idempotency_key.strip())
+            idempotent_job = self.import_repository.get_idempotent_job(
+                trip_id=trip_id,
+                scope="create_binary_import",
+                request_digest=req_digest,
+                idempotency_key_hash=key_hash,
+            )
+            if idempotent_job is not None:
+                artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=idempotent_job.artifact_id)
+                inspection = self._get_binary_inspection_or_raise(trip_id=trip_id, import_job_id=idempotent_job.id)
+                return BinaryImportCreateResponse(
+                    artifact=artifact_to_response(artifact),
+                    job=job_to_response(idempotent_job),
+                    inspection=self._inspection_response(inspection),
+                    derivation=derivation_to_response(self._binary_derivation(inspection)),
+                    duplicate_artifact=True,
+                    idempotent_replay=True,
+                )
+
+            now = format_utc(self.clock(timezone.utc))
+            artifact, duplicate_artifact = self._get_or_create_artifact_from_file(
+                trip_id=trip_id,
+                source_path=staged.path,
+                checksum=staged.checksum,
+                byte_size=staged.byte_size,
+                original_label=staged.sanitized_label,
+                now=now,
+                artifact_type="uploaded_image" if detection.detected_kind == "image" else "uploaded_pdf",
+                mime_type=detection.detected_mime_type,
+                storage_type="uploaded-image" if detection.detected_kind == "image" else "uploaded-pdf",
+                extension=detection.extension,
+            )
+            existing_job = self.import_repository.find_latest_job_for_artifact(
+                trip_id=trip_id,
+                artifact_id=artifact.id,
+            )
+            if existing_job is not None and existing_job.input_type == detection.detected_kind and existing_job.status in {
+                ImportJobStatus.ARTIFACT_READY.value,
+                ImportJobStatus.NEEDS_PASSWORD.value,
+                ImportJobStatus.REJECTED.value,
+                ImportJobStatus.FAILED.value,
+            }:
+                self.import_repository.remember_idempotent_job(
+                    trip_id=trip_id,
+                    scope="create_binary_import",
+                    request_digest=req_digest,
+                    idempotency_key_hash=key_hash,
+                    job_id=existing_job.id,
+                    created_at=now,
+                )
+                inspection = self._get_binary_inspection_or_raise(trip_id=trip_id, import_job_id=existing_job.id)
+                return BinaryImportCreateResponse(
+                    artifact=artifact_to_response(artifact),
+                    job=job_to_response(existing_job),
+                    inspection=self._inspection_response(inspection),
+                    derivation=derivation_to_response(self._binary_derivation(inspection)),
+                    duplicate_artifact=True,
+                )
+
+            job = self.import_repository.create_job(
+                ImportJobRecord(
+                    id=generate_import_job_id(),
+                    trip_id=trip_id,
+                    artifact_id=artifact.id,
+                    input_type=detection.detected_kind,
+                    status=ImportJobStatus.CREATED.value,
+                    extraction_schema_version=ARTIFACT_INSPECTION_SCHEMA_VERSION,
+                    extractor_version=ARTIFACT_INSPECTOR_VERSION,
+                    resolver_version="none",
+                    review_version=0,
+                    mention_count=0,
+                    warning_codes=list(detection.warning_codes),
+                    error_code=None,
+                    committed_at=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            self.import_repository.remember_idempotent_job(
+                trip_id=trip_id,
+                scope="create_binary_import",
+                request_digest=req_digest,
+                idempotency_key_hash=key_hash,
+                job_id=job.id,
+                created_at=now,
+            )
+            receiving = self.import_repository.update_job(
+                trip_id=trip_id,
+                import_job_id=job.id,
+                status=ImportJobStatus.RECEIVING.value,
+                updated_at=now,
+            )
+            quarantined = self.import_repository.update_job(
+                trip_id=trip_id,
+                import_job_id=receiving.id,
+                status=ImportJobStatus.QUARANTINED.value,
+                updated_at=format_utc(self.clock(timezone.utc)),
+            )
+            inspecting = self.import_repository.update_job(
+                trip_id=trip_id,
+                import_job_id=quarantined.id,
+                status=ImportJobStatus.INSPECTING.value,
+                updated_at=format_utc(self.clock(timezone.utc)),
+            )
+            inspection, child_artifact, derivation = self._inspect_quarantined_artifact(
+                job=inspecting,
+                artifact=artifact,
+                source_path=staged.path,
+                detection=detection,
+                declared_mime_type=upload_file.content_type,
+            )
+            final_job = self.import_repository.get_job(trip_id=trip_id, import_job_id=inspecting.id)
+            return BinaryImportCreateResponse(
+                artifact=artifact_to_response(artifact),
+                job=job_to_response(final_job),
+                inspection=self._inspection_response(inspection),
+                derivation=derivation_to_response(derivation),
+                duplicate_artifact=duplicate_artifact,
+            )
+        finally:
+            delete_staged_file(staged.path)
+            try:
+                staging_root.rmdir()
+            except OSError:
+                pass
+
     def get_import(
         self,
         *,
@@ -435,6 +624,19 @@ class TextImportService:
         self._require_trip_access(trip_id, capability)
         job = self.import_repository.get_job(trip_id=trip_id, import_job_id=import_job_id)
         artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=job.artifact_id)
+        if job.input_type in {"image", "pdf"}:
+            inspection = self.import_repository.get_latest_artifact_inspection_for_job(
+                trip_id=trip_id,
+                import_job_id=job.id,
+            )
+            if inspection is not None:
+                return ImportReviewResponse(
+                    artifact=artifact_to_response(artifact),
+                    job=job_to_response(job),
+                    mentions=[],
+                    source_fetch=None,
+                    derivation=derivation_to_response(self._binary_derivation(inspection)),
+                )
         return ImportReviewResponse(
             artifact=artifact_to_response(artifact),
             job=job_to_response(job),
@@ -452,11 +654,62 @@ class TextImportService:
     ) -> str:
         self._require_trip_access(trip_id, capability)
         job = self.import_repository.get_job(trip_id=trip_id, import_job_id=import_job_id)
+        if job.input_type in {"image", "pdf"}:
+            raise TripError("import_artifact_original_not_inlineable", "Original binary artifacts are not inlineable.", 409)
         artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=job.artifact_id)
         try:
             return self.artifact_store.get(storage_key=artifact.storage_key).decode("utf-8")
         except (FileNotFoundError, UnicodeDecodeError) as exc:
             raise TripError("import_artifact_not_found", "Import artifact text was not found.", 404) from exc
+
+    def get_binary_inspection(
+        self,
+        *,
+        trip_id: str,
+        import_job_id: str,
+        capability: str | None,
+    ) -> ArtifactInspectionResponse:
+        self._require_trip_access(trip_id, capability)
+        return self._inspection_response(self._get_binary_inspection_or_raise(trip_id=trip_id, import_job_id=import_job_id))
+
+    def get_sanitized_image_bytes(
+        self,
+        *,
+        trip_id: str,
+        import_job_id: str,
+        capability: str | None,
+    ) -> tuple[bytes, str]:
+        self._require_trip_access(trip_id, capability)
+        inspection = self._get_binary_inspection_or_raise(trip_id=trip_id, import_job_id=import_job_id)
+        if inspection.status != ImportJobStatus.ARTIFACT_READY.value or not inspection.sanitized_artifact_id:
+            raise TripError("import_artifact_not_ready", "Sanitized image artifact is not ready.", 409)
+        artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=inspection.sanitized_artifact_id)
+        try:
+            return self.artifact_store.get(storage_key=artifact.storage_key), artifact.mime_type
+        except FileNotFoundError as exc:
+            raise TripError("import_artifact_not_found", "Sanitized image artifact was not found.", 404) from exc
+
+    def _get_binary_inspection_or_raise(self, *, trip_id: str, import_job_id: str) -> ArtifactInspectionRecord:
+        job = self.import_repository.get_job(trip_id=trip_id, import_job_id=import_job_id)
+        if job.input_type not in {"image", "pdf"}:
+            raise TripError("import_artifact_not_ready", "Import job is not a binary artifact job.", 409)
+        inspection = self.import_repository.get_latest_artifact_inspection_for_job(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+        )
+        if inspection is None:
+            raise TripError("import_artifact_not_ready", "Artifact inspection is not complete.", 409)
+        return inspection
+
+    def _binary_derivation(self, inspection: ArtifactInspectionRecord) -> ArtifactDerivationRecord | None:
+        child_id = inspection.sanitized_artifact_id or inspection.manifest_artifact_id
+        if child_id is None:
+            return None
+        return self.import_repository.get_artifact_derivation_for_child(child_artifact_id=child_id)
+
+    def _inspection_response(self, inspection: ArtifactInspectionRecord) -> ArtifactInspectionResponse:
+        findings = self.import_repository.list_artifact_inspection_findings(inspection_id=inspection.id)
+        return inspection_to_response(inspection, findings=findings)
 
     def record_decision(
         self,
@@ -704,6 +957,253 @@ class TextImportService:
             created_at=now,
         )
         return self.import_repository.create_artifact(artifact), False
+
+    def _get_or_create_artifact_from_file(
+        self,
+        *,
+        trip_id: str,
+        source_path: Path,
+        checksum: str,
+        byte_size: int,
+        original_label: str | None,
+        now: str,
+        artifact_type: str,
+        mime_type: str,
+        storage_type: str,
+        extension: str,
+    ) -> tuple[SourceArtifactRecord, bool]:
+        existing = self.import_repository.find_artifact_by_checksum(
+            trip_id=trip_id,
+            artifact_type=artifact_type,
+            checksum=checksum,
+        )
+        if existing is not None:
+            return existing, True
+        storage_key = make_storage_key(artifact_type=storage_type, extension=extension)
+        self.artifact_store.put_file(storage_key=storage_key, source_path=source_path)
+        artifact = SourceArtifactRecord(
+            id=generate_artifact_id(),
+            trip_id=trip_id,
+            artifact_type=artifact_type,
+            mime_type=mime_type,
+            content_checksum=checksum,
+            byte_size=byte_size,
+            charset="binary",
+            privacy_level="private",
+            storage_key=storage_key,
+            original_label=original_label,
+            created_at=now,
+        )
+        return self.import_repository.create_artifact(artifact), False
+
+    def _stage_child_artifact_from_file(
+        self,
+        *,
+        trip_id: str,
+        source_path: Path,
+        checksum: str,
+        byte_size: int,
+        now: str,
+        artifact_type: str,
+        mime_type: str,
+        storage_type: str,
+        extension: str,
+    ) -> SourceArtifactRecord:
+        storage_key = make_storage_key(artifact_type=storage_type, extension=extension)
+        self.artifact_store.put_file(storage_key=storage_key, source_path=source_path)
+        return SourceArtifactRecord(
+            id=generate_artifact_id(),
+            trip_id=trip_id,
+            artifact_type=artifact_type,
+            mime_type=mime_type,
+            content_checksum=checksum,
+            byte_size=byte_size,
+            charset="binary",
+            privacy_level="private",
+            storage_key=storage_key,
+            original_label=None,
+            created_at=now,
+        )
+
+    def _stage_child_artifact_bytes(
+        self,
+        *,
+        trip_id: str,
+        content_bytes: bytes,
+        checksum: str,
+        now: str,
+        artifact_type: str,
+        mime_type: str,
+        charset: str,
+        storage_type: str,
+        extension: str,
+    ) -> SourceArtifactRecord:
+        storage_key = make_storage_key(artifact_type=storage_type, extension=extension)
+        self.artifact_store.put(storage_key=storage_key, content=content_bytes)
+        return SourceArtifactRecord(
+            id=generate_artifact_id(),
+            trip_id=trip_id,
+            artifact_type=artifact_type,
+            mime_type=mime_type,
+            content_checksum=checksum,
+            byte_size=len(content_bytes),
+            charset=charset,
+            privacy_level="private",
+            storage_key=storage_key,
+            original_label=None,
+            created_at=now,
+        )
+
+    def _inspect_quarantined_artifact(
+        self,
+        *,
+        job: ImportJobRecord,
+        artifact: SourceArtifactRecord,
+        source_path: Path,
+        detection,
+        declared_mime_type: str | None,
+    ) -> tuple[ArtifactInspectionRecord, SourceArtifactRecord | None, ArtifactDerivationRecord | None]:
+        started_at = format_utc(self.clock(timezone.utc))
+        sanitized_tmp = Path(tempfile.gettempdir()) / f"sanitized-{job.id}.bin" if detection.detected_kind == "image" else None
+        runner = ArtifactInspectionRunner(
+            timeout_seconds=get_import_inspection_timeout_seconds_inline(),
+            max_memory_mb=get_import_inspection_max_memory_mb_inline(),
+            max_output_bytes=get_import_inspection_max_output_bytes_inline(),
+        )
+        try:
+            worker_result = runner.inspect(
+                path=source_path,
+                declared_kind=detection.declared_kind,
+                detected_mime_type=detection.detected_mime_type,
+                sanitized_output_path=sanitized_tmp,
+                limits=binary_inspection_limits(),
+            )
+        except TripError as exc:
+            worker_result = WorkerInspectionResult(
+                schema_version=ARTIFACT_INSPECTION_SCHEMA_VERSION,
+                inspector_version=ARTIFACT_INSPECTOR_VERSION,
+                status="inspection_failed",
+                classification="inspection_failed",
+                error_code=exc.code,
+                metadata={},
+                findings=[],
+            )
+        completed_at = format_utc(self.clock(timezone.utc))
+        child_artifact: SourceArtifactRecord | None = None
+        derivation: ArtifactDerivationRecord | None = None
+        try:
+            if worker_result.status == ImportJobStatus.ARTIFACT_READY.value and detection.detected_kind == "image":
+                if sanitized_tmp is None or not sanitized_tmp.exists():
+                    raise TripError("import_image_metadata_sanitization_failed", "Sanitized image derivative was not created.", 422)
+                child_artifact = self._stage_child_artifact_from_file(
+                    trip_id=job.trip_id,
+                    source_path=sanitized_tmp,
+                    checksum=file_checksum(sanitized_tmp),
+                    byte_size=sanitized_tmp.stat().st_size,
+                    now=completed_at,
+                    artifact_type="sanitized_image",
+                    mime_type=str(worker_result.metadata.get("sanitized_derivative_mime_type") or "image/jpeg"),
+                    storage_type="sanitized-image",
+                    extension="png" if worker_result.metadata.get("sanitized_derivative_mime_type") == "image/png" else "jpg",
+                )
+                derivation = ArtifactDerivationRecord(
+                    id=generate_artifact_derivation_id(),
+                    parent_artifact_id=artifact.id,
+                    child_artifact_id=child_artifact.id,
+                    derivation_type="image_metadata_stripping",
+                    transformer_version=IMAGE_SANITIZER_VERSION,
+                    input_checksum=artifact.content_checksum,
+                    output_checksum=child_artifact.content_checksum,
+                    metadata={"metadata_stripped": True, "orientation_normalized": bool(worker_result.metadata.get("orientation_present"))},
+                    created_at=completed_at,
+                )
+            elif worker_result.status == ImportJobStatus.ARTIFACT_READY.value and detection.detected_kind == "pdf":
+                manifest = build_pdf_manifest_payload(
+                    artifact=artifact,
+                    worker_result=worker_result,
+                    detection=detection,
+                )
+                manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                child_artifact = self._stage_child_artifact_bytes(
+                    trip_id=job.trip_id,
+                    content_bytes=manifest_bytes,
+                    checksum=source_checksum(manifest_bytes),
+                    now=completed_at,
+                    artifact_type="document_manifest",
+                    mime_type="application/json",
+                    charset="utf-8",
+                    storage_type="document-manifest",
+                    extension="json",
+                )
+                derivation = ArtifactDerivationRecord(
+                    id=generate_artifact_derivation_id(),
+                    parent_artifact_id=artifact.id,
+                    child_artifact_id=child_artifact.id,
+                    derivation_type="pdf_structural_inspection",
+                    transformer_version=PDF_MANIFEST_TRANSFORMER_VERSION,
+                    input_checksum=artifact.content_checksum,
+                    output_checksum=child_artifact.content_checksum,
+                    metadata={"manifest_schema_version": ARTIFACT_INSPECTION_SCHEMA_VERSION},
+                    created_at=completed_at,
+                )
+            inspection_id = generate_artifact_inspection_id()
+            findings = [
+                ArtifactInspectionFindingRecord(
+                    id=generate_artifact_inspection_finding_id(),
+                    inspection_id=inspection_id,
+                    code=item.code,
+                    severity=item.severity,
+                    category=item.category,
+                    evidence=safe_evidence(item.evidence),
+                    created_at=completed_at,
+                )
+                for item in worker_result.findings
+            ]
+            inspection = ArtifactInspectionRecord(
+                id=inspection_id,
+                trip_id=job.trip_id,
+                import_job_id=job.id,
+                artifact_id=artifact.id,
+                attempt=1,
+                schema_version=worker_result.schema_version,
+                inspector_version=worker_result.inspector_version,
+                declared_kind=detection.declared_kind,
+                detected_kind=detection.detected_kind,
+                declared_mime_type=declared_mime_type,
+                detected_mime_type=detection.detected_mime_type,
+                status=worker_result.status,
+                classification=worker_result.classification,
+                byte_size=artifact.byte_size,
+                content_checksum=artifact.content_checksum,
+                metadata=safe_inspection_metadata(worker_result.metadata),
+                sanitized_artifact_id=child_artifact.id if child_artifact and detection.detected_kind == "image" else None,
+                manifest_artifact_id=child_artifact.id if child_artifact and detection.detected_kind == "pdf" else None,
+                warning_codes=sorted({item.code for item in findings if item.severity == "warning"}),
+                error_code=worker_result.error_code,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+            final_status = worker_result.status if worker_result.status in {
+                ImportJobStatus.ARTIFACT_READY.value,
+                ImportJobStatus.NEEDS_PASSWORD.value,
+                ImportJobStatus.REJECTED.value,
+            } else ImportJobStatus.FAILED.value
+            self.import_repository.create_completed_artifact_inspection(
+                inspection=inspection,
+                findings=findings,
+                child_artifact=child_artifact,
+                derivation=derivation,
+                final_job_status=final_status,
+                updated_at=completed_at,
+            )
+            return inspection, child_artifact, derivation
+        except Exception:
+            if child_artifact is not None:
+                self.artifact_store.delete(storage_key=child_artifact.storage_key)
+            raise
+        finally:
+            if sanitized_tmp is not None:
+                delete_staged_file(sanitized_tmp)
 
     def _process_inline(self, *, job: ImportJobRecord, source_text: str) -> ImportJobRecord:
         started = format_utc(self.clock(timezone.utc))
@@ -1017,6 +1517,142 @@ def get_import_url_max_text_bytes_inline() -> int:
     return get_import_url_max_text_bytes()
 
 
+def get_import_binary_enabled_inline() -> bool:
+    from app.core.runtime_config import get_import_binary_enabled
+
+    return get_import_binary_enabled()
+
+
+def get_import_binary_max_image_bytes_inline() -> int:
+    from app.core.runtime_config import get_import_binary_max_image_bytes
+
+    return get_import_binary_max_image_bytes()
+
+
+def get_import_binary_max_pdf_bytes_inline() -> int:
+    from app.core.runtime_config import get_import_binary_max_pdf_bytes
+
+    return get_import_binary_max_pdf_bytes()
+
+
+def get_import_binary_upload_chunk_bytes_inline() -> int:
+    from app.core.runtime_config import get_import_binary_upload_chunk_bytes
+
+    return get_import_binary_upload_chunk_bytes()
+
+
+def get_import_binary_staging_root_inline() -> str:
+    from app.core.runtime_config import get_import_binary_staging_root
+
+    return get_import_binary_staging_root()
+
+
+def get_import_inspection_timeout_seconds_inline() -> float:
+    from app.core.runtime_config import get_import_inspection_timeout_seconds
+
+    return get_import_inspection_timeout_seconds()
+
+
+def get_import_inspection_max_memory_mb_inline() -> int:
+    from app.core.runtime_config import get_import_inspection_max_memory_mb
+
+    return get_import_inspection_max_memory_mb()
+
+
+def get_import_inspection_max_output_bytes_inline() -> int:
+    from app.core.runtime_config import get_import_inspection_max_output_bytes
+
+    return get_import_inspection_max_output_bytes()
+
+
+def binary_inspection_limits() -> dict[str, Any]:
+    from app.core.runtime_config import (
+        get_import_image_max_dimension,
+        get_import_image_max_pixels,
+        get_import_pdf_max_objects,
+        get_import_pdf_max_pages,
+    )
+
+    return {
+        "max_image_pixels": get_import_image_max_pixels(),
+        "max_image_dimension": get_import_image_max_dimension(),
+        "max_aspect_ratio": 20.0,
+        "max_pdf_pages": get_import_pdf_max_pages(),
+        "max_pdf_objects": get_import_pdf_max_objects(),
+        "max_pdf_scan_nodes": 3000,
+    }
+
+
+def file_checksum(path: Path) -> str:
+    checksum = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            checksum.update(chunk)
+    return checksum.hexdigest()
+
+
+def build_pdf_manifest_payload(*, artifact: SourceArtifactRecord, worker_result: WorkerInspectionResult, detection) -> dict[str, Any]:
+    metadata = safe_inspection_metadata(worker_result.metadata)
+    return {
+        "schema_version": ARTIFACT_INSPECTION_SCHEMA_VERSION,
+        "inspector_version": worker_result.inspector_version,
+        "artifact_checksum": artifact.content_checksum,
+        "classification": worker_result.classification,
+        "detected_mime_type": detection.detected_mime_type,
+        "page_count": metadata.get("page_count"),
+        "encrypted": metadata.get("encrypted"),
+        "presence_flags": {
+            "acroform_present": metadata.get("acroform_present", False),
+            "xfa_present": metadata.get("xfa_present", False),
+            "external_uri_present": metadata.get("external_uri_present", False),
+            "active_content_present": metadata.get("active_content_present", False),
+            "embedded_files_present": metadata.get("embedded_files_present", False),
+            "unusual_page_dimensions": metadata.get("unusual_page_dimensions", False),
+        },
+        "finding_codes": [item.code for item in worker_result.findings],
+        "warning_codes": [item.code for item in worker_result.findings if item.severity == "warning"],
+    }
+
+
+def safe_inspection_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "detected_format",
+        "width",
+        "height",
+        "pixel_count",
+        "frame_count",
+        "metadata_present",
+        "gps_metadata_present",
+        "orientation_present",
+        "sanitized_derivative_mime_type",
+        "encrypted",
+        "page_count",
+        "object_count",
+        "acroform_present",
+        "xfa_present",
+        "external_uri_present",
+        "active_content_present",
+        "embedded_files_present",
+        "unusual_page_dimensions",
+    }
+    safe: dict[str, Any] = {}
+    for key in allowed_keys:
+        value = metadata.get(key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe[key] = value
+    return safe
+
+
+def safe_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in evidence.items():
+        if isinstance(value, (bool, int, float)):
+            safe[key] = value
+        elif isinstance(value, str) and len(value) <= 80 and "/" not in value and "\\" not in value:
+            safe[key] = value
+    return safe
+
+
 def infer_city_from_snapshot(snapshot: dict[str, Any]) -> str | None:
     trip_intent = snapshot.get("trip_intent")
     if isinstance(trip_intent, dict):
@@ -1192,6 +1828,49 @@ def derivation_to_response(derivation: ArtifactDerivationRecord | None) -> Artif
         input_checksum=derivation.input_checksum,
         output_checksum=derivation.output_checksum,
         created_at=derivation.created_at,
+    )
+
+
+def inspection_to_response(
+    inspection: ArtifactInspectionRecord,
+    *,
+    findings: list[ArtifactInspectionFindingRecord],
+) -> ArtifactInspectionResponse:
+    return ArtifactInspectionResponse(
+        id=inspection.id,
+        trip_id=inspection.trip_id,
+        import_job_id=inspection.import_job_id,
+        artifact_id=inspection.artifact_id,
+        attempt=inspection.attempt,
+        schema_version=inspection.schema_version,
+        inspector_version=inspection.inspector_version,
+        declared_kind=inspection.declared_kind,
+        detected_kind=inspection.detected_kind,
+        declared_mime_type=inspection.declared_mime_type,
+        detected_mime_type=inspection.detected_mime_type,
+        status=inspection.status,
+        classification=inspection.classification,
+        byte_size=inspection.byte_size,
+        content_checksum=inspection.content_checksum,
+        metadata=inspection.metadata,
+        sanitized_artifact_id=inspection.sanitized_artifact_id,
+        manifest_artifact_id=inspection.manifest_artifact_id,
+        findings=[
+            ArtifactInspectionFindingResponse(
+                id=item.id,
+                inspection_id=item.inspection_id,
+                code=item.code,
+                severity=item.severity,
+                category=item.category,
+                evidence=item.evidence,
+                created_at=item.created_at,
+            )
+            for item in findings
+        ],
+        warning_codes=inspection.warning_codes,
+        error_code=inspection.error_code,
+        started_at=inspection.started_at,
+        completed_at=inspection.completed_at,
     )
 
 

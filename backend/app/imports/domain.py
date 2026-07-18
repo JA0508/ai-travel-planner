@@ -15,11 +15,21 @@ IMPORT_RESOLVER_VERSION = "deterministic-place-v1"
 URL_IMPORT_POLICY_VERSION = "secure-url-policy-v1"
 URL_IMPORT_FETCHER_VERSION = "secure-url-fetcher-v1"
 URL_DOCUMENT_TEXT_TRANSFORMER_VERSION = "document-text-v1"
+ARTIFACT_INSPECTION_SCHEMA_VERSION = "1.0"
+ARTIFACT_INSPECTOR_VERSION = "binary-inspector-v1"
+IMAGE_SANITIZER_VERSION = "image-sanitizer-v1"
+PDF_MANIFEST_TRANSFORMER_VERSION = "pdf-manifest-v1"
 MAX_CONTEXT_CHARS = 80
 
 
 class ImportJobStatus(str, Enum):
     CREATED = "created"
+    RECEIVING = "receiving"
+    QUARANTINED = "quarantined"
+    INSPECTING = "inspecting"
+    ARTIFACT_READY = "artifact_ready"
+    NEEDS_PASSWORD = "needs_password"
+    REJECTED = "rejected"
     FETCHING = "fetching"
     EXTRACTING_CONTENT = "extracting_content"
     EXTRACTING = "extracting"
@@ -59,11 +69,31 @@ class ReviewAction(str, Enum):
 
 LEGAL_IMPORT_TRANSITIONS: dict[str, set[str]] = {
     ImportJobStatus.CREATED.value: {
+        ImportJobStatus.RECEIVING.value,
         ImportJobStatus.FETCHING.value,
         ImportJobStatus.EXTRACTING.value,
         ImportJobStatus.CANCELLED.value,
         ImportJobStatus.FAILED.value,
     },
+    ImportJobStatus.RECEIVING.value: {
+        ImportJobStatus.QUARANTINED.value,
+        ImportJobStatus.FAILED.value,
+        ImportJobStatus.CANCELLED.value,
+    },
+    ImportJobStatus.QUARANTINED.value: {
+        ImportJobStatus.INSPECTING.value,
+        ImportJobStatus.FAILED.value,
+        ImportJobStatus.CANCELLED.value,
+    },
+    ImportJobStatus.INSPECTING.value: {
+        ImportJobStatus.ARTIFACT_READY.value,
+        ImportJobStatus.NEEDS_PASSWORD.value,
+        ImportJobStatus.REJECTED.value,
+        ImportJobStatus.FAILED.value,
+    },
+    ImportJobStatus.ARTIFACT_READY.value: set(),
+    ImportJobStatus.NEEDS_PASSWORD.value: set(),
+    ImportJobStatus.REJECTED.value: set(),
     ImportJobStatus.FETCHING.value: {
         ImportJobStatus.EXTRACTING_CONTENT.value,
         ImportJobStatus.PARTIAL.value,
@@ -281,6 +311,51 @@ class ArtifactDerivationResponse(BaseModel):
     created_at: str
 
 
+class ArtifactInspectionFindingResponse(BaseModel):
+    id: str
+    inspection_id: str
+    code: str
+    severity: Literal["info", "warning", "block"]
+    category: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class ArtifactInspectionResponse(BaseModel):
+    id: str
+    trip_id: str
+    import_job_id: str
+    artifact_id: str
+    attempt: int
+    schema_version: str
+    inspector_version: str
+    declared_kind: str
+    detected_kind: str
+    declared_mime_type: str | None = None
+    detected_mime_type: str
+    status: str
+    classification: str
+    byte_size: int
+    content_checksum: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    sanitized_artifact_id: str | None = None
+    manifest_artifact_id: str | None = None
+    findings: list[ArtifactInspectionFindingResponse] = Field(default_factory=list)
+    warning_codes: list[str] = Field(default_factory=list)
+    error_code: str | None = None
+    started_at: str
+    completed_at: str
+
+
+class BinaryImportCreateResponse(BaseModel):
+    artifact: SourceArtifactResponse
+    job: ImportJobResponse
+    inspection: ArtifactInspectionResponse
+    derivation: ArtifactDerivationResponse | None = None
+    duplicate_artifact: bool = False
+    idempotent_replay: bool = False
+
+
 class URLImportCreateResponse(TextImportCreateResponse):
     source_fetch: URLFetchSnapshotResponse | None = None
     derivation: ArtifactDerivationResponse | None = None
@@ -495,6 +570,43 @@ class ArtifactDerivationRecord:
     created_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class ArtifactInspectionRecord:
+    id: str
+    trip_id: str
+    import_job_id: str
+    artifact_id: str
+    attempt: int
+    schema_version: str
+    inspector_version: str
+    declared_kind: str
+    detected_kind: str
+    declared_mime_type: str | None
+    detected_mime_type: str
+    status: str
+    classification: str
+    byte_size: int
+    content_checksum: str
+    metadata: dict[str, Any]
+    sanitized_artifact_id: str | None
+    manifest_artifact_id: str | None
+    warning_codes: list[str]
+    error_code: str | None
+    started_at: str
+    completed_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactInspectionFindingRecord:
+    id: str
+    inspection_id: str
+    code: str
+    severity: str
+    category: str
+    evidence: dict[str, Any]
+    created_at: str
+
+
 def generate_artifact_id() -> str:
     return f"src_{uuid4().hex}"
 
@@ -529,6 +641,14 @@ def generate_url_fetch_snapshot_id() -> str:
 
 def generate_artifact_derivation_id() -> str:
     return f"art_der_{uuid4().hex}"
+
+
+def generate_artifact_inspection_id() -> str:
+    return f"art_ins_{uuid4().hex}"
+
+
+def generate_artifact_inspection_finding_id() -> str:
+    return f"art_find_{uuid4().hex}"
 
 
 def source_checksum(content: bytes) -> str:

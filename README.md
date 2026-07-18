@@ -144,8 +144,10 @@ The repository currently contains a substantial planning foundation:
 - saved completion undo as a compensating TripRevision
 - text SourceArtifact import with span-level mention provenance
 - secure URL import for public static HTML/plain-text sources
+- quarantine-first image/PDF artifact intake with safe structural inspection
+- metadata-stripped sanitized image preview and PDF structural manifest lineage
 - Import Review Inbox for confirming imported place mentions into TripCandidate
-- import evaluation gate with fixture-driven text and URL invariants
+- import evaluation gate with fixture-driven text, URL, image, and PDF invariants
 - fixture-driven product verification
 
 > Development branches may contain additional in-review capabilities. Required CI
@@ -222,6 +224,16 @@ Backend
               route preview
               stay/departure context
 ```
+
+### Binary Artifact Intake
+
+Image/PDF upload is an artifact inspection boundary, not OCR. The backend
+streams multipart uploads into private staging, detects type from content,
+quarantines the original as `uploaded_image` or `uploaded_pdf`, runs isolated
+structural inspection, and stores explicit findings. Accepted images create a
+metadata-stripped `sanitized_image`; accepted PDFs create a private
+`document_manifest`. Binary imports do not create mentions, TripCandidates,
+TripRevisions, planner calls, or mutation calls.
 
 ### Required architecture boundary
 
@@ -463,7 +475,7 @@ npm run build
 
 `npm run test:workspace` covers the route workspace characterization tests,
 Trip persistence state/storage helpers, and Import Review Inbox state/view-model
-tests.
+tests, including Image/PDF artifact intake privacy and inspection UI state.
 
 ### Backend
 

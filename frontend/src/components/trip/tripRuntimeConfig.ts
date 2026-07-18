@@ -44,9 +44,19 @@ export const TRIP_API_ENDPOINTS = {
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/imports/text`),
   createUrlImport: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/imports/url`),
+  createBinaryImport: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/imports/artifacts`),
   getTextImport: (tripId: string, importJobId: string) =>
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}`,
+    ),
+  getBinaryInspection: (tripId: string, importJobId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/inspection`,
+    ),
+  getSanitizedImage: (tripId: string, importJobId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/sanitized-image`,
     ),
   getTextImportArtifact: (tripId: string, importJobId: string) =>
     buildApiUrl(

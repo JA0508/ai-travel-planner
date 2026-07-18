@@ -1,6 +1,6 @@
-import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
+import { getTripJson, postTripJson, type TripApiResult } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
-import type { ImportCommitResult, ImportReviewResponse, TextImportCreateResponse, URLImportCreateResponse } from "./importTypes";
+import type { BinaryImportCreateResponse, BinaryInspectionView, ImportCommitResult, ImportReviewResponse, TextImportCreateResponse, URLImportCreateResponse } from "./importTypes";
 
 export async function submitTextImport(tripId: string, text: string, idempotencyKey: string) {
   return postTripJson<TextImportCreateResponse>(
@@ -22,6 +22,48 @@ export async function submitUrlImport(tripId: string, url: string, idempotencyKe
   );
 }
 
+export async function submitBinaryImport(
+  tripId: string,
+  file: File,
+  declaredKind: "image" | "pdf",
+  idempotencyKey: string,
+) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("declared_kind", declaredKind);
+  formData.append("original_label", declaredKind === "image" ? "Image artifact" : "PDF artifact");
+  return postTripForm<BinaryImportCreateResponse>(
+    TRIP_API_ENDPOINTS.createBinaryImport(tripId),
+    formData,
+    "导入图片或 PDF 失败",
+    { "X-Idempotency-Key": idempotencyKey },
+  );
+}
+
+export async function fetchBinaryInspection(tripId: string, importJobId: string) {
+  return getTripJson<BinaryInspectionView>(
+    TRIP_API_ENDPOINTS.getBinaryInspection(tripId, importJobId),
+    "刷新 artifact inspection 失败",
+  );
+}
+
+export async function fetchSanitizedImageBlob(tripId: string, importJobId: string) {
+  const response = await fetch(TRIP_API_ENDPOINTS.getSanitizedImage(tripId, importJobId), {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const payload = await readJsonSafely(response);
+    const error = extractTripError(payload);
+    return {
+      ok: false as const,
+      code: error?.code ?? "import_artifact_fetch_failed",
+      message: error?.message ?? "获取 metadata-stripped preview 失败",
+    };
+  }
+  return { ok: true as const, data: await response.blob() };
+}
+
 export async function fetchImportArtifact(tripId: string, importJobId: string) {
   const response = await fetch(TRIP_API_ENDPOINTS.getTextImportArtifact(tripId, importJobId), {
     credentials: "include",
@@ -38,6 +80,58 @@ export async function fetchImportReview(tripId: string, importJobId: string) {
     TRIP_API_ENDPOINTS.getTextImport(tripId, importJobId),
     "刷新导入审阅失败",
   );
+}
+
+async function postTripForm<TData>(
+  url: string,
+  formData: FormData,
+  fallbackMessage: string,
+  headers: Record<string, string>,
+): Promise<TripApiResult<TData>> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      body: formData,
+      credentials: "include",
+      headers,
+    });
+  } catch {
+    return { ok: false, message: "无法连接后端接口。" };
+  }
+  const data = await readJsonSafely(response);
+  if (!response.ok) {
+    const error = extractTripError(data);
+    return {
+      ok: false,
+      message: error?.message ?? fallbackMessage,
+      code: error?.code,
+      recoverable: true,
+    };
+  }
+  return { ok: true, data: data as TData };
+}
+
+async function readJsonSafely(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function extractTripError(data: unknown): { code?: string; message?: string } | null {
+  if (typeof data !== "object" || data === null || !("error" in data)) {
+    return null;
+  }
+  const error = (data as { error?: unknown }).error;
+  if (typeof error !== "object" || error === null) {
+    return null;
+  }
+  return {
+    code: "code" in error ? String((error as { code?: unknown }).code ?? "") : undefined,
+    message: "message" in error ? String((error as { message?: unknown }).message ?? "") : undefined,
+  };
 }
 
 export async function decideImportMention(
