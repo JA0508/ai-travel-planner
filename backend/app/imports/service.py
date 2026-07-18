@@ -1197,10 +1197,12 @@ class TextImportService:
                 updated_at=completed_at,
             )
             return inspection, child_artifact, derivation
-        except Exception:
+        except Exception as exc:
             if child_artifact is not None:
                 self.artifact_store.delete(storage_key=child_artifact.storage_key)
-            raise
+            if isinstance(exc, TripError):
+                raise
+            raise TripError("import_binary_quarantine_failed", "Artifact inspection result could not be persisted.", 500) from exc
         finally:
             if sanitized_tmp is not None:
                 delete_staged_file(sanitized_tmp)

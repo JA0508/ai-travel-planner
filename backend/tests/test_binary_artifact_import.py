@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import io
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,7 +14,11 @@ from pypdf import PdfWriter
 from pypdf.generic import DictionaryObject, NameObject
 
 from app.imports.dependencies import reset_import_dependencies_for_tests
+from app.imports.binary_upload import stream_upload_to_staging
+from app.imports.inspection_runner import ArtifactInspectionRunner
+from app.imports.repository import SQLiteImportRepository
 from app.main import app
+from app.trips.errors import TripError
 from app.trips.dependencies import reset_trip_repository_cache_for_tests
 from tests.test_trip_persistence_api import simple_itinerary
 
@@ -148,9 +154,87 @@ class BinaryArtifactImportTests(unittest.TestCase):
         self.assertEqual(inspection.status_code, 200)
         self.assertEqual(inspection.json()["artifact_id"], first.json()["artifact"]["id"])
 
+    def test_stream_upload_stops_after_limit_and_cleans_staging(self) -> None:
+        class ChunkedUpload:
+            filename = "../dangerous.png"
+            content_type = "image/png"
 
-def create_saved_trip() -> tuple[TestClient, str]:
-    client = TestClient(app)
+            def __init__(self) -> None:
+                self.reads = 0
+                self.closed = False
+                self.chunks = [b"abcd", b"efgh", b"ijkl", b"mnop"]
+
+            async def read(self, _chunk_bytes: int) -> bytes:
+                self.reads += 1
+                return self.chunks.pop(0) if self.chunks else b""
+
+            async def close(self) -> None:
+                self.closed = True
+
+        upload = ChunkedUpload()
+        staging_root = Path(self.temp_dir.name) / "upload-staging"
+        with self.assertRaises(TripError) as raised:
+            asyncio.run(
+                stream_upload_to_staging(
+                    upload_file=upload,  # type: ignore[arg-type]
+                    staging_root=staging_root,
+                    max_bytes=6,
+                    chunk_bytes=4,
+                    original_label=upload.filename,
+                )
+            )
+        self.assertEqual(raised.exception.code, "import_binary_too_large")
+        self.assertEqual(upload.reads, 2)
+        self.assertTrue(upload.closed)
+        self.assertEqual(list(staging_root.glob("*")), [])
+
+    def test_inspection_runner_enforces_timeout_worker_failure_and_invalid_output(self) -> None:
+        runner = ArtifactInspectionRunner(timeout_seconds=0.01, max_memory_mb=64, max_output_bytes=64)
+        source = Path(self.temp_dir.name) / "artifact.bin"
+        source.write_bytes(valid_image("PNG"))
+
+        with patch("app.imports.inspection_runner.subprocess.Popen", return_value=FakeProcess(timeout=True)), patch(
+            "app.imports.inspection_runner.os.killpg"
+        ) as killpg:
+            with self.assertRaises(TripError) as raised:
+                runner.inspect(path=source, declared_kind="image", detected_mime_type="image/png", sanitized_output_path=None, limits={})
+            self.assertEqual(raised.exception.code, "import_inspection_timeout")
+            killpg.assert_called_once()
+
+        with patch("app.imports.inspection_runner.subprocess.Popen", return_value=FakeProcess(returncode=2)):
+            with self.assertRaises(TripError) as raised:
+                runner.inspect(path=source, declared_kind="image", detected_mime_type="image/png", sanitized_output_path=None, limits={})
+            self.assertEqual(raised.exception.code, "import_inspection_worker_failed")
+
+        with patch("app.imports.inspection_runner.subprocess.Popen", return_value=FakeProcess(stdout=b"not-json")):
+            with self.assertRaises(TripError) as raised:
+                runner.inspect(path=source, declared_kind="image", detected_mime_type="image/png", sanitized_output_path=None, limits={})
+            self.assertEqual(raised.exception.code, "import_inspection_output_invalid")
+
+        with patch("app.imports.inspection_runner.subprocess.Popen", return_value=FakeProcess(stdout=b"x" * 65)):
+            with self.assertRaises(TripError) as raised:
+                runner.inspect(path=source, declared_kind="image", detected_mime_type="image/png", sanitized_output_path=None, limits={})
+            self.assertEqual(raised.exception.code, "import_inspection_output_invalid")
+
+    def test_derivative_bytes_are_removed_when_inspection_transaction_fails(self) -> None:
+        client, trip_id = create_saved_trip(raise_server_exceptions=False)
+
+        def fail_after_derivative_write(*_args, **_kwargs):
+            raise RuntimeError("forced transaction failure")
+
+        with patch.object(SQLiteImportRepository, "create_completed_artifact_inspection", fail_after_derivative_write):
+            failed = upload_binary(client, trip_id, valid_image("PNG"), "image", "guide.png", "image/png")
+
+        self.assertEqual(failed.status_code, 500)
+        self.assertEqual(failed.json()["error"]["code"], "import_binary_quarantine_failed")
+        self.assertNotIn(str(self.temp_dir.name), failed.text)
+        artifacts_root = Path(self.temp_dir.name) / "artifacts"
+        self.assertEqual(list((artifacts_root / "sanitized-image").glob("*")), [])
+        self.assertTrue(list((artifacts_root / "uploaded-image").glob("*")))
+
+
+def create_saved_trip(*, raise_server_exceptions: bool = True) -> tuple[TestClient, str]:
+    client = TestClient(app, raise_server_exceptions=raise_server_exceptions)
     with patch("app.trips.service.build_itinerary_response", return_value=simple_itinerary()):
         created = client.post(
             "/trips/plan",
@@ -218,3 +302,23 @@ def javascript_pdf() -> bytes:
     buffer = io.BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
+
+
+class FakeProcess:
+    pid = 12345
+
+    def __init__(self, *, stdout: bytes = b"{}", stderr: bytes = b"", returncode: int = 0, timeout: bool = False) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+        self.timeout = timeout
+        self.killed = False
+
+    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        if timeout is not None and self.timeout:
+            self.timeout = False
+            raise subprocess.TimeoutExpired(cmd=["inspection-worker"], timeout=timeout)
+        return self.stdout, self.stderr
+
+    def kill(self) -> None:
+        self.killed = True
