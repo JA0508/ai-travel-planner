@@ -11,6 +11,9 @@ class ArtifactStore(Protocol):
     def put(self, *, storage_key: str, content: bytes) -> None:
         ...
 
+    def put_file(self, *, storage_key: str, source_path: Path) -> None:
+        ...
+
     def get(self, *, storage_key: str) -> bytes:
         ...
 
@@ -27,6 +30,9 @@ class MemoryArtifactStore:
 
     def put(self, *, storage_key: str, content: bytes) -> None:
         self._items[storage_key] = bytes(content)
+
+    def put_file(self, *, storage_key: str, source_path: Path) -> None:
+        self._items[storage_key] = source_path.read_bytes()
 
     def get(self, *, storage_key: str) -> bytes:
         try:
@@ -59,6 +65,28 @@ class LocalPrivateArtifactStore:
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
+            os.replace(tmp_name, path)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+
+    def put_file(self, *, storage_key: str, source_path: Path) -> None:
+        path = self._resolve(storage_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=".artifact-", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "wb") as target, source_path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    target.write(chunk)
+                target.flush()
+                os.fsync(target.fileno())
             os.replace(tmp_name, path)
             try:
                 os.chmod(path, 0o600)

@@ -1,15 +1,26 @@
 "use client";
 
-import { type CSSProperties, useReducer, useState } from "react";
+import { type CSSProperties, useEffect, useReducer, useRef, useState } from "react";
 import type { TripPersistenceState } from "@/features/trip-workspace/tripPersistence";
 import {
   commitImport,
   decideImportMention,
+  fetchBinaryInspection,
   fetchImportArtifact,
   fetchImportReview,
+  fetchSanitizedImageBlob,
+  submitBinaryImport,
   submitUrlImport,
   submitTextImport,
 } from "./importApi";
+import { BinaryImportComposer } from "./BinaryImportComposer";
+import { BinaryInspectionResult } from "./BinaryInspectionResult";
+import {
+  binaryImportIdempotencyKey,
+  binaryImportReducer,
+  binaryImportStorageValue,
+  parseBinaryImportStorageValue,
+} from "./binaryImportState";
 import { importIdempotencyKey, importWorkspaceReducer } from "./importState";
 import type { ImportMention, URLFetchSnapshot } from "./importTypes";
 import { buildImportSummary, selectedResolutionId, sourceSegments } from "./importViewModel";
@@ -25,12 +36,35 @@ export function ImportReviewWorkspace({
 }: ImportReviewWorkspaceProps) {
   const [text, setText] = useState("");
   const [url, setUrl] = useState("");
-  const [mode, setMode] = useState<"text" | "url">("text");
+  const [mode, setMode] = useState<"text" | "url" | "binary">("text");
   const [state, dispatch] = useReducer(importWorkspaceReducer, { status: "idle" });
+  const [binaryState, binaryDispatch] = useReducer(binaryImportReducer, { status: "idle" });
+  const binaryInputRef = useRef<HTMLInputElement | null>(null);
+  const previewUrlRef = useRef<string | null>(null);
   const byteCount = utf8ByteLength(text);
   const normalizedUrl = url.trim();
   const urlValidation = validateBrowserUrl(normalizedUrl);
   const savedTripId = tripPersistence.status === "saved" ? tripPersistence.tripId : null;
+
+  useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!savedTripId || typeof window === "undefined") {
+      return;
+    }
+    const stored = parseBinaryImportStorageValue(window.localStorage.getItem(BINARY_IMPORT_STORAGE_KEY));
+    if (!stored || stored.tripId !== savedTripId) {
+      return;
+    }
+    void hydrateBinaryInspection(savedTripId, stored.jobId, stored.declaredKind);
+  }, [savedTripId]);
 
   async function handleSubmit() {
     if (!savedTripId) {
@@ -106,6 +140,101 @@ export function ImportReviewWorkspace({
       sourceFetch: response.data.source_fetch,
       derivation: response.data.derivation,
     });
+  }
+
+  async function handleBinaryUpload() {
+    if (!savedTripId) {
+      binaryDispatch({
+        type: "error",
+        code: "trip_not_saved",
+        message: "Image/PDF import needs a saved TripRevision before it can create reviewable evidence.",
+      });
+      return;
+    }
+    if (binaryState.status !== "selected") {
+      return;
+    }
+    binaryDispatch({ type: "uploading" });
+    const response = await submitBinaryImport(
+      savedTripId,
+      binaryState.file,
+      binaryState.declaredKind,
+      binaryImportIdempotencyKey(savedTripId, binaryState.file, binaryState.declaredKind),
+    );
+    if (!response.ok) {
+      binaryDispatch({
+        type: "error",
+        code: response.code ?? "import_binary_failed",
+        message: response.message,
+        recoverable: true,
+      });
+      return;
+    }
+    rememberBinaryImport(savedTripId, response.data.job.id, response.data.inspection.declared_kind === "pdf" ? "pdf" : "image");
+    binaryDispatch({
+      type: "uploaded",
+      artifact: response.data.artifact,
+      job: response.data.job,
+      inspection: response.data.inspection,
+    });
+    if (response.data.job.status === "artifact_ready" && response.data.inspection.detected_kind === "image") {
+      await loadSanitizedPreview(savedTripId, response.data.job.id);
+    }
+  }
+
+  async function hydrateBinaryInspection(tripId: string, jobId: string, declaredKind: "image" | "pdf") {
+    const response = await fetchBinaryInspection(tripId, jobId);
+    if (!response.ok) {
+      return;
+    }
+    binaryDispatch({
+      type: "uploaded",
+      artifact: {
+        id: response.data.artifact_id,
+        trip_id: response.data.trip_id,
+        artifact_type: declaredKind === "pdf" ? "uploaded_pdf" : "uploaded_image",
+        mime_type: response.data.detected_mime_type,
+        content_checksum: response.data.content_checksum,
+        byte_size: response.data.byte_size,
+        charset: "binary",
+        privacy_level: "private",
+        created_at: response.data.started_at,
+      },
+      job: {
+        id: response.data.import_job_id,
+        trip_id: response.data.trip_id,
+        artifact_id: response.data.artifact_id,
+        input_type: response.data.detected_kind,
+        status: response.data.status,
+        extraction_schema_version: response.data.schema_version,
+        extractor_version: response.data.inspector_version,
+        resolver_version: "none",
+        review_version: 0,
+        mention_count: 0,
+        warning_codes: response.data.warning_codes,
+        error_code: response.data.error_code,
+        created_at: response.data.started_at,
+        updated_at: response.data.completed_at,
+      },
+      inspection: response.data,
+    });
+    if (response.data.status === "artifact_ready" && response.data.detected_kind === "image") {
+      await loadSanitizedPreview(tripId, jobId);
+    }
+  }
+
+  async function loadSanitizedPreview(tripId: string, jobId: string) {
+    const preview = await fetchSanitizedImageBlob(tripId, jobId);
+    if (!preview.ok) {
+      binaryDispatch({ type: "error", code: preview.code, message: preview.message, recoverable: true });
+      return;
+    }
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+    }
+    const previewUrl = URL.createObjectURL(preview.data);
+    previewUrlRef.current = previewUrl;
+    binaryDispatch({ type: "preview", previewUrl });
   }
 
   async function handleDecision(mention: ImportMention, action: "confirm" | "ignore" | "mark_as_note") {
@@ -201,7 +330,9 @@ export function ImportReviewWorkspace({
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start" }}>
         <div>
           <p style={eyebrowStyle}>Source import</p>
-          <h3 style={titleStyle}>{mode === "text" ? "Text to review inbox" : "URL to review inbox"}</h3>
+          <h3 style={titleStyle}>
+            {mode === "text" ? "Text to review inbox" : mode === "url" ? "URL to review inbox" : "Image / PDF artifact inspection"}
+          </h3>
         </div>
         <span style={statusPillStyle}>{state.status}</span>
       </div>
@@ -214,6 +345,9 @@ export function ImportReviewWorkspace({
           <button type="button" onClick={() => setMode("url")} style={mode === "url" ? segmentActiveStyle : segmentButtonStyle}>
             URL
           </button>
+          <button type="button" onClick={() => setMode("binary")} style={mode === "binary" ? segmentActiveStyle : segmentButtonStyle}>
+            Image / PDF
+          </button>
         </div>
         {mode === "text" ? (
           <textarea
@@ -223,7 +357,7 @@ export function ImportReviewWorkspace({
             disabled={!savedTripId || state.status === "submitting"}
             style={textareaStyle}
           />
-        ) : (
+        ) : mode === "url" ? (
           <input
             value={url}
             onChange={(event) => setUrl(event.target.value)}
@@ -231,8 +365,18 @@ export function ImportReviewWorkspace({
             disabled={!savedTripId || state.status === "submitting"}
             style={inputStyle}
           />
+        ) : (
+          <BinaryImportComposer
+            state={binaryState}
+            inputRef={binaryInputRef}
+            disabled={!savedTripId || binaryState.status === "uploading"}
+            onFileSelected={(file, declaredKind) => binaryDispatch({ type: "select", file, declaredKind })}
+            onUpload={() => void handleBinaryUpload()}
+            onReset={() => binaryDispatch({ type: "reset" })}
+            onError={(code, message) => binaryDispatch({ type: "error", code, message, recoverable: true })}
+          />
         )}
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        {mode !== "binary" ? <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
           <span style={hintStyle}>
             {mode === "text"
               ? `${byteCount} bytes · private artifact · no itinerary mutation`
@@ -251,7 +395,7 @@ export function ImportReviewWorkspace({
               {state.status === "submitting" ? "Importing..." : mode === "text" ? "Import text" : "Import URL"}
             </button>
           </div>
-        </div>
+        </div> : null}
         {mode === "url" && urlValidation ? <p style={errorStyle}>{urlValidation}</p> : null}
       </div>
 
@@ -287,8 +431,18 @@ export function ImportReviewWorkspace({
         </div>
       ) : null}
       {state.status === "error" ? <p style={errorStyle}>{state.code}: {state.message}</p> : null}
+      {mode === "binary" ? <BinaryInspectionResult state={binaryState} /> : null}
     </section>
   );
+}
+
+const BINARY_IMPORT_STORAGE_KEY = "ai-travel-planner:last-binary-import";
+
+function rememberBinaryImport(tripId: string, jobId: string, declaredKind: "image" | "pdf") {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(BINARY_IMPORT_STORAGE_KEY, binaryImportStorageValue(tripId, jobId, declaredKind));
 }
 
 function ReviewPane({

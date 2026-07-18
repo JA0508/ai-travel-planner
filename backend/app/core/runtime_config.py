@@ -19,6 +19,16 @@ DEFAULT_IMPORT_URL_MAX_COMPRESSED_BYTES = 2 * 1024 * 1024
 DEFAULT_IMPORT_URL_MAX_DECODED_BYTES = 5 * 1024 * 1024
 DEFAULT_IMPORT_URL_MAX_TEXT_BYTES = 500 * 1024
 DEFAULT_IMPORT_URL_CACHE_TTL_SECONDS = 900
+DEFAULT_IMPORT_BINARY_MAX_IMAGE_BYTES = 12 * 1024 * 1024
+DEFAULT_IMPORT_BINARY_MAX_PDF_BYTES = 20 * 1024 * 1024
+DEFAULT_IMPORT_BINARY_UPLOAD_CHUNK_BYTES = 64 * 1024
+DEFAULT_IMPORT_INSPECTION_TIMEOUT_SECONDS = 10.0
+DEFAULT_IMPORT_INSPECTION_MAX_MEMORY_MB = 512
+DEFAULT_IMPORT_INSPECTION_MAX_OUTPUT_BYTES = 256 * 1024
+DEFAULT_IMPORT_IMAGE_MAX_PIXELS = 40_000_000
+DEFAULT_IMPORT_IMAGE_MAX_DIMENSION = 12_000
+DEFAULT_IMPORT_PDF_MAX_PAGES = 80
+DEFAULT_IMPORT_PDF_MAX_OBJECTS = 5_000
 
 
 def parse_cors_allow_origins(raw_value: str | None) -> list[str]:
@@ -162,6 +172,58 @@ def get_import_artifact_root() -> str:
     return os.getenv("IMPORT_ARTIFACT_ROOT", "data/import-artifacts").strip() or "data/import-artifacts"
 
 
+def get_import_binary_enabled() -> bool:
+    return os.getenv("IMPORT_BINARY_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
+
+
+def get_import_binary_max_image_bytes() -> int:
+    return parse_positive_int_env("IMPORT_BINARY_MAX_IMAGE_BYTES", DEFAULT_IMPORT_BINARY_MAX_IMAGE_BYTES)
+
+
+def get_import_binary_max_pdf_bytes() -> int:
+    return parse_positive_int_env("IMPORT_BINARY_MAX_PDF_BYTES", DEFAULT_IMPORT_BINARY_MAX_PDF_BYTES)
+
+
+def get_import_binary_upload_chunk_bytes() -> int:
+    return parse_positive_int_env("IMPORT_BINARY_UPLOAD_CHUNK_BYTES", DEFAULT_IMPORT_BINARY_UPLOAD_CHUNK_BYTES)
+
+
+def get_import_binary_staging_root() -> str:
+    return os.getenv("IMPORT_BINARY_STAGING_ROOT", "data/import-staging").strip() or "data/import-staging"
+
+
+def get_import_inspection_mode() -> str:
+    return os.getenv("IMPORT_INSPECTION_MODE", "subprocess").strip().lower() or "subprocess"
+
+
+def get_import_inspection_timeout_seconds() -> float:
+    return parse_positive_float_env("IMPORT_INSPECTION_TIMEOUT_SECONDS", DEFAULT_IMPORT_INSPECTION_TIMEOUT_SECONDS)
+
+
+def get_import_inspection_max_memory_mb() -> int:
+    return parse_positive_int_env("IMPORT_INSPECTION_MAX_MEMORY_MB", DEFAULT_IMPORT_INSPECTION_MAX_MEMORY_MB)
+
+
+def get_import_inspection_max_output_bytes() -> int:
+    return parse_positive_int_env("IMPORT_INSPECTION_MAX_OUTPUT_BYTES", DEFAULT_IMPORT_INSPECTION_MAX_OUTPUT_BYTES)
+
+
+def get_import_image_max_pixels() -> int:
+    return parse_positive_int_env("IMPORT_IMAGE_MAX_PIXELS", DEFAULT_IMPORT_IMAGE_MAX_PIXELS)
+
+
+def get_import_image_max_dimension() -> int:
+    return parse_positive_int_env("IMPORT_IMAGE_MAX_DIMENSION", DEFAULT_IMPORT_IMAGE_MAX_DIMENSION)
+
+
+def get_import_pdf_max_pages() -> int:
+    return parse_positive_int_env("IMPORT_PDF_MAX_PAGES", DEFAULT_IMPORT_PDF_MAX_PAGES)
+
+
+def get_import_pdf_max_objects() -> int:
+    return parse_positive_int_env("IMPORT_PDF_MAX_OBJECTS", DEFAULT_IMPORT_PDF_MAX_OBJECTS)
+
+
 def get_import_processing_mode() -> str:
     return os.getenv("IMPORT_PROCESSING_MODE", "inline").strip().lower() or "inline"
 
@@ -186,14 +248,29 @@ def get_import_max_resolution_candidates() -> int:
 
 
 def get_import_configuration_summary() -> dict[str, Any]:
-    from app.imports.domain import IMPORT_EXTRACTION_SCHEMA_VERSION, URL_IMPORT_FETCHER_VERSION, URL_IMPORT_POLICY_VERSION
+    from app.imports.domain import ARTIFACT_INSPECTION_SCHEMA_VERSION, ARTIFACT_INSPECTOR_VERSION, IMPORT_EXTRACTION_SCHEMA_VERSION, URL_IMPORT_FETCHER_VERSION, URL_IMPORT_POLICY_VERSION
+    from app.imports.inspection_runner import resource_capabilities
 
     fetcher_mode = get_import_url_fetcher_mode()
     app_env = os.getenv("APP_ENV", "development").strip().lower()
+    resources = resource_capabilities()
+    binary_status = "healthy" if resources.wall_clock and get_import_inspection_mode() == "subprocess" else "degraded"
+    if not (resources.memory and resources.cpu):
+        binary_status = "degraded"
 
     return {
         "text_enabled": get_import_text_enabled(),
         "url_enabled": get_import_url_enabled(),
+        "binary_enabled": get_import_binary_enabled(),
+        "binary_supported_types": ["pdf", "jpeg", "png", "webp"],
+        "inspection_mode": get_import_inspection_mode(),
+        "inspection_schema_version": ARTIFACT_INSPECTION_SCHEMA_VERSION,
+        "inspector_version": ARTIFACT_INSPECTOR_VERSION,
+        "resource_limits": {
+            "wall_clock": resources.wall_clock,
+            "memory": resources.memory,
+            "cpu": resources.cpu,
+        },
         "url_fetcher_mode": fetcher_mode,
         "url_policy_version": URL_IMPORT_POLICY_VERSION,
         "url_fetcher_version": URL_IMPORT_FETCHER_VERSION,
@@ -206,7 +283,7 @@ def get_import_configuration_summary() -> dict[str, Any]:
         "max_text_bytes": get_import_text_max_bytes(),
         "max_mentions": get_import_max_mentions(),
         "max_resolution_candidates": get_import_max_resolution_candidates(),
-        "status": "unhealthy" if app_env == "production" and fetcher_mode == "fixture" else "healthy",
+        "status": "unhealthy" if app_env == "production" and fetcher_mode == "fixture" else binary_status,
     }
 
 

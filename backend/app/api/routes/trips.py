@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Request, Response, status
+from fastapi import APIRouter, File, Form, Header, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.core.runtime_config import parse_cors_allow_origins
@@ -11,6 +11,8 @@ from app.imports.dependencies import get_text_import_service
 from app.imports.domain import (
     ImportCommitRequest,
     ImportCommitResponse,
+    ArtifactInspectionResponse,
+    BinaryImportCreateResponse,
     ImportReviewDecisionRequest,
     ImportReviewResponse,
     TextImportCreateRequest,
@@ -224,6 +226,35 @@ def create_url_import(
         return trip_error_response(exc)
 
 
+@router.post(
+    "/{trip_id}/imports/artifacts",
+    response_model=BinaryImportCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_binary_artifact_import(
+    trip_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    declared_kind: str = Form(...),
+    original_label: str | None = Form(default=None),
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> BinaryImportCreateResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return await get_text_import_service().create_binary_import(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            upload_file=file,
+            declared_kind=declared_kind,
+            original_label=original_label,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
 @router.get("/{trip_id}/imports/{import_job_id}", response_model=ImportReviewResponse)
 def get_text_import(
     trip_id: str,
@@ -235,6 +266,43 @@ def get_text_import(
             trip_id=trip_id,
             import_job_id=import_job_id,
             capability=get_trip_capability_from_request(request, trip_id),
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get("/{trip_id}/imports/{import_job_id}/inspection", response_model=ArtifactInspectionResponse)
+def get_binary_artifact_inspection(
+    trip_id: str,
+    import_job_id: str,
+    request: Request,
+) -> ArtifactInspectionResponse | JSONResponse:
+    try:
+        return get_text_import_service().get_binary_inspection(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get("/{trip_id}/imports/{import_job_id}/sanitized-image", response_model=None)
+def get_binary_artifact_sanitized_image(
+    trip_id: str,
+    import_job_id: str,
+    request: Request,
+) -> Response | JSONResponse:
+    try:
+        content, mime_type = get_text_import_service().get_sanitized_image_bytes(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+        )
+        return Response(
+            content,
+            media_type=mime_type,
+            headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
         )
     except TripError as exc:
         return trip_error_response(exc)

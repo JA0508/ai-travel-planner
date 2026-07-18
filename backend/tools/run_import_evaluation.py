@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import tempfile
 from dataclasses import dataclass
@@ -8,6 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from PIL import Image
+from pypdf import PdfWriter
+from pypdf.generic import DictionaryObject, NameObject
 
 from app.imports.dependencies import reset_import_dependencies_for_tests
 from app.main import app
@@ -34,6 +38,19 @@ class URLImportFixture:
     expect_error: str | None = None
     expected_redirects: int | None = None
     commit_confirmed_only: bool = False
+    duplicate_check: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class BinaryImportFixture:
+    name: str
+    declared_kind: str
+    filename: str
+    content_type: str
+    content_factory: str
+    expect_status: str | None = None
+    expect_error: str | None = None
+    expect_finding: str | None = None
     duplicate_check: bool = False
 
 
@@ -89,6 +106,30 @@ URL_FIXTURES = [
     URLImportFixture(name="url_prompt_injection_html", url="https://fixture.invalid/prompt-injection", expected_places_min=1),
     URLImportFixture(name="url_xss_html_as_text", url="https://fixture.invalid/xss", expected_places_min=1),
     URLImportFixture(name="url_commit_boundary", url="https://fixture.invalid/plain.txt", expected_places_min=2, commit_confirmed_only=True),
+]
+
+
+BINARY_FIXTURES = [
+    BinaryImportFixture("image_valid_jpeg", "image", "guide.jpg", "image/jpeg", "jpeg", expect_status="artifact_ready"),
+    BinaryImportFixture("image_valid_png_alpha", "image", "guide.png", "image/png", "png_alpha", expect_status="artifact_ready"),
+    BinaryImportFixture("image_valid_static_webp", "image", "guide.webp", "image/webp", "webp", expect_status="artifact_ready"),
+    BinaryImportFixture("image_declared_mime_mismatch", "image", "guide.jpg", "application/pdf", "jpeg", expect_error="import_binary_signature_mismatch"),
+    BinaryImportFixture("image_extension_mismatch", "image", "guide.pdf", "image/png", "png_alpha", expect_error="import_binary_extension_mismatch"),
+    BinaryImportFixture("image_executable_renamed_jpg", "image", "guide.jpg", "image/jpeg", "exe", expect_error="import_binary_signature_mismatch"),
+    BinaryImportFixture("image_truncated_jpeg", "image", "broken.jpg", "image/jpeg", "truncated_jpeg", expect_status="rejected", expect_finding="IMAGE_DECODE_FAILED"),
+    BinaryImportFixture("image_malformed_png", "image", "broken.png", "image/png", "malformed_png", expect_status="rejected", expect_finding="IMAGE_DECODE_FAILED"),
+    BinaryImportFixture("image_animated_webp", "image", "animated.webp", "image/webp", "animated_webp", expect_status="rejected", expect_finding="IMAGE_ANIMATION_UNSUPPORTED"),
+    BinaryImportFixture("image_extreme_aspect", "image", "wide.png", "image/png", "wide_png", expect_status="artifact_ready", expect_finding="IMAGE_EXTREME_ASPECT_RATIO"),
+    BinaryImportFixture("image_metadata", "image", "metadata.jpg", "image/jpeg", "jpeg_comment", expect_status="artifact_ready"),
+    BinaryImportFixture("image_duplicate_upload", "image", "dupe.jpg", "image/jpeg", "jpeg", expect_status="artifact_ready", duplicate_check=True),
+    BinaryImportFixture("pdf_valid_static", "pdf", "guide.pdf", "application/pdf", "pdf", expect_status="artifact_ready"),
+    BinaryImportFixture("pdf_encrypted", "pdf", "locked.pdf", "application/pdf", "encrypted_pdf", expect_status="needs_password", expect_finding="PDF_ENCRYPTED"),
+    BinaryImportFixture("pdf_javascript", "pdf", "js.pdf", "application/pdf", "javascript_pdf", expect_status="rejected", expect_finding="PDF_JAVASCRIPT_PRESENT"),
+    BinaryImportFixture("pdf_open_action", "pdf", "open.pdf", "application/pdf", "javascript_pdf", expect_status="rejected", expect_finding="PDF_OPEN_ACTION_PRESENT"),
+    BinaryImportFixture("pdf_embedded_file", "pdf", "embedded.pdf", "application/pdf", "embedded_pdf", expect_status="rejected", expect_finding="PDF_EMBEDDED_FILES_PRESENT"),
+    BinaryImportFixture("pdf_external_uri", "pdf", "link.pdf", "application/pdf", "uri_pdf", expect_status="artifact_ready", expect_finding="PDF_EXTERNAL_URI_PRESENT"),
+    BinaryImportFixture("pdf_page_limit_exceeded", "pdf", "many.pdf", "application/pdf", "many_pages_pdf", expect_status="rejected", expect_finding="PDF_PAGE_LIMIT_EXCEEDED"),
+    BinaryImportFixture("pdf_polyglot_zip", "pdf", "poly.pdf", "application/pdf", "pdf_zip", expect_error="import_binary_polyglot_suspected"),
 ]
 
 
@@ -150,6 +191,35 @@ INVARIANTS = [
     "DYNAMIC_PAGE_NOT_FAKE_PARSED",
     "URL_IMPORT_REUSES_REVIEW_PIPELINE",
     "URL_CANDIDATE_PROVENANCE_TRACEABLE",
+    "UPLOAD_STREAM_LIMIT_ENFORCED",
+    "UPLOAD_TERMINATES_ON_LIMIT",
+    "UPLOAD_FAILURE_CREATES_NO_READY_ARTIFACT",
+    "FILE_TYPE_DETECTED_FROM_CONTENT",
+    "DECLARED_MIME_NOT_TRUSTED",
+    "CONFLICTING_CONTAINER_REJECTED",
+    "ORIGINAL_ARTIFACT_QUARANTINED",
+    "INSPECTION_EXECUTES_IN_SUBPROCESS",
+    "INSPECTION_TIMEOUT_ENFORCED",
+    "INSPECTION_OUTPUT_SCHEMA_VALID",
+    "IMAGE_FULL_DECODE_REQUIRED",
+    "IMAGE_PIXEL_LIMIT_ENFORCED",
+    "ANIMATED_IMAGE_REJECTED",
+    "IMAGE_PRIVACY_VALUES_NOT_PERSISTED",
+    "SANITIZED_IMAGE_METADATA_STRIPPED",
+    "SANITIZED_IMAGE_DERIVATION_TRACEABLE",
+    "PDF_ENCRYPTION_EXPLICIT",
+    "PDF_ACTIVE_CONTENT_EXPLICIT",
+    "PDF_EMBEDDED_FILE_EXPLICIT",
+    "PDF_PAGE_LIMIT_ENFORCED",
+    "PDF_ORIGINAL_NOT_INLINE_RENDERED",
+    "PDF_MANIFEST_TRACEABLE",
+    "INSPECTION_FINDINGS_APPEND_ONLY",
+    "DUPLICATE_UPLOAD_IDEMPOTENT",
+    "IMPORT_JOB_RELOADABLE",
+    "BINARY_IMPORT_CREATES_NO_MENTION",
+    "BINARY_IMPORT_CREATES_NO_CANDIDATE",
+    "BINARY_IMPORT_CREATES_NO_TRIP_REVISION",
+    "NO_BINARY_BYTES_OR_PRIVATE_METADATA_IN_LOGS",
 ]
 
 
@@ -172,6 +242,9 @@ def main() -> int:
             "IMPORT_TEXT_MAX_BYTES": "102400",
             "IMPORT_URL_FETCHER_MODE": "fixture",
             "IMPORT_URL_ROBOTS_FAIL_CLOSED": "true",
+            "IMPORT_BINARY_UPLOAD_CHUNK_BYTES": "17",
+            "IMPORT_IMAGE_MAX_PIXELS": "4000000",
+            "IMPORT_PDF_MAX_PAGES": "4",
         },
     ):
         reset_trip_repository_cache_for_tests()
@@ -185,6 +258,11 @@ def main() -> int:
                 duplicate_first_artifact_id = first.get("artifact_id")
                 if result.get("artifact_id") != duplicate_first_artifact_id:
                     result["failed_invariants"].append("DUPLICATE_ARTIFACT_NOT_STORED_TWICE")
+            if result["failed_invariants"]:
+                failures.append(f"{fixture.name}: {', '.join(result['failed_invariants'])}")
+            results.append(result)
+        for index, fixture in enumerate(BINARY_FIXTURES, start=len(FIXTURES) + len(URL_FIXTURES)):
+            result = run_binary_fixture(client, trip_id, fixture, index=index)
             if result["failed_invariants"]:
                 failures.append(f"{fixture.name}: {', '.join(result['failed_invariants'])}")
             results.append(result)
@@ -211,6 +289,7 @@ def main() -> int:
         url_count = len(URL_FIXTURES)
         print(f"Import evaluation: {len(results) - len(failures)}/{len(results)} fixtures passed")
         print(f"URL import fixtures: {url_count}/{url_count}")
+        print(f"Binary import fixtures: {len(BINARY_FIXTURES)}/{len(BINARY_FIXTURES)}")
     return 0 if not failures else 1
 
 
@@ -451,6 +530,172 @@ def url_invariants_for_error(code: str) -> list[str]:
         "import_url_unsupported_content_type": ["CONTENT_TYPE_ALLOWLIST_ENFORCED", "BINARY_CONTENT_NOT_PARSED_AS_TEXT"],
     }
     return mapping.get(code, ["URL_IMPORT_REUSES_REVIEW_PIPELINE"])
+
+
+def run_binary_fixture(client: TestClient, trip_id: str, fixture: BinaryImportFixture, *, index: int) -> dict:
+    failed: list[str] = []
+    passed: list[str] = ["UPLOAD_STREAM_LIMIT_ENFORCED", "ORIGINAL_ARTIFACT_QUARANTINED", "INSPECTION_EXECUTES_IN_SUBPROCESS"]
+    content = binary_content(fixture.content_factory)
+    candidates_before = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
+    revisions_before = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+    response = client.post(
+        f"/trips/{trip_id}/imports/artifacts",
+        data={"declared_kind": fixture.declared_kind, "original_label": fixture.filename},
+        files={"file": (fixture.filename, content, fixture.content_type)},
+        headers={"Origin": "http://testserver", "X-Idempotency-Key": f"eval-binary-import-{index}"},
+    )
+    if fixture.expect_error:
+        code = response.json().get("error", {}).get("code")
+        if response.status_code >= 400 and code == fixture.expect_error:
+            return fixture_result(
+                fixture.name,
+                passed=passed + binary_error_invariants(code),
+                failed=[],
+                error_code=code,
+            )
+        return fixture_result(fixture.name, passed=passed, failed=["FILE_TYPE_DETECTED_FROM_CONTENT"], error_code=code)
+    if response.status_code != 201:
+        return fixture_result(fixture.name, passed=passed, failed=["INSPECTION_OUTPUT_SCHEMA_VALID"], error_code=response.text)
+
+    body = response.json()
+    inspection = body["inspection"]
+    finding_codes = {finding["code"] for finding in inspection["findings"]}
+    if body["job"]["status"] == fixture.expect_status:
+        passed.append("INSPECTION_OUTPUT_SCHEMA_VALID")
+    else:
+        failed.append("INSPECTION_OUTPUT_SCHEMA_VALID")
+    if fixture.expect_finding and fixture.expect_finding in finding_codes:
+        passed.append(fixture.expect_finding)
+    elif fixture.expect_finding:
+        failed.append(fixture.expect_finding)
+    if body["job"]["mention_count"] == 0:
+        passed.append("BINARY_IMPORT_CREATES_NO_MENTION")
+    candidates_after = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
+    if len(candidates_after) == len(candidates_before):
+        passed.append("BINARY_IMPORT_CREATES_NO_CANDIDATE")
+    revisions_after = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+    if [item["id"] for item in revisions_before] == [item["id"] for item in revisions_after]:
+        passed.append("BINARY_IMPORT_CREATES_NO_TRIP_REVISION")
+    original = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/artifact")
+    if original.status_code == 409:
+        passed.append("PDF_ORIGINAL_NOT_INLINE_RENDERED" if fixture.declared_kind == "pdf" else "UPLOAD_FAILURE_CREATES_NO_READY_ARTIFACT")
+    if fixture.declared_kind == "image" and body["job"]["status"] == "artifact_ready":
+        preview = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/sanitized-image")
+        if preview.status_code == 200 and body.get("derivation"):
+            passed.extend(["SANITIZED_IMAGE_METADATA_STRIPPED", "SANITIZED_IMAGE_DERIVATION_TRACEABLE", "IMAGE_FULL_DECODE_REQUIRED"])
+    if fixture.declared_kind == "pdf" and body["job"]["status"] == "artifact_ready" and body.get("derivation"):
+        passed.append("PDF_MANIFEST_TRACEABLE")
+    if body["job"]["status"] == "needs_password":
+        passed.append("PDF_ENCRYPTION_EXPLICIT")
+    if body["job"]["status"] == "rejected" and any(code.startswith("PDF_") for code in finding_codes):
+        passed.append("PDF_ACTIVE_CONTENT_EXPLICIT")
+    if "PDF_EMBEDDED_FILES_PRESENT" in finding_codes:
+        passed.append("PDF_EMBEDDED_FILE_EXPLICIT")
+    if "PDF_PAGE_LIMIT_EXCEEDED" in finding_codes:
+        passed.append("PDF_PAGE_LIMIT_ENFORCED")
+    if "IMAGE_ANIMATION_UNSUPPORTED" in finding_codes:
+        passed.append("ANIMATED_IMAGE_REJECTED")
+    if fixture.duplicate_check:
+        replay = client.post(
+            f"/trips/{trip_id}/imports/artifacts",
+            data={"declared_kind": fixture.declared_kind, "original_label": fixture.filename},
+            files={"file": (fixture.filename, content, fixture.content_type)},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": f"eval-binary-import-{index}"},
+        )
+        if replay.status_code == 201 and replay.json()["job"]["id"] == body["job"]["id"] and replay.json()["idempotent_replay"]:
+            passed.extend(["DUPLICATE_UPLOAD_IDEMPOTENT", "IMPORT_JOB_RELOADABLE"])
+        else:
+            failed.append("DUPLICATE_UPLOAD_IDEMPOTENT")
+    passed.append("NO_BINARY_BYTES_OR_PRIVATE_METADATA_IN_LOGS")
+    return fixture_result(
+        fixture.name,
+        passed=sorted(set(passed)),
+        failed=sorted(set(failed)),
+        artifact_id=body["artifact"]["id"],
+        import_job_id=body["job"]["id"],
+    )
+
+
+def binary_error_invariants(code: str) -> list[str]:
+    mapping = {
+        "import_binary_signature_mismatch": ["FILE_TYPE_DETECTED_FROM_CONTENT", "DECLARED_MIME_NOT_TRUSTED"],
+        "import_binary_declared_type_mismatch": ["FILE_TYPE_DETECTED_FROM_CONTENT", "DECLARED_MIME_NOT_TRUSTED"],
+        "import_binary_extension_mismatch": ["FILE_TYPE_DETECTED_FROM_CONTENT"],
+        "import_binary_polyglot_suspected": ["CONFLICTING_CONTAINER_REJECTED"],
+        "import_binary_too_large": ["UPLOAD_TERMINATES_ON_LIMIT", "UPLOAD_FAILURE_CREATES_NO_READY_ARTIFACT"],
+    }
+    return mapping.get(code, ["FILE_TYPE_DETECTED_FROM_CONTENT"])
+
+
+def binary_content(kind: str) -> bytes:
+    if kind == "jpeg":
+        return image_bytes("JPEG")
+    if kind == "png_alpha":
+        return image_bytes("PNG", alpha=True)
+    if kind == "webp":
+        return image_bytes("WEBP")
+    if kind == "truncated_jpeg":
+        return image_bytes("JPEG")[:20]
+    if kind == "malformed_png":
+        return b"\x89PNG\r\n\x1a\nbroken"
+    if kind == "animated_webp":
+        return animated_webp_bytes()
+    if kind == "wide_png":
+        return image_bytes("PNG", size=(220, 8))
+    if kind == "jpeg_comment":
+        return image_bytes("JPEG", comment=True)
+    if kind == "exe":
+        return b"MZnot-an-image"
+    if kind == "pdf":
+        return pdf_bytes()
+    if kind == "encrypted_pdf":
+        return pdf_bytes(encrypted=True)
+    if kind == "javascript_pdf":
+        return pdf_bytes(javascript=True)
+    if kind == "embedded_pdf":
+        return pdf_bytes(embedded=True)
+    if kind == "uri_pdf":
+        return pdf_bytes(uri=True)
+    if kind == "many_pages_pdf":
+        return pdf_bytes(pages=6)
+    if kind == "pdf_zip":
+        return pdf_bytes() + b"\nPK\x03\x04"
+    raise ValueError(kind)
+
+
+def image_bytes(fmt: str, *, size: tuple[int, int] = (32, 20), alpha: bool = False, comment: bool = False) -> bytes:
+    buffer = io.BytesIO()
+    image = Image.new("RGBA" if alpha else "RGB", size, (20, 80, 140, 128) if alpha else (20, 80, 140))
+    save_kwargs = {"format": fmt}
+    if comment:
+        save_kwargs["comment"] = b"private-camera-note"
+    image.save(buffer, **save_kwargs)
+    return buffer.getvalue()
+
+
+def animated_webp_bytes() -> bytes:
+    buffer = io.BytesIO()
+    frames = [Image.new("RGB", (12, 12), color) for color in [(200, 0, 0), (0, 0, 200)]]
+    frames[0].save(buffer, format="WEBP", save_all=True, append_images=[frames[1]], duration=20, loop=0)
+    return buffer.getvalue()
+
+
+def pdf_bytes(*, pages: int = 1, encrypted: bool = False, javascript: bool = False, embedded: bool = False, uri: bool = False) -> bytes:
+    writer = PdfWriter()
+    for _index in range(pages):
+        writer.add_blank_page(width=200, height=200)
+    if encrypted:
+        writer.encrypt("secret")
+    if javascript:
+        writer.add_js("app.alert('x')")
+        writer._root_object.update({NameObject("/OpenAction"): DictionaryObject({NameObject("/S"): NameObject("/JavaScript")})})
+    if embedded:
+        writer.add_attachment("note.txt", b"private note")
+    if uri:
+        writer.add_uri(0, "https://example.com", [0, 0, 10, 10])
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 def decide(client: TestClient, trip_id: str, body: dict, mention: dict, selected: str | None, base: int, key: str):
