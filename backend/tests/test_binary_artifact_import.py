@@ -20,6 +20,7 @@ from app.imports.dependencies import reset_import_dependencies_for_tests
 from app.imports.binary_upload import stream_upload_to_staging
 from app.imports.inspection_runner import ArtifactInspectionRunner
 from app.imports.repository import SQLiteImportRepository
+from app.imports.service import safe_document_extraction_metadata
 from app.main import app
 from app.trips.errors import TripError
 from app.trips.dependencies import reset_trip_repository_cache_for_tests
@@ -143,6 +144,25 @@ class BinaryArtifactImportTests(unittest.TestCase):
         self.assertFalse(has_conflicting_container(head=png_payload, tail=b"", detected_mime="image/png"))
         self.assertTrue(has_conflicting_container(head=png_payload, tail=b"%PDF-1.7", detected_mime="image/png"))
         self.assertTrue(has_conflicting_container(head=png_payload, tail=b"PK\x03\x04", detected_mime="image/png"))
+
+    def test_document_extraction_metadata_preserves_ocr_language_capabilities(self) -> None:
+        metadata = safe_document_extraction_metadata(
+            {
+                "ocr_capabilities": {
+                    "engine": "tesseract",
+                    "available": True,
+                    "languages": "eng+chi_sim",
+                    "requested_languages": ["eng", "chi_sim"],
+                    "installed_languages": ["chi_sim", "eng"],
+                    "missing_languages": [],
+                    "silent_fallback": False,
+                }
+            }
+        )
+        self.assertEqual(metadata["ocr_capabilities"]["requested_languages"], ["eng", "chi_sim"])
+        self.assertEqual(metadata["ocr_capabilities"]["installed_languages"], ["chi_sim", "eng"])
+        self.assertEqual(metadata["ocr_capabilities"]["missing_languages"], [])
+        self.assertEqual(metadata["ocr_capabilities"]["silent_fallback"], False)
 
     def test_idempotency_and_reload_preserve_inspection_lineage(self) -> None:
         client, trip_id = create_saved_trip()

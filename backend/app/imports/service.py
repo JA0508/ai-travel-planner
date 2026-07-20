@@ -2079,10 +2079,34 @@ def safe_document_extraction_metadata(metadata: dict[str, Any]) -> dict[str, Any
         ][:80]
     capabilities = metadata.get("ocr_capabilities")
     if isinstance(capabilities, dict):
+        requested_languages = capabilities.get("requested_languages")
+        installed_languages = capabilities.get("installed_languages")
+        missing_languages = capabilities.get("missing_languages")
         safe["ocr_capabilities"] = {
             "engine": str(capabilities.get("engine") or "")[:40],
             "available": bool(capabilities.get("available")),
             "languages": str(capabilities.get("languages") or "")[:80],
+            "requested_languages": [
+                str(language)[:40]
+                for language in requested_languages
+                if isinstance(language, str)
+            ][:40]
+            if isinstance(requested_languages, list)
+            else [],
+            "installed_languages": [
+                str(language)[:40]
+                for language in installed_languages
+                if isinstance(language, str)
+            ][:120]
+            if isinstance(installed_languages, list)
+            else [],
+            "missing_languages": [
+                str(language)[:40]
+                for language in missing_languages
+                if isinstance(language, str)
+            ][:40]
+            if isinstance(missing_languages, list)
+            else [],
             "silent_fallback": bool(capabilities.get("silent_fallback")),
         }
     return safe
