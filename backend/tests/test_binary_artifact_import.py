@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
+from app.imports.binary_detection import has_conflicting_container
 from app.imports.dependencies import reset_import_dependencies_for_tests
 from app.imports.binary_upload import stream_upload_to_staging
 from app.imports.inspection_runner import ArtifactInspectionRunner
@@ -136,6 +137,12 @@ class BinaryArtifactImportTests(unittest.TestCase):
             oversized = upload_binary(client, trip_id, valid_image("PNG"), "image", "big.png", "image/png", key="big")
         self.assertEqual(oversized.status_code, 413)
         self.assertEqual(oversized.json()["error"]["code"], "import_binary_too_large")
+
+    def test_polyglot_detection_allows_short_marker_bytes_inside_image_payload(self) -> None:
+        png_payload = b"\x89PNG\r\n\x1a\n\x00MZinside-compressed-image-bytes"
+        self.assertFalse(has_conflicting_container(head=png_payload, tail=b"", detected_mime="image/png"))
+        self.assertTrue(has_conflicting_container(head=png_payload, tail=b"%PDF-1.7", detected_mime="image/png"))
+        self.assertTrue(has_conflicting_container(head=png_payload, tail=b"PK\x03\x04", detected_mime="image/png"))
 
     def test_idempotency_and_reload_preserve_inspection_lineage(self) -> None:
         client, trip_id = create_saved_trip()

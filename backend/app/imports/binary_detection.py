@@ -149,7 +149,7 @@ def detect_executable_signature(head: bytes) -> str | None:
 def has_conflicting_container(*, head: bytes, tail: bytes, detected_mime: str) -> bool:
     combined = head + b"\n" + tail
     zip_markers = [b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"]
-    executable_markers = [b"MZ", b"\x7fELF", b"<script", b"javascript:"]
+    script_markers = [b"<script", b"javascript:"]
     if detected_mime != PDF_MIME_TYPE and b"%PDF-" in combined:
         return True
     if detected_mime != "image/png" and b"\x89PNG\r\n\x1a\n" in combined:
@@ -160,6 +160,7 @@ def has_conflicting_container(*, head: bytes, tail: bytes, detected_mime: str) -
         return True
     if any(marker in combined for marker in zip_markers):
         return True
-    if any(marker in combined for marker in executable_markers):
+    lowered = combined.lower()
+    if any(marker in lowered for marker in script_markers):
         return True
     return False
