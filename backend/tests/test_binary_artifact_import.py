@@ -287,6 +287,15 @@ class BinaryArtifactImportTests(unittest.TestCase):
         self.assertTrue(all({"x", "y", "width", "height", "origin", "unit"}.issubset(span["bbox"]) for span in body["spans"]))
         self.assertTrue(all(span["bbox"]["unit"] == "normalized" for span in body["spans"]))
         self.assertTrue(all(span["block_id"] and span["line_id"] and span["reading_order"] >= 0 for span in body["spans"]))
+        self.assertEqual(len(body["pages"]), 1)
+        self.assertEqual(body["pages"][0]["page_number"], 1)
+        self.assertEqual(body["pages"][0]["extraction_method"], "native_pdf_text")
+        self.assertEqual(body["pages"][0]["status"], "extracted")
+        self.assertFalse(body["pages"][0]["retryable"])
+        self.assertGreaterEqual(body["pages"][0]["native_text_quality"], 0.35)
+        self.assertGreater(body["pages"][0]["text_chars"], 0)
+        self.assertEqual(body["pages"][0]["metadata"]["image_width"], 420)
+        self.assertEqual(body["pages"][0]["metadata"]["image_height"], 300)
         text = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/artifact")
         self.assertEqual(text.status_code, 200)
         self.assertIn("豫园", text.text)
@@ -298,8 +307,10 @@ class BinaryArtifactImportTests(unittest.TestCase):
         self.assertEqual(evidence_body["generation"]["id"], body["generation"]["id"])
         self.assertEqual(evidence_body["generation"]["layout_artifact_id"], body["generation"]["layout_artifact_id"])
         self.assertEqual(evidence_body["generation"]["span_map_artifact_id"], body["generation"]["span_map_artifact_id"])
-        self.assertEqual(evidence_body["layout_manifest"]["reading_order_algorithm"], "layout-reading-order-v1")
+        self.assertEqual(evidence_body["layout_manifest"]["reading_order_algorithm"], "layout-reading-order-v2")
         self.assertEqual(evidence_body["layout_manifest"]["coordinate_space"]["unit"], "normalized")
+        self.assertEqual(evidence_body["pages"][0]["id"], body["pages"][0]["id"])
+        self.assertEqual(evidence_body["pages"][0]["extraction_method"], "native_pdf_text")
         self.assertTrue(evidence_body["span_map"])
         self.assertTrue(evidence_body["mention_evidence"])
         self.assertTrue(
@@ -317,6 +328,17 @@ class BinaryArtifactImportTests(unittest.TestCase):
         derived_evidence = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/document-extraction")
         self.assertEqual(derived_evidence.status_code, 200, derived_evidence.text)
         self.assertEqual(derived_evidence.json()["generation"]["id"], body["generation"]["id"])
+        retry_non_retryable = client.post(
+            f"/trips/{trip_id}/imports/{binary_job_id}/document-extraction/pages/1/retry",
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "retry-non-retryable-native"},
+        )
+        self.assertEqual(retry_non_retryable.status_code, 409)
+        self.assertEqual(retry_non_retryable.json()["error"]["code"], "import_document_page_not_retryable")
+        if body["pages"][0]["preview_artifact_id"]:
+            preview = client.get(f"/trips/{trip_id}/imports/{binary_job_id}/document-extraction/pages/1/preview")
+            self.assertEqual(preview.status_code, 200, preview.text)
+            self.assertEqual(preview.headers["content-type"], "image/png")
+            self.assertGreater(len(preview.content), 0)
 
         review_version = body["job"]["review_version"]
         for index, mention in enumerate([item for item in body["mentions"] if item["entity_type"] == "place"]):
@@ -351,6 +373,47 @@ class BinaryArtifactImportTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 201, replay.text)
         self.assertTrue(replay.json()["idempotent_replay"])
         self.assertEqual(replay.json()["job"]["id"], body["job"]["id"])
+
+    def test_partial_pdf_page_retry_creates_new_generation_without_mutating_lineage(self) -> None:
+        client, trip_id = create_saved_trip()
+        uploaded = upload_binary(client, trip_id, text_and_blank_pdf("外滩"), "pdf", "partial-guide.pdf", "application/pdf")
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        binary_job_id = uploaded.json()["job"]["id"]
+
+        extracted = client.post(
+            f"/trips/{trip_id}/imports/{binary_job_id}/extract-document",
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "extract-partial-pdf"},
+        )
+
+        self.assertEqual(extracted.status_code, 201, extracted.text)
+        first_body = extracted.json()
+        self.assertEqual(first_body["generation"]["generation"], 1)
+        self.assertEqual(first_body["generation"]["status"], "partial")
+        self.assertEqual(len(first_body["pages"]), 2)
+        retryable_pages = [page for page in first_body["pages"] if page["retryable"]]
+        self.assertEqual([page["page_number"] for page in retryable_pages], [2])
+
+        retried = client.post(
+            f"/trips/{trip_id}/imports/{binary_job_id}/document-extraction/pages/2/retry",
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "retry-partial-page-2"},
+        )
+        self.assertEqual(retried.status_code, 201, retried.text)
+        retried_body = retried.json()
+        self.assertEqual(retried_body["generation"]["generation"], 2)
+        self.assertNotEqual(retried_body["generation"]["id"], first_body["generation"]["id"])
+        self.assertEqual(len(retried_body["pages"]), 2)
+
+        latest = client.get(f"/trips/{trip_id}/imports/{binary_job_id}/document-extraction")
+        self.assertEqual(latest.status_code, 200, latest.text)
+        self.assertEqual(latest.json()["generation"]["id"], retried_body["generation"]["id"])
+
+        replay = client.post(
+            f"/trips/{trip_id}/imports/{binary_job_id}/document-extraction/pages/2/retry",
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "retry-partial-page-2"},
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        self.assertEqual(replay.json()["job"]["id"], retried_body["job"]["id"])
 
     def test_rejected_or_unready_binary_artifact_cannot_be_extracted(self) -> None:
         client, trip_id = create_saved_trip()
@@ -418,6 +481,29 @@ class BinaryArtifactImportTests(unittest.TestCase):
         self.assertEqual(text.status_code, 200)
         self.assertIn("Starbucks", text.text)
 
+    def test_chinese_image_ocr_smoke_creates_reviewable_document_text_when_ci_requires_ocr(self) -> None:
+        if not production_ocr_required():
+            self.skipTest("real Chinese OCR success smoke is required only in CI")
+        if not shutil.which(os.getenv("IMPORT_DOCUMENT_OCR_COMMAND", "tesseract")):
+            self.fail("tesseract executable is required for production OCR smoke tests")
+        client, trip_id = create_saved_trip()
+        uploaded = upload_binary(client, trip_id, chinese_text_image("上海博物馆"), "image", "ocr-cn.png", "image/png")
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        with patch.dict("os.environ", {"IMPORT_DOCUMENT_OCR_LANGUAGES": "chi_sim+eng"}):
+            response = client.post(
+                f"/trips/{trip_id}/imports/{uploaded.json()['job']['id']}/extract-document",
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "extract-image-ocr-cn"},
+            )
+        self.assertEqual(response.status_code, 201, response.text)
+        body = response.json()
+        self.assertEqual(body["generation"]["strategy"], "image_ocr")
+        self.assertEqual(body["pages"][0]["extraction_method"], "image_ocr")
+        self.assertTrue(body["pages"][0]["preview_artifact_id"])
+        self.assertTrue(all(span["source_kind"] == "ocr_token" for span in body["spans"]))
+        text = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/artifact")
+        self.assertEqual(text.status_code, 200)
+        self.assertTrue("上海" in text.text or "博物馆" in text.text, text.text)
+
 
 def create_saved_trip(*, raise_server_exceptions: bool = True) -> tuple[TestClient, str]:
     client = TestClient(app, raise_server_exceptions=raise_server_exceptions)
@@ -476,6 +562,16 @@ def text_image(text: str) -> bytes:
     return buffer.getvalue()
 
 
+def chinese_text_image(text: str) -> bytes:
+    image = Image.new("RGB", (920, 180), "white")
+    draw = ImageDraw.Draw(image)
+    font = load_cjk_test_font(64)
+    draw.text((32, 52), text, fill="black", font=font)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def load_test_font(size: int):
     for path in (
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -484,6 +580,21 @@ def load_test_font(size: int):
     ):
         if Path(path).exists():
             return ImageFont.truetype(path, size)
+    return ImageFont.load_default()
+
+
+def load_cjk_test_font(size: int):
+    for path in (
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+    ):
+        if Path(path).exists():
+            return ImageFont.truetype(path, size)
+    if production_ocr_required():
+        raise AssertionError("CJK font is required for production Chinese OCR smoke tests")
     return ImageFont.load_default()
 
 
@@ -514,6 +625,30 @@ def text_pdf(text: str) -> bytes:
     escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
     stream.set_data(f"BT /F1 16 Tf 40 240 Td ({escaped}) Tj ET".encode("utf-8"))
     page[NameObject("/Contents")] = writer._add_object(stream)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def text_and_blank_pdf(text: str) -> bytes:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=420, height=300)
+    font = DictionaryObject()
+    font.update(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    resources = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})})
+    page[NameObject("/Resources")] = resources
+    stream = DecodedStreamObject()
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream.set_data(f"BT /F1 16 Tf 40 240 Td ({escaped}) Tj ET".encode("utf-8"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_blank_page(width=420, height=300)
     buffer = io.BytesIO()
     writer.write(buffer)
     return buffer.getvalue()

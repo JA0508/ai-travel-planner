@@ -335,6 +335,33 @@ def extract_document_import(
         return trip_error_response(exc)
 
 
+@router.post(
+    "/{trip_id}/imports/{import_job_id}/document-extraction/pages/{page_number}/retry",
+    response_model=DocumentExtractionCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def retry_document_extraction_page(
+    trip_id: str,
+    import_job_id: str,
+    page_number: int,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> DocumentExtractionCreateResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_text_import_service().retry_document_extraction_page(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+            page_number=page_number,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
 @router.get(
     "/{trip_id}/imports/{import_job_id}/document-extraction",
     response_model=DocumentExtractionEvidenceResponse,
@@ -349,6 +376,29 @@ def get_document_extraction_evidence(
             trip_id=trip_id,
             import_job_id=import_job_id,
             capability=get_trip_capability_from_request(request, trip_id),
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get("/{trip_id}/imports/{import_job_id}/document-extraction/pages/{page_number}/preview", response_model=None)
+def get_document_extraction_page_preview(
+    trip_id: str,
+    import_job_id: str,
+    page_number: int,
+    request: Request,
+) -> Response | JSONResponse:
+    try:
+        content, mime_type = get_text_import_service().get_document_page_preview_bytes(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+            page_number=page_number,
+            capability=get_trip_capability_from_request(request, trip_id),
+        )
+        return Response(
+            content,
+            media_type=mime_type,
+            headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
         )
     except TripError as exc:
         return trip_error_response(exc)

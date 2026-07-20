@@ -33,6 +33,35 @@ class WorkerDocumentSpan(BaseModel):
     warning_codes: list[str] = Field(default_factory=list)
 
 
+class WorkerDocumentPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    page_number: int = Field(..., ge=1)
+    extraction_method: str
+    status: str
+    native_text_quality: float | None = Field(default=None, ge=0, le=1)
+    text_chars: int = Field(..., ge=0)
+    span_count: int = Field(..., ge=0)
+    rendered_page_ref: str | None = None
+    preview_page_ref: str | None = None
+    retryable: bool = False
+    error_code: str | None = None
+    warning_codes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkerRenderedPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str
+    page_number: int = Field(..., ge=1)
+    mime_type: str
+    byte_size: int = Field(..., ge=0)
+    width: int = Field(..., ge=1)
+    height: int = Field(..., ge=1)
+    content_base64: str
+
+
 class WorkerDocumentExtractionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -48,6 +77,8 @@ class WorkerDocumentExtractionResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     layout_manifest: dict[str, Any] = Field(default_factory=dict)
     span_map: list[dict[str, Any]] = Field(default_factory=list)
+    pages: list[WorkerDocumentPage] = Field(default_factory=list)
+    rendered_pages: list[WorkerRenderedPage] = Field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)

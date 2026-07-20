@@ -31,9 +31,13 @@ DEFAULT_IMPORT_PDF_MAX_PAGES = 80
 DEFAULT_IMPORT_PDF_MAX_OBJECTS = 5_000
 DEFAULT_IMPORT_DOCUMENT_EXTRACTION_TIMEOUT_SECONDS = 20.0
 DEFAULT_IMPORT_DOCUMENT_EXTRACTION_MAX_MEMORY_MB = 768
-DEFAULT_IMPORT_DOCUMENT_EXTRACTION_MAX_OUTPUT_BYTES = 1024 * 1024
+DEFAULT_IMPORT_DOCUMENT_EXTRACTION_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 DEFAULT_IMPORT_DOCUMENT_MAX_TEXT_BYTES = 500 * 1024
 DEFAULT_IMPORT_DOCUMENT_OCR_TIMEOUT_SECONDS = 10.0
+DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_SCALE = 2.0
+DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_MAX_PIXELS = 4_000_000
+DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_MAX_BYTES = 2 * 1024 * 1024
+DEFAULT_IMPORT_DOCUMENT_PDF_NATIVE_MIN_QUALITY = 0.35
 
 
 def parse_cors_allow_origins(raw_value: str | None) -> list[str]:
@@ -272,6 +276,28 @@ def get_import_document_ocr_timeout_seconds() -> float:
 
 def get_import_pdf_page_ocr_enabled() -> bool:
     return os.getenv("IMPORT_PDF_PAGE_OCR_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
+
+
+def get_import_document_pdf_render_scale() -> float:
+    return parse_positive_float_env("IMPORT_DOCUMENT_PDF_RENDER_SCALE", DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_SCALE)
+
+
+def get_import_document_pdf_render_max_pixels() -> int:
+    return parse_positive_int_env("IMPORT_DOCUMENT_PDF_RENDER_MAX_PIXELS", DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_MAX_PIXELS)
+
+
+def get_import_document_pdf_render_max_bytes() -> int:
+    return parse_positive_int_env("IMPORT_DOCUMENT_PDF_RENDER_MAX_BYTES", DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_MAX_BYTES)
+
+
+def get_import_document_pdf_native_min_quality() -> float:
+    return max(
+        0.0,
+        min(
+            parse_positive_float_env("IMPORT_DOCUMENT_PDF_NATIVE_MIN_QUALITY", DEFAULT_IMPORT_DOCUMENT_PDF_NATIVE_MIN_QUALITY),
+            1.0,
+        ),
+    )
 
 
 def get_import_processing_mode() -> str:

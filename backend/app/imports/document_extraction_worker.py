@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import io
 import json
@@ -35,6 +36,33 @@ class TextUnit:
     source_kind: str
     confidence: float | None
     warning_codes: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class PageExtraction:
+    page_number: int
+    extraction_method: str
+    status: str
+    native_text_quality: float | None
+    text_chars: int
+    span_count: int
+    rendered_page_ref: str | None
+    preview_page_ref: str | None
+    retryable: bool
+    error_code: str | None
+    warning_codes: list[str]
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedPage:
+    ref: str
+    page_number: int
+    mime_type: str
+    byte_size: int
+    width: int
+    height: int
+    content_base64: str
 
 
 def main() -> int:
@@ -80,47 +108,168 @@ def extract_pdf(*, path: Path, limits: dict[str, Any]) -> dict[str, Any]:
         return failed("pdf_native_text", "import_pdf_page_limit_exceeded", {"page_count": page_count})
 
     units: list[TextUnit] = []
+    pages: list[PageExtraction] = []
+    rendered_pages: list[RenderedPage] = []
     page_failures: list[dict[str, Any]] = []
     ocr_pages = 0
+    native_text_pages = 0
     for page_index, page in enumerate(reader.pages):
         page_number = page_index + 1
+        rendered_ref: str | None = None
+        preview_ref: str | None = None
         try:
             native_units = native_pdf_units(page=page, page_number=page_number)
         except Exception as exc:
             page_failures.append({"page_number": page_number, "error_code": "import_pdf_native_text_failed", "failure": exc.__class__.__name__})
             native_units = []
-        if native_units:
+        native_quality = assess_native_text_quality(native_units)
+        if should_render_pdf_previews(limits):
+            rendered_preview = render_pdf_page(path=path, page_index=page_index, limits=limits, purpose="preview")
+            if rendered_preview is not None:
+                rendered_pages.append(rendered_preview)
+                preview_ref = rendered_preview.ref
+        if native_units and native_quality >= float(limits.get("pdf_native_min_quality", 0.35)):
             units.extend(native_units)
+            native_text_pages += 1
+            pages.append(
+                PageExtraction(
+                    page_number=page_number,
+                    extraction_method="native_pdf_text",
+                    status="extracted",
+                    native_text_quality=native_quality,
+                    text_chars=sum(len(unit.text) for unit in native_units),
+                    span_count=len(native_units),
+                    rendered_page_ref=None,
+                    preview_page_ref=preview_ref,
+                    retryable=False,
+                    error_code=None,
+                    warning_codes=[],
+                    metadata={
+                        "unit_count": len(native_units),
+                        "image_width": float(page.mediabox.width),
+                        "image_height": float(page.mediabox.height),
+                    },
+                )
+            )
             continue
+        if native_units:
+            page_failures.append({"page_number": page_number, "error_code": "import_pdf_native_text_low_quality"})
         if bool(limits.get("enable_pdf_page_ocr", False)):
-            rendered = render_pdf_page(path=path, page_index=page_index, limits=limits)
+            rendered = render_pdf_page(path=path, page_index=page_index, limits=limits, purpose="ocr")
             if rendered is None:
                 page_failures.append({"page_number": page_number, "error_code": "import_pdf_render_unavailable"})
+                pages.append(
+                    PageExtraction(
+                        page_number=page_number,
+                        extraction_method="none",
+                        status="failed",
+                        native_text_quality=native_quality,
+                        text_chars=0,
+                        span_count=0,
+                        rendered_page_ref=None,
+                        preview_page_ref=preview_ref,
+                        retryable=True,
+                        error_code="import_pdf_render_unavailable",
+                        warning_codes=["pdf_page_render_failed"],
+                        metadata={
+                            "native_unit_count": len(native_units),
+                            "image_width": float(page.mediabox.width),
+                            "image_height": float(page.mediabox.height),
+                        },
+                    )
+                )
                 continue
             try:
-                page_ocr = ocr_image(path=rendered, page_number=page_number, limits=limits, source_kind="ocr_token")
+                rendered_pages.append(rendered)
+                rendered_ref = rendered.ref
+                page_ocr = ocr_image(path=Path(rendered.ref), page_number=page_number, limits=limits, source_kind="ocr_token")
             finally:
-                rendered.unlink(missing_ok=True)
+                Path(rendered.ref).unlink(missing_ok=True)
             if page_ocr:
                 ocr_pages += 1
                 units.extend(page_ocr)
+                pages.append(
+                    PageExtraction(
+                        page_number=page_number,
+                        extraction_method="pdf_page_ocr",
+                        status="extracted",
+                        native_text_quality=native_quality,
+                        text_chars=sum(len(unit.text) for unit in page_ocr),
+                        span_count=len(page_ocr),
+                        rendered_page_ref=rendered_ref,
+                        preview_page_ref=preview_ref or rendered_ref,
+                        retryable=False,
+                        error_code=None,
+                        warning_codes=["pdf_native_text_low_quality"] if native_units else [],
+                        metadata={
+                            "native_unit_count": len(native_units),
+                            "ocr_unit_count": len(page_ocr),
+                            "image_width": float(page.mediabox.width),
+                            "image_height": float(page.mediabox.height),
+                        },
+                    )
+                )
             else:
                 page_failures.append({"page_number": page_number, "error_code": "import_document_ocr_unavailable"})
+                pages.append(
+                    PageExtraction(
+                        page_number=page_number,
+                        extraction_method="pdf_page_ocr",
+                        status="failed",
+                        native_text_quality=native_quality,
+                        text_chars=0,
+                        span_count=0,
+                        rendered_page_ref=rendered_ref,
+                        preview_page_ref=preview_ref or rendered_ref,
+                        retryable=True,
+                        error_code="import_document_ocr_unavailable",
+                        warning_codes=["document_ocr_unavailable"],
+                        metadata={
+                            "native_unit_count": len(native_units),
+                            "image_width": float(page.mediabox.width),
+                            "image_height": float(page.mediabox.height),
+                        },
+                    )
+                )
         else:
             page_failures.append({"page_number": page_number, "error_code": "import_pdf_page_has_no_native_text"})
+            pages.append(
+                PageExtraction(
+                    page_number=page_number,
+                    extraction_method="none",
+                    status="failed",
+                    native_text_quality=native_quality,
+                    text_chars=0,
+                    span_count=0,
+                    rendered_page_ref=None,
+                    preview_page_ref=preview_ref,
+                    retryable=True,
+                    error_code="import_pdf_page_has_no_native_text",
+                    warning_codes=["pdf_page_no_text"],
+                    metadata={
+                        "native_unit_count": len(native_units),
+                        "image_width": float(page.mediabox.width),
+                        "image_height": float(page.mediabox.height),
+                    },
+                )
+            )
 
     return build_result(
         strategy="pdf_native_plus_selective_ocr" if ocr_pages else "pdf_native_text",
         units=units,
         page_count=page_count,
         metadata={
-            "native_text_pages": page_count - len([item for item in page_failures if item.get("error_code") == "import_pdf_page_has_no_native_text"]),
+            "native_text_pages": native_text_pages,
             "ocr_pages": ocr_pages,
             "page_failures": page_failures,
             "ocr_capabilities": ocr_capabilities(limits),
+            "native_quality_threshold": float(limits.get("pdf_native_min_quality", 0.35)),
+            "reading_order_algorithm": "layout-reading-order-v2",
         },
         warning_codes=["partial_page_extraction_failed"] if page_failures and units else [],
         error_code="import_document_extraction_no_text" if not units else None,
+        pages=pages,
+        rendered_pages=rendered_pages,
     )
 
 
@@ -134,23 +283,34 @@ def native_pdf_units(*, page, page_number: int) -> list[TextUnit]:
             return
         x = float(tm[4])
         y = float(tm[5])
-        width = max(float(font_size) * max(1, len(cleaned)) * 0.5, 1.0)
+        estimated_width = max(float(font_size) * max(1, len(cleaned)) * 0.5, 1.0)
+        char_width = estimated_width / max(1, len(cleaned))
         height = max(float(font_size), 1.0)
-        raw_units.append(
-            TextUnit(
-                text=cleaned,
-                page_number=page_number,
-                block_index=0,
-                line_index=0,
-                token_index=None,
-                page_width=float(page.mediabox.width),
-                page_height=page_height,
-                bbox=normalize_bbox(x, max(0.0, page_height - y - height), width, height, float(page.mediabox.width), page_height),
-                source_kind="native_pdf_text",
-                confidence=None,
-                warning_codes=[],
+        for token_index, (segment, start_index, end_index) in enumerate(native_text_segments(cleaned)):
+            segment_x = x + (char_width * start_index)
+            segment_width = max(char_width * max(1, end_index - start_index), 1.0)
+            raw_units.append(
+                TextUnit(
+                    text=segment,
+                    page_number=page_number,
+                    block_index=0,
+                    line_index=0,
+                    token_index=token_index,
+                    page_width=float(page.mediabox.width),
+                    page_height=page_height,
+                    bbox=normalize_bbox(
+                        segment_x,
+                        max(0.0, page_height - y - height),
+                        segment_width,
+                        height,
+                        float(page.mediabox.width),
+                        page_height,
+                    ),
+                    source_kind="native_pdf_text",
+                    confidence=None,
+                    warning_codes=["native_pdf_bbox_estimated"],
+                )
             )
-        )
 
     page.extract_text(visitor_text=visitor)
     ordered = sorted(raw_units, key=lambda unit: (unit.page_number, unit.bbox["y"], unit.bbox["x"], unit.text))
@@ -160,7 +320,7 @@ def native_pdf_units(*, page, page_number: int) -> list[TextUnit]:
             page_number=unit.page_number,
             block_index=index,
             line_index=index,
-            token_index=None,
+            token_index=unit.token_index,
             page_width=unit.page_width,
             page_height=unit.page_height,
             bbox=unit.bbox,
@@ -172,6 +332,22 @@ def native_pdf_units(*, page, page_number: int) -> list[TextUnit]:
     ]
 
 
+def native_text_segments(text: str) -> list[tuple[str, int, int]]:
+    segments: list[tuple[str, int, int]] = []
+    start: int | None = None
+    for index, char in enumerate(text):
+        if char.isspace() or char in "，,、:：;；。.!?！？()（）[]【】":
+            if start is not None:
+                segments.append((text[start:index], start, index))
+                start = None
+            continue
+        if start is None:
+            start = index
+    if start is not None:
+        segments.append((text[start:], start, len(text)))
+    return segments or [(text, 0, len(text))]
+
+
 def extract_image(*, path: Path, limits: dict[str, Any]) -> dict[str, Any]:
     try:
         with Image.open(path) as image:
@@ -180,6 +356,20 @@ def extract_image(*, path: Path, limits: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         return failed("image_ocr", "import_image_decode_failed", {"page_failures": [{"page_number": 1, "error_code": "import_image_decode_failed"}]})
     units = ocr_image(path=path, page_number=1, limits=limits, source_kind="ocr_token", page_width=width, page_height=height)
+    page = PageExtraction(
+        page_number=1,
+        extraction_method="image_ocr",
+        status="extracted" if units else "failed",
+        native_text_quality=None,
+        text_chars=sum(len(unit.text) for unit in units),
+        span_count=len(units),
+        rendered_page_ref=None,
+        preview_page_ref="sanitized-image",
+        retryable=not bool(units),
+        error_code=None if units else "import_document_ocr_unavailable",
+        warning_codes=[] if units else ["document_ocr_unavailable"],
+        metadata={"image_width": width, "image_height": height},
+    )
     return build_result(
         strategy="image_ocr",
         units=units,
@@ -192,6 +382,8 @@ def extract_image(*, path: Path, limits: dict[str, Any]) -> dict[str, Any]:
         },
         warning_codes=[],
         error_code="import_document_ocr_unavailable" if not units else None,
+        pages=[page],
+        rendered_pages=[],
     )
 
 
@@ -270,20 +462,38 @@ def tsv_units(raw: str, *, page_number: int, source_kind: str, page_width: float
     return sorted(units, key=lambda unit: (unit.page_number, unit.block_index, unit.line_index, unit.token_index or 0, unit.bbox["x"]))
 
 
-def render_pdf_page(*, path: Path, page_index: int, limits: dict[str, Any]) -> Path | None:
+def render_pdf_page(*, path: Path, page_index: int, limits: dict[str, Any], purpose: str) -> RenderedPage | None:
     try:
         import pypdfium2 as pdfium
     except Exception:
         return None
     scale = float(limits.get("pdf_render_scale", 2.0))
+    max_pixels = int(limits.get("pdf_render_max_pixels", 4_000_000))
+    max_bytes = int(limits.get("pdf_render_max_bytes", 2_000_000))
     document = pdfium.PdfDocument(str(path))
     try:
         page = document[page_index]
         bitmap = page.render(scale=scale)
         image = bitmap.to_pil()
+        if image.width * image.height > max_pixels:
+            return None
         tmp = Path(tempfile.gettempdir()) / f"pdf-page-{page_index}-{id(image)}.png"
         image.save(tmp, format="PNG")
-        return tmp
+        content = tmp.read_bytes()
+        if len(content) > max_bytes:
+            tmp.unlink(missing_ok=True)
+            return None
+        if purpose == "preview":
+            tmp.unlink(missing_ok=True)
+        return RenderedPage(
+            ref=str(tmp),
+            page_number=page_index + 1,
+            mime_type="image/png",
+            byte_size=len(content),
+            width=int(image.width),
+            height=int(image.height),
+            content_base64=base64.b64encode(content).decode("ascii"),
+        )
     finally:
         document.close()
 
@@ -296,6 +506,8 @@ def build_result(
     metadata: dict[str, Any],
     warning_codes: list[str],
     error_code: str | None,
+    pages: list[PageExtraction],
+    rendered_pages: list[RenderedPage],
 ) -> dict[str, Any]:
     text, spans, layout_manifest, span_map = compose_text_and_spans(units)
     status = "failed" if not text.strip() else ("partial" if warning_codes or metadata.get("page_failures") else "review_ready")
@@ -312,6 +524,53 @@ def build_result(
         "metadata": metadata,
         "layout_manifest": layout_manifest,
         "span_map": span_map,
+        "pages": [page_to_payload(page) for page in pages],
+        "rendered_pages": [rendered_page_to_payload(page) for page in rendered_pages],
+    }
+
+
+def assess_native_text_quality(units: list[TextUnit]) -> float:
+    if not units:
+        return 0.0
+    text_chars = sum(len(unit.text.strip()) for unit in units)
+    boxes_with_area = sum(1 for unit in units if float(unit.bbox.get("width", 0)) > 0 and float(unit.bbox.get("height", 0)) > 0)
+    unique_lines = len({(unit.page_number, unit.block_index, unit.line_index) for unit in units})
+    char_score = min(text_chars / 80.0, 1.0)
+    geometry_score = boxes_with_area / max(1, len(units))
+    structure_score = min(unique_lines / max(1, len(units)), 1.0)
+    return round((char_score * 0.45) + (geometry_score * 0.35) + (structure_score * 0.2), 4)
+
+
+def should_render_pdf_previews(limits: dict[str, Any]) -> bool:
+    return bool(limits.get("persist_pdf_page_previews", True))
+
+
+def page_to_payload(page: PageExtraction) -> dict[str, Any]:
+    return {
+        "page_number": page.page_number,
+        "extraction_method": page.extraction_method,
+        "status": page.status,
+        "native_text_quality": page.native_text_quality,
+        "text_chars": page.text_chars,
+        "span_count": page.span_count,
+        "rendered_page_ref": page.rendered_page_ref,
+        "preview_page_ref": page.preview_page_ref,
+        "retryable": page.retryable,
+        "error_code": page.error_code,
+        "warning_codes": page.warning_codes,
+        "metadata": page.metadata,
+    }
+
+
+def rendered_page_to_payload(page: RenderedPage) -> dict[str, Any]:
+    return {
+        "ref": page.ref,
+        "page_number": page.page_number,
+        "mime_type": page.mime_type,
+        "byte_size": page.byte_size,
+        "width": page.width,
+        "height": page.height,
+        "content_base64": page.content_base64,
     }
 
 
@@ -320,7 +579,18 @@ def compose_text_and_spans(units: list[TextUnit]) -> tuple[str, list[dict[str, A
     spans: list[dict[str, Any]] = []
     span_map: list[dict[str, Any]] = []
     previous_key: tuple[int, int, int] | None = None
-    ordered = sorted(units, key=lambda unit: (unit.page_number, unit.block_index, unit.line_index, unit.token_index or 0, unit.bbox.get("x", 0)))
+    ordered = sorted(
+        units,
+        key=lambda unit: (
+            unit.page_number,
+            round(float(unit.bbox.get("y", 0)), 4),
+            round(float(unit.bbox.get("x", 0)), 4),
+            unit.block_index,
+            unit.line_index,
+            unit.token_index or 0,
+            unit.text,
+        ),
+    )
     pages: dict[int, dict[str, Any]] = {}
     blocks: dict[str, dict[str, Any]] = {}
     lines: dict[str, dict[str, Any]] = {}
@@ -424,7 +694,7 @@ def compose_text_and_spans(units: list[TextUnit]) -> tuple[str, list[dict[str, A
         block["bbox"] = union_bboxes([lines[line_id]["bbox"] for line_id in block["line_ids"] if line_id in lines])
     layout_manifest = {
         "schema_version": DOCUMENT_EXTRACTION_SCHEMA_VERSION,
-        "reading_order_algorithm": "layout-reading-order-v1",
+        "reading_order_algorithm": "layout-reading-order-v2",
         "coordinate_space": {"origin": "top-left", "unit": "normalized", "range": [0.0, 1.0]},
         "pages": [
             {

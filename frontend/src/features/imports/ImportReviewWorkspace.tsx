@@ -8,6 +8,7 @@ import {
   extractDocumentImport,
   fetchBinaryInspection,
   fetchDocumentExtractionEvidence,
+  fetchDocumentPagePreviewBlob,
   fetchImportArtifact,
   fetchImportReview,
   fetchSanitizedImageBlob,
@@ -468,6 +469,7 @@ export function ImportReviewWorkspace({
 
       {state.status === "reviewing" ? (
         <ReviewPane
+          tripId={savedTripId}
           sourceText={state.sourceText}
           mentions={state.mentions}
           activeMentionId={state.activeMentionId}
@@ -510,13 +512,38 @@ export function ImportReviewWorkspace({
 }
 
 const BINARY_IMPORT_STORAGE_KEY = "ai-travel-planner:last-binary-import";
-const DOCUMENT_EVIDENCE_SURFACE = { width: 180, height: 240 };
+const DOCUMENT_EVIDENCE_MAX_SURFACE = { width: 180, height: 240 };
 
 function rememberBinaryImport(tripId: string, jobId: string, declaredKind: "image" | "pdf") {
   if (typeof window === "undefined") {
     return;
   }
   window.localStorage.setItem(BINARY_IMPORT_STORAGE_KEY, binaryImportStorageValue(tripId, jobId, declaredKind));
+}
+
+function pagePreviewSurface(page: DocumentExtractionEvidenceResponse["pages"][number] | null): { width: number; height: number } {
+  return fitPreviewSurface(
+    numericMetadata(page?.metadata.image_width) ?? DOCUMENT_EVIDENCE_MAX_SURFACE.width,
+    numericMetadata(page?.metadata.image_height) ?? DOCUMENT_EVIDENCE_MAX_SURFACE.height,
+  );
+}
+
+function fitPreviewSurface(width: number, height: number): { width: number; height: number } {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return DOCUMENT_EVIDENCE_MAX_SURFACE;
+  }
+  const scale = Math.min(
+    DOCUMENT_EVIDENCE_MAX_SURFACE.width / width,
+    DOCUMENT_EVIDENCE_MAX_SURFACE.height / height,
+  );
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+}
+
+function numericMetadata(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function DocumentExtractionAction({
@@ -562,6 +589,7 @@ function DocumentExtractionAction({
 }
 
 function ReviewPane({
+  tripId,
   sourceText,
   mentions,
   activeMentionId,
@@ -572,6 +600,7 @@ function ReviewPane({
   sourceFetch,
   documentEvidence,
 }: {
+  tripId: string | null;
   sourceText: string;
   mentions: ImportMention[];
   activeMentionId: string | null;
@@ -593,7 +622,9 @@ function ReviewPane({
           <span style={hintStyle}>review v{reviewVersion}</span>
         </div>
         {sourceFetch ? <URLProvenance sourceFetch={sourceFetch} /> : null}
-        {documentEvidence ? <DocumentEvidencePanel evidence={documentEvidence} activeMentionId={activeMention?.id ?? null} /> : null}
+        {documentEvidence && tripId ? (
+          <DocumentEvidencePanel tripId={tripId} evidence={documentEvidence} activeMentionId={activeMention?.id ?? null} />
+        ) : null}
         <pre style={sourceTextStyle}>
           {sourceSegments(sourceText, activeMention).map((segment, index) =>
             segment.active ? (
@@ -633,16 +664,84 @@ function ReviewPane({
 }
 
 function DocumentEvidencePanel({
+  tripId,
   evidence,
   activeMentionId,
 }: {
+  tripId: string;
   evidence: DocumentExtractionEvidenceResponse;
   activeMentionId: string | null;
 }) {
   const summary = buildDocumentEvidenceSummary(evidence);
   const activeEvidence = evidence.mention_evidence.find((mention) => mention.mention_id === activeMentionId) ?? null;
   const boxes = activeEvidence ? mentionEvidenceBoxes(activeEvidence) : [];
-  const overlayBoxes = boxes.map((box) => mapNormalizedBoxToOverlay(box, DOCUMENT_EVIDENCE_SURFACE));
+  const activePageNumber = activeEvidence?.page_numbers[0] ?? evidence.pages[0]?.page_number ?? null;
+  const activePage = activePageNumber
+    ? evidence.pages.find((page) => page.page_number === activePageNumber) ?? null
+    : null;
+  const [preview, setPreview] = useState<
+    | { status: "idle" }
+    | { status: "loading"; pageNumber: number }
+    | { status: "ready"; pageNumber: number; url: string; width: number; height: number }
+    | { status: "error"; pageNumber: number }
+  >({ status: "idle" });
+  const previewUrlRef = useRef<string | null>(null);
+  const surface = preview.status === "ready"
+    ? fitPreviewSurface(preview.width, preview.height)
+    : pagePreviewSurface(activePage);
+  const overlayBoxes = boxes
+    .filter((box) => activePageNumber === null || activeEvidence?.page_numbers.includes(activePageNumber))
+    .map((box) => mapNormalizedBoxToOverlay(box, surface));
+
+  useEffect(() => {
+    if (!activePageNumber || !activePage?.preview_artifact_id) {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = null;
+      }
+      setPreview({ status: "idle" });
+      return;
+    }
+    let cancelled = false;
+    setPreview({ status: "loading", pageNumber: activePageNumber });
+    void fetchDocumentPagePreviewBlob(tripId, evidence.job.id, activePageNumber).then((response) => {
+      if (cancelled) {
+        return;
+      }
+      if (!response.ok) {
+        if (previewUrlRef.current) {
+          URL.revokeObjectURL(previewUrlRef.current);
+          previewUrlRef.current = null;
+        }
+        setPreview({ status: "error", pageNumber: activePageNumber });
+        return;
+      }
+      const url = URL.createObjectURL(response.data);
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+      }
+      previewUrlRef.current = url;
+      setPreview({
+        status: "ready",
+        pageNumber: activePageNumber,
+        url,
+        width: numericMetadata(activePage.metadata.image_width) ?? DOCUMENT_EVIDENCE_MAX_SURFACE.width,
+        height: numericMetadata(activePage.metadata.image_height) ?? DOCUMENT_EVIDENCE_MAX_SURFACE.height,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePage?.metadata, activePage?.preview_artifact_id, activePageNumber, evidence.job.id, tripId]);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+      }
+    };
+  }, []);
+
   if (!summary) {
     return null;
   }
@@ -669,7 +768,24 @@ function DocumentEvidencePanel({
           <span style={hintStyle}>
             {activeEvidence.mention_text} · {activeEvidence.geometry_available ? `page ${activeEvidence.page_numbers.join(", ")}` : "geometry unavailable"}
           </span>
-          <div style={documentPageSurfaceStyle} aria-label="Active mention document geometry">
+          <div style={{ ...documentPageSurfaceStyle, width: surface.width, height: surface.height }} aria-label="Active mention document geometry">
+            {preview.status === "ready" ? (
+              <img
+                src={preview.url}
+                alt=""
+                style={documentPagePreviewImageStyle}
+                onLoad={(event) => {
+                  const image = event.currentTarget;
+                  if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+                    setPreview((current) =>
+                      current.status === "ready" && current.pageNumber === preview.pageNumber
+                        ? { ...current, width: image.naturalWidth, height: image.naturalHeight }
+                        : current,
+                    );
+                  }
+                }}
+              />
+            ) : null}
             {overlayBoxes.map((box, index) => (
               <span
                 key={`${box.left}:${box.top}:${index}`}
@@ -683,6 +799,10 @@ function DocumentEvidencePanel({
                 }}
               />
             ))}
+            {preview.status === "loading" ? <span style={documentPreviewStatusStyle}>Loading preview</span> : null}
+            {preview.status === "error" || !activePage?.preview_artifact_id ? (
+              <span style={documentPreviewStatusStyle}>Preview unavailable</span>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -855,8 +975,10 @@ const provenanceStyle = { display: "grid", gap: 5, padding: 10, borderRadius: 12
 const provenanceRowStyle = { display: "flex", justifyContent: "space-between", gap: 10, overflowWrap: "anywhere" } satisfies CSSProperties;
 const documentEvidenceStyle = { ...provenanceStyle, background: "rgba(255,255,255,0.9)" } satisfies CSSProperties;
 const documentEvidenceOverlayRowStyle = { display: "grid", gap: 8, justifyItems: "start" } satisfies CSSProperties;
-const documentPageSurfaceStyle = { position: "relative", width: DOCUMENT_EVIDENCE_SURFACE.width, height: DOCUMENT_EVIDENCE_SURFACE.height, borderRadius: 8, border: "1px solid rgba(21,21,21,0.12)", background: "linear-gradient(180deg, rgba(21,21,21,0.035), rgba(21,21,21,0.015))", overflow: "hidden" } satisfies CSSProperties;
+const documentPageSurfaceStyle = { position: "relative", borderRadius: 8, border: "1px solid rgba(21,21,21,0.12)", background: "rgba(21,21,21,0.035)", overflow: "hidden" } satisfies CSSProperties;
+const documentPagePreviewImageStyle = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "fill" } satisfies CSSProperties;
 const documentBoxStyle = { position: "absolute", display: "block", border: "1px solid #48673f", background: "rgba(123,160,127,0.28)", borderRadius: 2, pointerEvents: "none" } satisfies CSSProperties;
+const documentPreviewStatusStyle = { position: "absolute", inset: 0, display: "grid", placeItems: "center", fontSize: 11, color: "var(--ec-slate)", background: "rgba(255,255,255,0.7)" } satisfies CSSProperties;
 const sourceLinkStyle = { color: "#48673f", fontWeight: 900, textDecoration: "none" } satisfies CSSProperties;
 const sourceTextStyle = { margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 420, overflow: "auto", padding: 12, borderRadius: 12, border: "1px solid rgba(21,21,21,0.08)", background: "rgba(21,21,21,0.035)", color: "var(--ec-ink)", fontFamily: "inherit", lineHeight: 1.6 } satisfies CSSProperties;
 const markStyle = { background: "rgba(247,208,138,0.85)", color: "inherit", borderRadius: 4, padding: "1px 2px" } satisfies CSSProperties;

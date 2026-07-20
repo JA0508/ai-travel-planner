@@ -251,6 +251,24 @@ export type DocumentExtractionGeneration = {
   created_at: string;
 };
 
+export type DocumentExtractionPage = {
+  id: string;
+  generation_id: string;
+  page_number: number;
+  extraction_method: "native_pdf_text" | "pdf_page_ocr" | "image_ocr" | "none" | string;
+  status: "extracted" | "partial" | "failed" | "skipped" | string;
+  native_text_quality?: number | null;
+  text_chars: number;
+  span_count: number;
+  rendered_artifact_id?: string | null;
+  preview_artifact_id?: string | null;
+  retryable: boolean;
+  error_code?: string | null;
+  warning_codes: string[];
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
 export type DocumentExtractionCreateResponse = {
   generation: DocumentExtractionGeneration;
   artifact?: SourceArtifact | null;
@@ -258,6 +276,7 @@ export type DocumentExtractionCreateResponse = {
   mentions: ImportMention[];
   derivation?: ArtifactDerivation | null;
   spans: DocumentTextSpan[];
+  pages: DocumentExtractionPage[];
   duplicate_artifact: boolean;
   idempotent_replay: boolean;
 };
@@ -280,6 +299,7 @@ export type DocumentExtractionEvidenceResponse = {
   generation: DocumentExtractionGeneration;
   artifact: SourceArtifact;
   job: ImportJob;
+  pages: DocumentExtractionPage[];
   layout_manifest: Record<string, unknown>;
   span_map: Array<Record<string, unknown>>;
   mentions: ImportMention[];

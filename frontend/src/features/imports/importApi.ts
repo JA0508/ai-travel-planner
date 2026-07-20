@@ -81,6 +81,23 @@ export async function fetchDocumentExtractionEvidence(tripId: string, importJobI
   );
 }
 
+export async function fetchDocumentPagePreviewBlob(tripId: string, importJobId: string, pageNumber: number) {
+  const response = await fetch(TRIP_API_ENDPOINTS.getDocumentPagePreview(tripId, importJobId, pageNumber), {
+    credentials: "include",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const payload = await readJsonSafely(response);
+    const error = extractTripError(payload);
+    return {
+      ok: false as const,
+      code: error?.code ?? "import_document_page_preview_fetch_failed",
+      message: error?.message ?? "获取文档页面预览失败",
+    };
+  }
+  return { ok: true as const, data: await response.blob() };
+}
+
 export async function fetchImportArtifact(tripId: string, importJobId: string) {
   const response = await fetch(TRIP_API_ENDPOINTS.getTextImportArtifact(tripId, importJobId), {
     credentials: "include",

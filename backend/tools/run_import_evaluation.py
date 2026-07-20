@@ -157,6 +157,12 @@ DOCUMENT_EXTRACTION_FIXTURES = [
         expected_places_min=0,
         expected_strategy="image_ocr",
     ),
+    DocumentExtractionFixture(
+        name="document_pdf_partial_page_retry",
+        binary_fixture=BinaryImportFixture("document_pdf_partial_source", "pdf", "partial-guide.pdf", "application/pdf", "text_blank_pdf", expect_status="artifact_ready"),
+        expected_places_min=2,
+        expected_strategy="pdf_native_text",
+    ),
 ]
 
 
@@ -272,6 +278,11 @@ INVARIANTS = [
     "DOCUMENT_TEXT_DERIVATION_TRACEABLE",
     "DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE",
     "DOCUMENT_IMPORT_CANDIDATE_PROVENANCE_TRACEABLE",
+    "DOCUMENT_PAGE_RECORDS_PERSISTED",
+    "DOCUMENT_PAGE_NATIVE_QUALITY_ASSESSED",
+    "DOCUMENT_PAGE_PREVIEW_ARTIFACT_TRACEABLE",
+    "DOCUMENT_PAGE_PREVIEW_ENDPOINT_PRIVATE",
+    "DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION",
 ]
 
 
@@ -760,7 +771,7 @@ def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtr
         passed.append("DOCUMENT_SPAN_MAP_ARTIFACT_TRACEABLE")
     else:
         failed.append("DOCUMENT_SPAN_MAP_ARTIFACT_TRACEABLE")
-    if body["generation"].get("metadata", {}).get("reading_order_algorithm") == "layout-reading-order-v1":
+    if body["generation"].get("metadata", {}).get("reading_order_algorithm") == "layout-reading-order-v2":
         passed.append("DOCUMENT_READING_ORDER_DETERMINISTIC")
     else:
         failed.append("DOCUMENT_READING_ORDER_DETERMINISTIC")
@@ -770,6 +781,33 @@ def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtr
         failed.append("DOCUMENT_COORDINATE_SPACE_NORMALIZED")
     if body["artifact"]["privacy_level"] == "private":
         passed.append("DOCUMENT_DERIVED_ARTIFACT_PRIVATE")
+    if body.get("pages") and len(body["pages"]) == body["generation"]["page_count"]:
+        passed.append("DOCUMENT_PAGE_RECORDS_PERSISTED")
+    else:
+        failed.append("DOCUMENT_PAGE_RECORDS_PERSISTED")
+    if body.get("pages") and all(
+        page["native_text_quality"] is not None
+        for page in body["pages"]
+        if page["extraction_method"] in {"native_pdf_text", "pdf_page_ocr", "none"}
+    ):
+        passed.append("DOCUMENT_PAGE_NATIVE_QUALITY_ASSESSED")
+    elif fixture.binary_fixture.declared_kind == "image":
+        passed.append("DOCUMENT_PAGE_NATIVE_QUALITY_ASSESSED")
+    else:
+        failed.append("DOCUMENT_PAGE_NATIVE_QUALITY_ASSESSED")
+    preview_pages = [page for page in body.get("pages", []) if page.get("preview_artifact_id")]
+    if preview_pages:
+        passed.append("DOCUMENT_PAGE_PREVIEW_ARTIFACT_TRACEABLE")
+        preview = client.get(
+            f"/trips/{trip_id}/imports/{binary_body['job']['id']}/document-extraction/pages/{preview_pages[0]['page_number']}/preview"
+        )
+        if preview.status_code == 200 and preview.headers.get("cache-control") == "private, no-store" and preview.content:
+            passed.append("DOCUMENT_PAGE_PREVIEW_ENDPOINT_PRIVATE")
+        else:
+            failed.append("DOCUMENT_PAGE_PREVIEW_ENDPOINT_PRIVATE")
+    else:
+        failed.append("DOCUMENT_PAGE_PREVIEW_ARTIFACT_TRACEABLE")
+        failed.append("DOCUMENT_PAGE_PREVIEW_ENDPOINT_PRIVATE")
     text = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/artifact")
     if text.status_code == 200 and not text.content.startswith(b"%PDF"):
         passed.append("DOCUMENT_TEXT_ARTIFACT_NO_BINARY_BYTES")
@@ -834,6 +872,20 @@ def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtr
         passed.append("DOCUMENT_OCR_CAPABILITY_REPORTED")
     else:
         failed.append("DOCUMENT_OCR_CAPABILITY_REPORTED")
+    retryable_pages = [page for page in body.get("pages", []) if page.get("retryable")]
+    if retryable_pages:
+        retry = client.post(
+            f"/trips/{trip_id}/imports/{binary_body['job']['id']}/document-extraction/pages/{retryable_pages[0]['page_number']}/retry",
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": f"eval-document-page-retry-{fixture_key}"},
+        )
+        if retry.status_code == 201 and retry.json()["generation"]["generation"] == body["generation"]["generation"] + 1:
+            passed.append("DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION")
+        else:
+            failed.append("DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION")
+    elif fixture.name != "document_pdf_partial_page_retry":
+        passed.append("DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION")
+    else:
+        failed.append("DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION")
     revisions_after_extraction = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
     candidates_after_extraction = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
     if [item["id"] for item in revisions_before] == [item["id"] for item in revisions_after_extraction] and len(candidates_after_extraction) == len(candidates_before):
@@ -915,6 +967,8 @@ def binary_content(kind: str) -> bytes:
         return pdf_bytes()
     if kind == "text_pdf":
         return text_pdf_bytes("景点：豫园、上海博物馆")
+    if kind == "text_blank_pdf":
+        return text_and_blank_pdf_bytes("景点：豫园、上海博物馆")
     if kind == "encrypted_pdf":
         return pdf_bytes(encrypted=True)
     if kind == "javascript_pdf":
@@ -947,6 +1001,29 @@ def text_pdf_bytes(text: str) -> bytes:
     escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
     stream.set_data(f"BT /F1 16 Tf 40 240 Td ({escaped}) Tj ET".encode("utf-8"))
     page[NameObject("/Contents")] = writer._add_object(stream)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def text_and_blank_pdf_bytes(text: str) -> bytes:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=420, height=300)
+    font = DictionaryObject()
+    font.update(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})})
+    stream = DecodedStreamObject()
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream.set_data(f"BT /F1 16 Tf 40 240 Td ({escaped}) Tj ET".encode("utf-8"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_blank_page(width=420, height=300)
     buffer = io.BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
