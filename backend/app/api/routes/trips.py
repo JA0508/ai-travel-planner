@@ -14,6 +14,7 @@ from app.imports.domain import (
     ArtifactInspectionResponse,
     BinaryImportCreateResponse,
     DocumentExtractionCreateResponse,
+    DocumentExtractionEvidenceResponse,
     ImportReviewDecisionRequest,
     ImportReviewResponse,
     TextImportCreateRequest,
@@ -329,6 +330,25 @@ def extract_document_import(
             import_job_id=import_job_id,
             capability=get_trip_capability_from_request(request, trip_id),
             idempotency_key=x_idempotency_key,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get(
+    "/{trip_id}/imports/{import_job_id}/document-extraction",
+    response_model=DocumentExtractionEvidenceResponse,
+)
+def get_document_extraction_evidence(
+    trip_id: str,
+    import_job_id: str,
+    request: Request,
+) -> DocumentExtractionEvidenceResponse | JSONResponse:
+    try:
+        return get_text_import_service().get_document_extraction_evidence(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+            capability=get_trip_capability_from_request(request, trip_id),
         )
     except TripError as exc:
         return trip_error_response(exc)

@@ -7,6 +7,7 @@ import {
   decideImportMention,
   extractDocumentImport,
   fetchBinaryInspection,
+  fetchDocumentExtractionEvidence,
   fetchImportArtifact,
   fetchImportReview,
   fetchSanitizedImageBlob,
@@ -24,7 +25,8 @@ import {
   parseBinaryImportStorageValue,
 } from "./binaryImportState";
 import { importIdempotencyKey, importWorkspaceReducer } from "./importState";
-import type { DocumentExtractionGeneration, ImportMention, URLFetchSnapshot } from "./importTypes";
+import type { DocumentExtractionEvidenceResponse, DocumentExtractionGeneration, ImportMention, URLFetchSnapshot } from "./importTypes";
+import { buildDocumentEvidenceSummary, mapNormalizedBoxToOverlay, mentionEvidenceBoxes } from "./documentEvidenceViewModel";
 import { buildImportSummary, selectedResolutionId, sourceSegments } from "./importViewModel";
 
 type ImportReviewWorkspaceProps = {
@@ -44,7 +46,7 @@ export function ImportReviewWorkspace({
   const [documentExtraction, setDocumentExtraction] = useState<
     | { status: "idle" }
     | { status: "extracting" }
-    | { status: "ready"; generation: DocumentExtractionGeneration; spanCount: number }
+    | { status: "ready"; generation: DocumentExtractionGeneration; spanCount: number; evidence: DocumentExtractionEvidenceResponse }
     | { status: "error"; code: string; message: string }
   >({ status: "idle" });
   const binaryInputRef = useRef<HTMLInputElement | null>(null);
@@ -256,10 +258,20 @@ export function ImportReviewWorkspace({
       setDocumentExtraction({ status: "error", code: artifact.code, message: artifact.message });
       return;
     }
+    const evidence = await fetchDocumentExtractionEvidence(savedTripId, response.data.job.id);
+    if (!evidence.ok) {
+      setDocumentExtraction({
+        status: "error",
+        code: evidence.code ?? "import_document_evidence_failed",
+        message: evidence.message,
+      });
+      return;
+    }
     setDocumentExtraction({
       status: "ready",
       generation: response.data.generation,
       spanCount: response.data.spans.length,
+      evidence: evidence.data,
     });
     dispatch({
       type: "review",
@@ -464,6 +476,7 @@ export function ImportReviewWorkspace({
           onDecision={(mention, action) => void handleDecision(mention, action)}
           onCommit={() => void handleCommit()}
           sourceFetch={state.sourceFetch}
+          documentEvidence={documentExtraction.status === "ready" ? documentExtraction.evidence : null}
         />
       ) : null}
 
@@ -497,6 +510,7 @@ export function ImportReviewWorkspace({
 }
 
 const BINARY_IMPORT_STORAGE_KEY = "ai-travel-planner:last-binary-import";
+const DOCUMENT_EVIDENCE_SURFACE = { width: 180, height: 240 };
 
 function rememberBinaryImport(tripId: string, jobId: string, declaredKind: "image" | "pdf") {
   if (typeof window === "undefined") {
@@ -514,7 +528,7 @@ function DocumentExtractionAction({
   extraction:
     | { status: "idle" }
     | { status: "extracting" }
-    | { status: "ready"; generation: DocumentExtractionGeneration; spanCount: number }
+    | { status: "ready"; generation: DocumentExtractionGeneration; spanCount: number; evidence: DocumentExtractionEvidenceResponse }
     | { status: "error"; code: string; message: string };
   onExtract: () => void;
 }) {
@@ -556,6 +570,7 @@ function ReviewPane({
   onDecision,
   onCommit,
   sourceFetch,
+  documentEvidence,
 }: {
   sourceText: string;
   mentions: ImportMention[];
@@ -565,6 +580,7 @@ function ReviewPane({
   onDecision: (mention: ImportMention, action: "confirm" | "ignore" | "mark_as_note") => void;
   onCommit: () => void;
   sourceFetch?: URLFetchSnapshot | null;
+  documentEvidence?: DocumentExtractionEvidenceResponse | null;
 }) {
   const activeMention = mentions.find((mention) => mention.id === activeMentionId) ?? mentions[0] ?? null;
   const summary = buildImportSummary(mentions);
@@ -577,6 +593,7 @@ function ReviewPane({
           <span style={hintStyle}>review v{reviewVersion}</span>
         </div>
         {sourceFetch ? <URLProvenance sourceFetch={sourceFetch} /> : null}
+        {documentEvidence ? <DocumentEvidencePanel evidence={documentEvidence} activeMentionId={activeMention?.id ?? null} /> : null}
         <pre style={sourceTextStyle}>
           {sourceSegments(sourceText, activeMention).map((segment, index) =>
             segment.active ? (
@@ -611,6 +628,64 @@ function ReviewPane({
           Add confirmed places to candidate pool
         </button>
       </div>
+    </div>
+  );
+}
+
+function DocumentEvidencePanel({
+  evidence,
+  activeMentionId,
+}: {
+  evidence: DocumentExtractionEvidenceResponse;
+  activeMentionId: string | null;
+}) {
+  const summary = buildDocumentEvidenceSummary(evidence);
+  const activeEvidence = evidence.mention_evidence.find((mention) => mention.mention_id === activeMentionId) ?? null;
+  const boxes = activeEvidence ? mentionEvidenceBoxes(activeEvidence) : [];
+  const overlayBoxes = boxes.map((box) => mapNormalizedBoxToOverlay(box, DOCUMENT_EVIDENCE_SURFACE));
+  if (!summary) {
+    return null;
+  }
+  return (
+    <div style={documentEvidenceStyle} data-document-evidence>
+      <div style={provenanceRowStyle}>
+        <span>Document</span>
+        <span>{evidence.generation.strategy} · {summary.pageCount} page(s)</span>
+      </div>
+      <div style={provenanceRowStyle}>
+        <span>Lineage</span>
+        <span>{summary.layoutArtifactId ? "layout" : "no layout"} · {summary.spanMapArtifactId ? "span map" : "no span map"}</span>
+      </div>
+      <div style={provenanceRowStyle}>
+        <span>Geometry</span>
+        <span>{summary.geometryMentionCount}/{summary.mentionCount} mention(s) · {summary.spanMapCount} span(s)</span>
+      </div>
+      <div style={provenanceRowStyle}>
+        <span>Reading</span>
+        <span>{summary.readingOrderAlgorithm ?? "unknown"}</span>
+      </div>
+      {activeEvidence ? (
+        <div style={documentEvidenceOverlayRowStyle}>
+          <span style={hintStyle}>
+            {activeEvidence.mention_text} · {activeEvidence.geometry_available ? `page ${activeEvidence.page_numbers.join(", ")}` : "geometry unavailable"}
+          </span>
+          <div style={documentPageSurfaceStyle} aria-label="Active mention document geometry">
+            {overlayBoxes.map((box, index) => (
+              <span
+                key={`${box.left}:${box.top}:${index}`}
+                data-document-evidence-box
+                style={{
+                  ...documentBoxStyle,
+                  left: box.left,
+                  top: box.top,
+                  width: box.pixelWidth,
+                  height: box.pixelHeight,
+                }}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -778,6 +853,10 @@ const reviewGridStyle = { display: "grid", gridTemplateColumns: "repeat(auto-fit
 const sourcePaneStyle = { display: "grid", gap: 8, minWidth: 0 } satisfies CSSProperties;
 const provenanceStyle = { display: "grid", gap: 5, padding: 10, borderRadius: 12, border: "1px solid rgba(21,21,21,0.08)", background: "rgba(255,255,255,0.8)", fontSize: 12, color: "var(--ec-slate)" } satisfies CSSProperties;
 const provenanceRowStyle = { display: "flex", justifyContent: "space-between", gap: 10, overflowWrap: "anywhere" } satisfies CSSProperties;
+const documentEvidenceStyle = { ...provenanceStyle, background: "rgba(255,255,255,0.9)" } satisfies CSSProperties;
+const documentEvidenceOverlayRowStyle = { display: "grid", gap: 8, justifyItems: "start" } satisfies CSSProperties;
+const documentPageSurfaceStyle = { position: "relative", width: DOCUMENT_EVIDENCE_SURFACE.width, height: DOCUMENT_EVIDENCE_SURFACE.height, borderRadius: 8, border: "1px solid rgba(21,21,21,0.12)", background: "linear-gradient(180deg, rgba(21,21,21,0.035), rgba(21,21,21,0.015))", overflow: "hidden" } satisfies CSSProperties;
+const documentBoxStyle = { position: "absolute", display: "block", border: "1px solid #48673f", background: "rgba(123,160,127,0.28)", borderRadius: 2, pointerEvents: "none" } satisfies CSSProperties;
 const sourceLinkStyle = { color: "#48673f", fontWeight: 900, textDecoration: "none" } satisfies CSSProperties;
 const sourceTextStyle = { margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 420, overflow: "auto", padding: 12, borderRadius: 12, border: "1px solid rgba(21,21,21,0.08)", background: "rgba(21,21,21,0.035)", color: "var(--ec-ink)", fontFamily: "inherit", lineHeight: 1.6 } satisfies CSSProperties;
 const markStyle = { background: "rgba(247,208,138,0.85)", color: "inherit", borderRadius: 4, padding: "1px 2px" } satisfies CSSProperties;

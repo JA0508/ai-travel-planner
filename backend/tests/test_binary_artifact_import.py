@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import shutil
 import subprocess
 import tempfile
@@ -249,16 +250,46 @@ class BinaryArtifactImportTests(unittest.TestCase):
         body = extracted.json()
         self.assertEqual(body["generation"]["strategy"], "pdf_native_text")
         self.assertEqual(body["generation"]["status"], "review_ready")
-        self.assertEqual(body["artifact"]["artifact_type"], "document_text")
+        self.assertEqual(body["artifact"]["artifact_type"], "derived_document_text")
+        self.assertTrue(body["generation"]["layout_artifact_id"])
+        self.assertTrue(body["generation"]["span_map_artifact_id"])
         self.assertEqual(body["job"]["input_type"], "document")
         self.assertGreaterEqual(body["job"]["mention_count"], 2)
         self.assertTrue(body["spans"])
         self.assertTrue(all(span["page_number"] == 1 for span in body["spans"]))
-        self.assertTrue(all({"x0", "y0", "x1", "y1", "unit"}.issubset(span["bbox"]) for span in body["spans"]))
+        self.assertTrue(all({"x", "y", "width", "height", "origin", "unit"}.issubset(span["bbox"]) for span in body["spans"]))
+        self.assertTrue(all(span["bbox"]["unit"] == "normalized" for span in body["spans"]))
+        self.assertTrue(all(span["block_id"] and span["line_id"] and span["reading_order"] >= 0 for span in body["spans"]))
         text = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/artifact")
         self.assertEqual(text.status_code, 200)
         self.assertIn("豫园", text.text)
         self.assertIn("上海博物馆", text.text)
+
+        source_evidence = client.get(f"/trips/{trip_id}/imports/{binary_job_id}/document-extraction")
+        self.assertEqual(source_evidence.status_code, 200, source_evidence.text)
+        evidence_body = source_evidence.json()
+        self.assertEqual(evidence_body["generation"]["id"], body["generation"]["id"])
+        self.assertEqual(evidence_body["generation"]["layout_artifact_id"], body["generation"]["layout_artifact_id"])
+        self.assertEqual(evidence_body["generation"]["span_map_artifact_id"], body["generation"]["span_map_artifact_id"])
+        self.assertEqual(evidence_body["layout_manifest"]["reading_order_algorithm"], "layout-reading-order-v1")
+        self.assertEqual(evidence_body["layout_manifest"]["coordinate_space"]["unit"], "normalized")
+        self.assertTrue(evidence_body["span_map"])
+        self.assertTrue(evidence_body["mention_evidence"])
+        self.assertTrue(
+            any(item["geometry_available"] and item["bounding_boxes"] for item in evidence_body["mention_evidence"])
+        )
+        first_box = next(
+            item["bounding_boxes"][0]
+            for item in evidence_body["mention_evidence"]
+            if item["geometry_available"] and item["bounding_boxes"]
+        )
+        self.assertEqual(first_box["origin"], "top-left")
+        self.assertEqual(first_box["unit"], "normalized")
+        self.assertLessEqual(first_box["x"] + first_box["width"], 1)
+        self.assertLessEqual(first_box["y"] + first_box["height"], 1)
+        derived_evidence = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/document-extraction")
+        self.assertEqual(derived_evidence.status_code, 200, derived_evidence.text)
+        self.assertEqual(derived_evidence.json()["generation"]["id"], body["generation"]["id"])
 
         review_version = body["job"]["review_version"]
         for index, mention in enumerate([item for item in body["mentions"] if item["entity_type"] == "place"]):
@@ -323,12 +354,28 @@ class BinaryArtifactImportTests(unittest.TestCase):
             [revision["id"] for revision in client.get(f"/trips/{trip_id}/revisions").json()["revisions"]],
         )
 
-    @unittest.skipUnless(shutil.which("tesseract"), "tesseract OCR engine is not installed")
+    def test_tesseract_production_capabilities_are_available_when_ci_requires_ocr(self) -> None:
+        if not production_ocr_required():
+            self.skipTest("production OCR capability proof is required only in CI")
+        executable = shutil.which(os.getenv("IMPORT_DOCUMENT_OCR_COMMAND", "tesseract"))
+        self.assertIsNotNone(executable, "tesseract executable is required for production OCR smoke tests")
+        version = subprocess.run([executable or "tesseract", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        self.assertEqual(version.returncode, 0, version.stderr)
+        languages = subprocess.run([executable or "tesseract", "--list-langs"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+        self.assertEqual(languages.returncode, 0, languages.stderr)
+        available = set(languages.stdout.splitlines()[1:])
+        self.assertIn("eng", available)
+        self.assertIn("chi_sim", available)
+
     def test_image_ocr_engine_creates_layout_spans_and_review_artifact(self) -> None:
+        if not shutil.which(os.getenv("IMPORT_DOCUMENT_OCR_COMMAND", "tesseract")):
+            if production_ocr_required():
+                self.fail("tesseract executable is required for production OCR smoke tests")
+            self.skipTest("tesseract OCR engine is not installed")
         client, trip_id = create_saved_trip()
         uploaded = upload_binary(client, trip_id, text_image("Starbucks Reserve Roastery"), "image", "ocr.png", "image/png")
         self.assertEqual(uploaded.status_code, 201, uploaded.text)
-        with patch.dict("os.environ", {"IMPORT_DOCUMENT_OCR_LANGUAGES": "eng"}):
+        with patch.dict("os.environ", {"IMPORT_DOCUMENT_OCR_LANGUAGES": "eng+chi_sim"}):
             response = client.post(
                 f"/trips/{trip_id}/imports/{uploaded.json()['job']['id']}/extract-document",
                 headers={"Origin": "http://testserver", "X-Idempotency-Key": "extract-image-ocr"},
@@ -339,6 +386,7 @@ class BinaryArtifactImportTests(unittest.TestCase):
         self.assertEqual(body["job"]["input_type"], "document")
         self.assertTrue(body["spans"])
         self.assertTrue(all(span["source_kind"] == "ocr_token" for span in body["spans"]))
+        self.assertEqual(body["generation"]["metadata"]["ocr_capabilities"]["missing_languages"], [])
         text = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/artifact")
         self.assertEqual(text.status_code, 200)
         self.assertIn("Starbucks", text.text)
@@ -378,6 +426,10 @@ def upload_binary(
         files={"file": (filename, content, mime_type)},
         headers={"Origin": "http://testserver", "X-Idempotency-Key": key},
     )
+
+
+def production_ocr_required() -> bool:
+    return os.getenv("REQUIRE_PRODUCTION_OCR_SMOKE") == "1"
 
 
 def valid_image(fmt: str) -> bytes:

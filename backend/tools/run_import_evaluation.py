@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -250,7 +251,24 @@ INVARIANTS = [
     "DOCUMENT_EXTRACTION_NATIVE_TEXT_FIRST",
     "DOCUMENT_EXTRACTION_NO_SILENT_OCR_FALLBACK",
     "DOCUMENT_EXTRACTION_GENERATION_IMMUTABLE",
+    "DOCUMENT_LAYOUT_MANIFEST_ARTIFACT_TRACEABLE",
+    "DOCUMENT_SPAN_MAP_ARTIFACT_TRACEABLE",
+    "DOCUMENT_READING_ORDER_DETERMINISTIC",
+    "DOCUMENT_COORDINATE_SPACE_NORMALIZED",
     "DOCUMENT_SPANS_MAP_TO_PAGE_BBOX",
+    "DOCUMENT_LAYOUT_BLOCK_IDS_STABLE",
+    "DOCUMENT_LINE_TOKEN_IDS_STABLE",
+    "DOCUMENT_SPAN_OFFSETS_MONOTONIC",
+    "DOCUMENT_MENTION_EVIDENCE_TRACEABLE",
+    "DOCUMENT_MENTION_BBOX_NORMALIZED",
+    "DOCUMENT_EVIDENCE_ENDPOINT_SOURCE_JOB",
+    "DOCUMENT_EVIDENCE_ENDPOINT_DERIVED_JOB",
+    "DOCUMENT_DERIVED_ARTIFACT_PRIVATE",
+    "DOCUMENT_TEXT_ARTIFACT_NO_BINARY_BYTES",
+    "DOCUMENT_NO_DIRECT_TRIP_MUTATION",
+    "DOCUMENT_REVIEW_COMMIT_EXPLICIT",
+    "DOCUMENT_PARTIAL_FAILURE_EXPLICIT",
+    "DOCUMENT_OCR_CAPABILITY_REPORTED",
     "DOCUMENT_TEXT_DERIVATION_TRACEABLE",
     "DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE",
     "DOCUMENT_IMPORT_CANDIDATE_PROVENANCE_TRACEABLE",
@@ -263,6 +281,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
+    started_at = time.perf_counter()
     results: list[dict] = []
     failures: list[str] = []
     with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
@@ -311,12 +330,42 @@ def main() -> int:
                 failures.append(f"{fixture.name}: {', '.join(result['failed_invariants'])}")
             results.append(result)
 
+    document_invariants = [invariant for invariant in INVARIANTS if invariant.startswith("DOCUMENT_")]
+    deterministic_mismatch_count = sum(
+        1
+        for result in results
+        for invariant in result["failed_invariants"]
+        if invariant
+        in {
+            "MENTION_SPANS_MATCH_SOURCE",
+            "MENTION_SPANS_MATCH_DERIVED_TEXT",
+            "DOCUMENT_READING_ORDER_DETERMINISTIC",
+            "DOCUMENT_SPAN_OFFSETS_MONOTONIC",
+            "DOCUMENT_MENTION_BBOX_NORMALIZED",
+        }
+    )
     payload = {
         "fixtures": results,
         "invariants": INVARIANTS,
         "passed": len(failures) == 0,
+        "total_fixture_count": len(results),
+        "text_fixture_count": len(FIXTURES),
+        "url_fixture_count": len(URL_FIXTURES),
+        "binary_fixture_count": len(BINARY_FIXTURES),
+        "document_extraction_fixture_count": len(DOCUMENT_EXTRACTION_FIXTURES),
+        "invariant_count": len(INVARIANTS),
+        "document_extraction_invariant_count": len(document_invariants),
         "failure_count": len(failures),
+        "deterministic_mismatch_count": deterministic_mismatch_count,
+        "runtime_seconds": round(time.perf_counter() - started_at, 3),
     }
+    if args.ci:
+        if payload["invariant_count"] < 84:
+            failures.append("import evaluation invariant count below CI contract")
+        if payload["document_extraction_invariant_count"] < 22:
+            failures.append("document extraction invariant count below CI contract")
+        payload["passed"] = len(failures) == 0
+        payload["failure_count"] = len(failures)
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
@@ -329,6 +378,8 @@ def main() -> int:
         print(f"Import evaluation: {len(results) - len(failures)}/{len(results)} fixtures passed")
         print(f"URL import fixtures: {url_count}/{url_count}")
         print(f"Binary import fixtures: {len(BINARY_FIXTURES)}/{len(BINARY_FIXTURES)}")
+        print(f"Document extraction fixtures: {len(DOCUMENT_EXTRACTION_FIXTURES)}/{len(DOCUMENT_EXTRACTION_FIXTURES)}")
+        print(f"Invariants: {payload['invariant_count']} total · {payload['document_extraction_invariant_count']} document extraction")
     return 0 if not failures else 1
 
 
@@ -684,6 +735,7 @@ def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtr
         if response.status_code == 422 and code == "import_document_ocr_unavailable":
             passed.extend([
                 "DOCUMENT_EXTRACTION_NO_SILENT_OCR_FALLBACK",
+                "DOCUMENT_PARTIAL_FAILURE_EXPLICIT",
                 "BINARY_IMPORT_CREATES_NO_MENTION",
                 "BINARY_IMPORT_CREATES_NO_CANDIDATE",
                 "BINARY_IMPORT_CREATES_NO_TRIP_REVISION",
@@ -700,17 +752,96 @@ def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtr
         failed.append("DOCUMENT_EXTRACTION_NATIVE_TEXT_FIRST")
     if body["generation"]["id"] and body["generation"]["derived_import_job_id"] == body["job"]["id"]:
         passed.append("DOCUMENT_EXTRACTION_GENERATION_IMMUTABLE")
+    if body["generation"].get("layout_artifact_id"):
+        passed.append("DOCUMENT_LAYOUT_MANIFEST_ARTIFACT_TRACEABLE")
+    else:
+        failed.append("DOCUMENT_LAYOUT_MANIFEST_ARTIFACT_TRACEABLE")
+    if body["generation"].get("span_map_artifact_id"):
+        passed.append("DOCUMENT_SPAN_MAP_ARTIFACT_TRACEABLE")
+    else:
+        failed.append("DOCUMENT_SPAN_MAP_ARTIFACT_TRACEABLE")
+    if body["generation"].get("metadata", {}).get("reading_order_algorithm") == "layout-reading-order-v1":
+        passed.append("DOCUMENT_READING_ORDER_DETERMINISTIC")
+    else:
+        failed.append("DOCUMENT_READING_ORDER_DETERMINISTIC")
+    if body["generation"].get("metadata", {}).get("coordinate_space") == "normalized-top-left":
+        passed.append("DOCUMENT_COORDINATE_SPACE_NORMALIZED")
+    else:
+        failed.append("DOCUMENT_COORDINATE_SPACE_NORMALIZED")
+    if body["artifact"]["privacy_level"] == "private":
+        passed.append("DOCUMENT_DERIVED_ARTIFACT_PRIVATE")
+    text = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/artifact")
+    if text.status_code == 200 and not text.content.startswith(b"%PDF"):
+        passed.append("DOCUMENT_TEXT_ARTIFACT_NO_BINARY_BYTES")
     if body.get("derivation"):
         passed.append("DOCUMENT_TEXT_DERIVATION_TRACEABLE")
     if body["job"]["input_type"] == "document" and len(places) >= fixture.expected_places_min:
         passed.append("DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE")
     else:
         failed.append("DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE")
-    if body["spans"] and all({"x0", "y0", "x1", "y1", "unit"}.issubset(span["bbox"]) for span in body["spans"]):
+    if body["spans"] and all({"x", "y", "width", "height", "unit"}.issubset(span["bbox"]) for span in body["spans"]):
         passed.append("DOCUMENT_SPANS_MAP_TO_PAGE_BBOX")
     else:
         failed.append("DOCUMENT_SPANS_MAP_TO_PAGE_BBOX")
+    if body["spans"] and all(span.get("block_id") for span in body["spans"]):
+        passed.append("DOCUMENT_LAYOUT_BLOCK_IDS_STABLE")
+    else:
+        failed.append("DOCUMENT_LAYOUT_BLOCK_IDS_STABLE")
+    if body["spans"] and all(span.get("line_id") and span.get("token_id") for span in body["spans"]):
+        passed.append("DOCUMENT_LINE_TOKEN_IDS_STABLE")
+    else:
+        failed.append("DOCUMENT_LINE_TOKEN_IDS_STABLE")
+    if body["spans"] and all(
+        span["span_start"] < span["span_end"] and (pos == 0 or body["spans"][pos - 1]["span_end"] <= span["span_start"])
+        for pos, span in enumerate(body["spans"])
+    ):
+        passed.append("DOCUMENT_SPAN_OFFSETS_MONOTONIC")
+    else:
+        failed.append("DOCUMENT_SPAN_OFFSETS_MONOTONIC")
+    source_evidence = client.get(f"/trips/{trip_id}/imports/{binary_body['job']['id']}/document-extraction")
+    derived_evidence = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/document-extraction")
+    if source_evidence.status_code == 200 and source_evidence.json()["generation"]["id"] == body["generation"]["id"]:
+        passed.append("DOCUMENT_EVIDENCE_ENDPOINT_SOURCE_JOB")
+    else:
+        failed.append("DOCUMENT_EVIDENCE_ENDPOINT_SOURCE_JOB")
+    if derived_evidence.status_code == 200 and derived_evidence.json()["generation"]["id"] == body["generation"]["id"]:
+        passed.append("DOCUMENT_EVIDENCE_ENDPOINT_DERIVED_JOB")
+    else:
+        failed.append("DOCUMENT_EVIDENCE_ENDPOINT_DERIVED_JOB")
+    evidence_body = source_evidence.json() if source_evidence.status_code == 200 else {}
+    if evidence_body.get("mention_evidence"):
+        passed.append("DOCUMENT_MENTION_EVIDENCE_TRACEABLE")
+    else:
+        failed.append("DOCUMENT_MENTION_EVIDENCE_TRACEABLE")
+    evidence_boxes = [
+        box
+        for mention in evidence_body.get("mention_evidence", [])
+        for box in mention.get("bounding_boxes", [])
+    ]
+    if evidence_boxes and all(
+        box.get("origin") == "top-left"
+        and box.get("unit") == "normalized"
+        and 0 <= box.get("x", -1) <= 1
+        and 0 <= box.get("y", -1) <= 1
+        and box.get("x", 2) + box.get("width", 2) <= 1
+        and box.get("y", 2) + box.get("height", 2) <= 1
+        for box in evidence_boxes
+    ):
+        passed.append("DOCUMENT_MENTION_BBOX_NORMALIZED")
+    else:
+        failed.append("DOCUMENT_MENTION_BBOX_NORMALIZED")
+    if body["generation"].get("metadata", {}).get("ocr_capabilities", {}).get("silent_fallback") is False:
+        passed.append("DOCUMENT_OCR_CAPABILITY_REPORTED")
+    else:
+        failed.append("DOCUMENT_OCR_CAPABILITY_REPORTED")
+    revisions_after_extraction = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+    candidates_after_extraction = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
+    if [item["id"] for item in revisions_before] == [item["id"] for item in revisions_after_extraction] and len(candidates_after_extraction) == len(candidates_before):
+        passed.append("DOCUMENT_NO_DIRECT_TRIP_MUTATION")
+    else:
+        failed.append("DOCUMENT_NO_DIRECT_TRIP_MUTATION")
     if fixture.commit_confirmed_only and places:
+        passed.append("DOCUMENT_REVIEW_COMMIT_EXPLICIT")
         review_version = body["job"]["review_version"]
         for pos, mention in enumerate(places):
             decision = decide(

@@ -23,6 +23,10 @@ class WorkerDocumentSpan(BaseModel):
     block_index: int = Field(..., ge=0)
     line_index: int = Field(..., ge=0)
     token_index: int | None = Field(default=None, ge=0)
+    block_id: str
+    line_id: str
+    token_id: str | None = None
+    reading_order: int = Field(..., ge=0)
     bbox: dict[str, Any] = Field(default_factory=dict)
     source_kind: str
     confidence: float | None = Field(default=None, ge=0, le=1)
@@ -42,6 +46,8 @@ class WorkerDocumentExtractionResult(BaseModel):
     spans: list[WorkerDocumentSpan] = Field(default_factory=list)
     warning_codes: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    layout_manifest: dict[str, Any] = Field(default_factory=dict)
+    span_map: list[dict[str, Any]] = Field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)

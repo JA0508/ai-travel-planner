@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS document_extraction_generations (
   inspection_id TEXT NOT NULL REFERENCES artifact_inspections(id) ON DELETE RESTRICT,
   derived_import_job_id TEXT REFERENCES import_jobs(id) ON DELETE SET NULL,
   derived_artifact_id TEXT REFERENCES source_artifacts(id) ON DELETE SET NULL,
+  layout_artifact_id TEXT REFERENCES source_artifacts(id) ON DELETE SET NULL,
+  span_map_artifact_id TEXT REFERENCES source_artifacts(id) ON DELETE SET NULL,
   generation INTEGER NOT NULL,
   schema_version TEXT NOT NULL,
   extractor_version TEXT NOT NULL,
@@ -31,6 +33,10 @@ CREATE TABLE IF NOT EXISTS document_text_spans (
   block_index INTEGER NOT NULL,
   line_index INTEGER NOT NULL,
   token_index INTEGER,
+  block_id TEXT NOT NULL,
+  line_id TEXT NOT NULL,
+  token_id TEXT,
+  reading_order INTEGER NOT NULL,
   bbox_json TEXT NOT NULL,
   source_kind TEXT NOT NULL,
   confidence REAL,
@@ -43,6 +49,7 @@ CREATE TABLE IF NOT EXISTS document_text_spans (
   CHECK(block_index >= 0),
   CHECK(line_index >= 0),
   CHECK(token_index IS NULL OR token_index >= 0),
+  CHECK(reading_order >= 0),
   CHECK(source_kind IN ('native_pdf_text', 'ocr_token', 'ocr_line'))
 );
 

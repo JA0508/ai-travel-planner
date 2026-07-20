@@ -62,6 +62,10 @@ export const TRIP_API_ENDPOINTS = {
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/extract-document`,
     ),
+  getDocumentExtractionEvidence: (tripId: string, importJobId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/document-extraction`,
+    ),
   getTextImportArtifact: (tripId: string, importJobId: string) =>
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/artifact`,

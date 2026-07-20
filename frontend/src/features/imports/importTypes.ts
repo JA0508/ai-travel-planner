@@ -216,6 +216,10 @@ export type DocumentTextSpan = {
   block_index: number;
   line_index: number;
   token_index?: number | null;
+  block_id?: string | null;
+  line_id?: string | null;
+  token_id?: string | null;
+  reading_order: number;
   bbox: Record<string, string | number | boolean | null>;
   source_kind: "native_pdf_text" | "ocr_token" | "ocr_line" | string;
   confidence?: number | null;
@@ -232,6 +236,8 @@ export type DocumentExtractionGeneration = {
   inspection_id: string;
   derived_import_job_id?: string | null;
   derived_artifact_id?: string | null;
+  layout_artifact_id?: string | null;
+  span_map_artifact_id?: string | null;
   generation: number;
   schema_version: string;
   extractor_version: string;
@@ -254,4 +260,28 @@ export type DocumentExtractionCreateResponse = {
   spans: DocumentTextSpan[];
   duplicate_artifact: boolean;
   idempotent_replay: boolean;
+};
+
+export type DocumentMentionEvidence = {
+  mention_id: string;
+  mention_text: string;
+  start_offset: number;
+  end_offset: number;
+  page_numbers: number[];
+  block_ids: string[];
+  line_ids: string[];
+  token_ids: string[];
+  bounding_boxes: Array<Record<string, string | number | boolean | null>>;
+  extraction_methods: string[];
+  geometry_available: boolean;
+};
+
+export type DocumentExtractionEvidenceResponse = {
+  generation: DocumentExtractionGeneration;
+  artifact: SourceArtifact;
+  job: ImportJob;
+  layout_manifest: Record<string, unknown>;
+  span_map: Array<Record<string, unknown>>;
+  mentions: ImportMention[];
+  mention_evidence: DocumentMentionEvidence[];
 };

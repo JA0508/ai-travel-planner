@@ -114,6 +114,8 @@ class ImportRepository(Protocol):
         child_artifact: SourceArtifactRecord,
         derivation: ArtifactDerivationRecord,
         derived_job: ImportJobRecord,
+        related_artifacts: list[SourceArtifactRecord] | None = None,
+        related_derivations: list[ArtifactDerivationRecord] | None = None,
     ) -> DocumentExtractionGenerationRecord:
         ...
 
@@ -646,6 +648,8 @@ class SQLiteImportRepository:
         child_artifact: SourceArtifactRecord,
         derivation: ArtifactDerivationRecord,
         derived_job: ImportJobRecord,
+        related_artifacts: list[SourceArtifactRecord] | None = None,
+        related_derivations: list[ArtifactDerivationRecord] | None = None,
     ) -> DocumentExtractionGenerationRecord:
         with self._transaction() as connection:
             source_job = connection.execute(
@@ -676,6 +680,29 @@ class SQLiteImportRepository:
                     child_artifact.created_at,
                 ),
             )
+            for related_artifact in related_artifacts or []:
+                connection.execute(
+                    """
+                    INSERT INTO source_artifacts(
+                      id, trip_id, artifact_type, mime_type, content_checksum,
+                      byte_size, charset, privacy_level, storage_key, original_label, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        related_artifact.id,
+                        related_artifact.trip_id,
+                        related_artifact.artifact_type,
+                        related_artifact.mime_type,
+                        related_artifact.content_checksum,
+                        related_artifact.byte_size,
+                        related_artifact.charset,
+                        related_artifact.privacy_level,
+                        related_artifact.storage_key,
+                        related_artifact.original_label,
+                        related_artifact.created_at,
+                    ),
+                )
             connection.execute(
                 """
                 INSERT INTO import_jobs(
@@ -725,15 +752,38 @@ class SQLiteImportRepository:
                     derivation.created_at,
                 ),
             )
+            for related_derivation in related_derivations or []:
+                connection.execute(
+                    """
+                    INSERT INTO artifact_derivations(
+                      id, parent_artifact_id, child_artifact_id, derivation_type,
+                      transformer_version, input_checksum, output_checksum,
+                      metadata_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        related_derivation.id,
+                        related_derivation.parent_artifact_id,
+                        related_derivation.child_artifact_id,
+                        related_derivation.derivation_type,
+                        related_derivation.transformer_version,
+                        related_derivation.input_checksum,
+                        related_derivation.output_checksum,
+                        json_dumps(related_derivation.metadata),
+                        related_derivation.created_at,
+                    ),
+                )
             connection.execute(
                 """
                 INSERT INTO document_extraction_generations(
                   id, trip_id, source_import_job_id, source_artifact_id, inspection_id,
-                  derived_import_job_id, derived_artifact_id, generation, schema_version,
+                  derived_import_job_id, derived_artifact_id, layout_artifact_id,
+                  span_map_artifact_id, generation, schema_version,
                   extractor_version, strategy, status, page_count, extracted_text_chars,
                   warning_codes_json, error_code, metadata_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     generation.id,
@@ -743,6 +793,8 @@ class SQLiteImportRepository:
                     generation.inspection_id,
                     generation.derived_import_job_id,
                     generation.derived_artifact_id,
+                    generation.layout_artifact_id,
+                    generation.span_map_artifact_id,
                     generation.generation,
                     generation.schema_version,
                     generation.extractor_version,
@@ -758,13 +810,14 @@ class SQLiteImportRepository:
             )
             for span in spans:
                 connection.execute(
-                    """
+                """
                     INSERT INTO document_text_spans(
                       id, generation_id, span_start, span_end, page_number,
-                      block_index, line_index, token_index, bbox_json, source_kind,
-                      confidence, text_digest, warning_codes_json, created_at
+                      block_index, line_index, token_index, block_id, line_id,
+                      token_id, reading_order, bbox_json, source_kind, confidence,
+                      text_digest, warning_codes_json, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         span.id,
@@ -775,6 +828,10 @@ class SQLiteImportRepository:
                         span.block_index,
                         span.line_index,
                         span.token_index,
+                        span.block_id,
+                        span.line_id,
+                        span.token_id,
+                        span.reading_order,
                         json_dumps(span.bbox),
                         span.source_kind,
                         span.confidence,
@@ -1473,11 +1530,17 @@ class MemoryImportRepository:
         child_artifact: SourceArtifactRecord,
         derivation: ArtifactDerivationRecord,
         derived_job: ImportJobRecord,
+        related_artifacts: list[SourceArtifactRecord] | None = None,
+        related_derivations: list[ArtifactDerivationRecord] | None = None,
     ) -> DocumentExtractionGenerationRecord:
         self.get_job(trip_id=generation.trip_id, import_job_id=generation.source_import_job_id)
         self.artifacts[child_artifact.id] = copy.deepcopy(child_artifact)
+        for related_artifact in related_artifacts or []:
+            self.artifacts[related_artifact.id] = copy.deepcopy(related_artifact)
         self.jobs[derived_job.id] = copy.deepcopy(derived_job)
         self.artifact_derivations[derivation.child_artifact_id] = copy.deepcopy(derivation)
+        for related_derivation in related_derivations or []:
+            self.artifact_derivations[related_derivation.child_artifact_id] = copy.deepcopy(related_derivation)
         self.document_extractions[generation.id] = copy.deepcopy(generation)
         for span in spans:
             self.document_text_spans[span.id] = copy.deepcopy(span)
@@ -1742,6 +1805,8 @@ def row_to_document_extraction_generation(row) -> DocumentExtractionGenerationRe
         inspection_id=row["inspection_id"],
         derived_import_job_id=row["derived_import_job_id"],
         derived_artifact_id=row["derived_artifact_id"],
+        layout_artifact_id=row["layout_artifact_id"],
+        span_map_artifact_id=row["span_map_artifact_id"],
         generation=row["generation"],
         schema_version=row["schema_version"],
         extractor_version=row["extractor_version"],
@@ -1766,6 +1831,10 @@ def row_to_document_text_span(row) -> DocumentTextSpanRecord:
         block_index=row["block_index"],
         line_index=row["line_index"],
         token_index=row["token_index"],
+        block_id=row["block_id"],
+        line_id=row["line_id"],
+        token_id=row["token_id"],
+        reading_order=row["reading_order"],
         bbox=dict(json_loads(row["bbox_json"], {})),
         source_kind=row["source_kind"],
         confidence=row["confidence"],

@@ -395,6 +395,10 @@ class DocumentTextSpanResponse(BaseModel):
     block_index: int
     line_index: int
     token_index: int | None = None
+    block_id: str
+    line_id: str
+    token_id: str | None = None
+    reading_order: int
     bbox: dict[str, Any] = Field(default_factory=dict)
     source_kind: str
     confidence: float | None = None
@@ -411,6 +415,8 @@ class DocumentExtractionGenerationResponse(BaseModel):
     inspection_id: str
     derived_import_job_id: str | None = None
     derived_artifact_id: str | None = None
+    layout_artifact_id: str | None = None
+    span_map_artifact_id: str | None = None
     generation: int
     schema_version: str
     extractor_version: str
@@ -433,6 +439,30 @@ class DocumentExtractionCreateResponse(BaseModel):
     spans: list[DocumentTextSpanResponse] = Field(default_factory=list)
     duplicate_artifact: bool = False
     idempotent_replay: bool = False
+
+
+class DocumentMentionEvidenceResponse(BaseModel):
+    mention_id: str
+    mention_text: str
+    start_offset: int
+    end_offset: int
+    page_numbers: list[int] = Field(default_factory=list)
+    block_ids: list[str] = Field(default_factory=list)
+    line_ids: list[str] = Field(default_factory=list)
+    token_ids: list[str] = Field(default_factory=list)
+    bounding_boxes: list[dict[str, Any]] = Field(default_factory=list)
+    extraction_methods: list[str] = Field(default_factory=list)
+    geometry_available: bool
+
+
+class DocumentExtractionEvidenceResponse(BaseModel):
+    generation: DocumentExtractionGenerationResponse
+    artifact: SourceArtifactResponse
+    job: ImportJobResponse
+    layout_manifest: dict[str, Any] = Field(default_factory=dict)
+    span_map: list[dict[str, Any]] = Field(default_factory=list)
+    mentions: list[ExtractedMentionResponse] = Field(default_factory=list)
+    mention_evidence: list[DocumentMentionEvidenceResponse] = Field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -668,6 +698,8 @@ class DocumentExtractionGenerationRecord:
     inspection_id: str
     derived_import_job_id: str | None
     derived_artifact_id: str | None
+    layout_artifact_id: str | None
+    span_map_artifact_id: str | None
     generation: int
     schema_version: str
     extractor_version: str
@@ -691,6 +723,10 @@ class DocumentTextSpanRecord:
     block_index: int
     line_index: int
     token_index: int | None
+    block_id: str
+    line_id: str
+    token_id: str | None
+    reading_order: int
     bbox: dict[str, Any]
     source_kind: str
     confidence: float | None

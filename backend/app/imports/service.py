@@ -30,8 +30,10 @@ from app.imports.domain import (
     ArtifactInspectionResponse,
     BinaryImportCreateResponse,
     DocumentExtractionCreateResponse,
+    DocumentExtractionEvidenceResponse,
     DocumentExtractionGenerationRecord,
     DocumentExtractionGenerationResponse,
+    DocumentMentionEvidenceResponse,
     DocumentTextSpanRecord,
     DocumentTextSpanResponse,
     IMPORT_EXTRACTION_SCHEMA_VERSION,
@@ -820,11 +822,35 @@ class TextImportService:
             content_bytes=derived_bytes,
             checksum=source_checksum(derived_bytes),
             now=now,
-            artifact_type="document_text",
+            artifact_type="derived_document_text",
             mime_type="text/plain",
             charset="utf-8",
             storage_type="document-text",
             extension="txt",
+        )
+        layout_bytes = json_dumps_safe(extraction.layout_manifest).encode("utf-8")
+        layout_artifact = self._stage_child_artifact_bytes(
+            trip_id=trip_id,
+            content_bytes=layout_bytes,
+            checksum=source_checksum(layout_bytes),
+            now=now,
+            artifact_type="document_layout_manifest",
+            mime_type="application/json",
+            charset="utf-8",
+            storage_type="document-layout",
+            extension="json",
+        )
+        span_map_bytes = json_dumps_safe(extraction.span_map).encode("utf-8")
+        span_map_artifact = self._stage_child_artifact_bytes(
+            trip_id=trip_id,
+            content_bytes=span_map_bytes,
+            checksum=source_checksum(span_map_bytes),
+            now=now,
+            artifact_type="document_text_span_map",
+            mime_type="application/json",
+            charset="utf-8",
+            storage_type="document-span-map",
+            extension="json",
         )
         derived_job = ImportJobRecord(
             id=generate_import_job_id(),
@@ -844,6 +870,15 @@ class TextImportService:
             updated_at=now,
         )
         generation_id = generate_document_extraction_generation_id()
+        generation_metadata = safe_document_extraction_metadata(extraction.metadata)
+        generation_metadata.update(
+            {
+                "layout_artifact_id": layout_artifact.id,
+                "span_map_artifact_id": span_map_artifact.id,
+                "reading_order_algorithm": "layout-reading-order-v1",
+                "coordinate_space": "normalized-top-left",
+            }
+        )
         generation = DocumentExtractionGenerationRecord(
             id=generation_id,
             trip_id=trip_id,
@@ -852,6 +887,8 @@ class TextImportService:
             inspection_id=inspection.id,
             derived_import_job_id=derived_job.id,
             derived_artifact_id=derived_artifact.id,
+            layout_artifact_id=layout_artifact.id,
+            span_map_artifact_id=span_map_artifact.id,
             generation=1,
             schema_version=extraction.schema_version,
             extractor_version=extraction.extractor_version,
@@ -861,7 +898,7 @@ class TextImportService:
             extracted_text_chars=len(normalized),
             warning_codes=list(extraction.warning_codes),
             error_code=None,
-            metadata=safe_document_extraction_metadata(extraction.metadata),
+            metadata=generation_metadata,
             created_at=now,
         )
         spans = [
@@ -886,6 +923,10 @@ class TextImportService:
                 "page_count": extraction.page_count,
                 "span_count": len(spans),
                 "source_kind": inspection.detected_kind,
+                "layout_artifact_id": layout_artifact.id,
+                "span_map_artifact_id": span_map_artifact.id,
+                "reading_order_algorithm": "layout-reading-order-v1",
+                "coordinate_space": "top-left-normalized",
             },
             created_at=now,
         )
@@ -896,6 +937,40 @@ class TextImportService:
                 child_artifact=derived_artifact,
                 derivation=derivation,
                 derived_job=derived_job,
+                related_artifacts=[layout_artifact, span_map_artifact],
+                related_derivations=[
+                    ArtifactDerivationRecord(
+                        id=generate_artifact_derivation_id(),
+                        parent_artifact_id=readable_artifact.id,
+                        child_artifact_id=layout_artifact.id,
+                        derivation_type="document_layout_extraction",
+                        transformer_version=DOCUMENT_TEXT_TRANSFORMER_VERSION,
+                        input_checksum=readable_artifact.content_checksum,
+                        output_checksum=layout_artifact.content_checksum,
+                        metadata={
+                            "source_import_job_id": source_job.id,
+                            "inspection_id": inspection.id,
+                            "strategy": extraction.strategy,
+                            "schema_version": extraction.schema_version,
+                        },
+                        created_at=now,
+                    ),
+                    ArtifactDerivationRecord(
+                        id=generate_artifact_derivation_id(),
+                        parent_artifact_id=layout_artifact.id,
+                        child_artifact_id=span_map_artifact.id,
+                        derivation_type="document_span_map",
+                        transformer_version=DOCUMENT_TEXT_TRANSFORMER_VERSION,
+                        input_checksum=layout_artifact.content_checksum,
+                        output_checksum=span_map_artifact.content_checksum,
+                        metadata={
+                            "source_import_job_id": source_job.id,
+                            "inspection_id": inspection.id,
+                            "derived_artifact_id": derived_artifact.id,
+                        },
+                        created_at=now,
+                    ),
+                ],
             )
         except Exception as exc:
             self.artifact_store.delete(storage_key=derived_artifact.storage_key)
@@ -924,6 +999,44 @@ class TextImportService:
             duplicate_artifact=False,
         )
 
+    def get_document_extraction_evidence(
+        self,
+        *,
+        trip_id: str,
+        import_job_id: str,
+        capability: str | None,
+    ) -> DocumentExtractionEvidenceResponse:
+        self._require_trip_access(trip_id, capability)
+        job = self.import_repository.get_job(trip_id=trip_id, import_job_id=import_job_id)
+        if job.input_type in {"image", "pdf"}:
+            generation = self.import_repository.get_latest_document_extraction_for_source(
+                trip_id=trip_id,
+                source_import_job_id=job.id,
+            )
+            if generation is None or not generation.derived_import_job_id:
+                raise TripError("import_document_extraction_not_found", "Document extraction was not found.", 404)
+            job = self.import_repository.get_job(trip_id=trip_id, import_job_id=generation.derived_import_job_id)
+        elif job.input_type == "document":
+            generation = self.import_repository.get_document_extraction_for_derived_job(derived_import_job_id=job.id)
+            if generation is None:
+                raise TripError("import_document_extraction_not_found", "Document extraction was not found.", 404)
+        else:
+            raise TripError("import_document_source_not_document", "Import job is not a document extraction job.", 409)
+        artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=job.artifact_id)
+        layout_manifest = self._load_json_artifact(trip_id=trip_id, artifact_id=generation.layout_artifact_id)
+        span_map = self._load_json_artifact(trip_id=trip_id, artifact_id=generation.span_map_artifact_id)
+        mention_records = self.import_repository.list_mentions(import_job_id=job.id)
+        spans = self.import_repository.list_document_text_spans(generation_id=generation.id)
+        return DocumentExtractionEvidenceResponse(
+            generation=generation_to_response(generation),
+            artifact=artifact_to_response(artifact),
+            job=job_to_response(job),
+            layout_manifest=layout_manifest if isinstance(layout_manifest, dict) else {},
+            span_map=span_map if isinstance(span_map, list) else [],
+            mentions=self._mention_responses(job),
+            mention_evidence=[mention_evidence_response(mention=mention, spans=spans) for mention in mention_records],
+        )
+
     def _get_binary_inspection_or_raise(self, *, trip_id: str, import_job_id: str) -> ArtifactInspectionRecord:
         job = self.import_repository.get_job(trip_id=trip_id, import_job_id=import_job_id)
         if job.input_type not in {"image", "pdf"}:
@@ -935,6 +1048,15 @@ class TextImportService:
         if inspection is None:
             raise TripError("import_artifact_not_ready", "Artifact inspection is not complete.", 409)
         return inspection
+
+    def _load_json_artifact(self, *, trip_id: str, artifact_id: str | None) -> Any:
+        if not artifact_id:
+            return {}
+        artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=artifact_id)
+        try:
+            return json.loads(self.artifact_store.get(storage_key=artifact.storage_key).decode("utf-8"))
+        except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TripError("import_document_evidence_not_found", "Document evidence artifact was not found.", 404) from exc
 
     def _binary_derivation(self, inspection: ArtifactInspectionRecord) -> ArtifactDerivationRecord | None:
         child_id = inspection.sanitized_artifact_id or inspection.manifest_artifact_id
@@ -1903,6 +2025,10 @@ def span_from_worker(
         block_index=span.block_index,
         line_index=span.line_index,
         token_index=span.token_index,
+        block_id=span.block_id,
+        line_id=span.line_id,
+        token_id=span.token_id,
+        reading_order=span.reading_order,
         bbox=safe_document_bbox(span.bbox),
         source_kind=span.source_kind,
         confidence=span.confidence,
@@ -1914,12 +2040,19 @@ def span_from_worker(
 
 def safe_document_bbox(value: dict[str, Any]) -> dict[str, Any]:
     safe: dict[str, Any] = {}
-    for key in ("x0", "y0", "x1", "y1"):
+    for key in ("x", "y", "width", "height"):
         raw = value.get(key)
         if isinstance(raw, (int, float)):
-            safe[key] = round(float(raw), 3)
+            safe[key] = round(max(0.0, min(float(raw), 1.0)), 6)
+    if safe.get("x", 0.0) + safe.get("width", 0.0) > 1.0:
+        safe["width"] = round(max(0.0, 1.0 - safe.get("x", 0.0)), 6)
+    if safe.get("y", 0.0) + safe.get("height", 0.0) > 1.0:
+        safe["height"] = round(max(0.0, 1.0 - safe.get("y", 0.0)), 6)
+    origin = value.get("origin")
+    if origin == "top-left":
+        safe["origin"] = origin
     unit = value.get("unit")
-    if isinstance(unit, str) and unit in {"pt", "px"}:
+    if isinstance(unit, str) and unit == "normalized":
         safe["unit"] = unit
     return safe
 
@@ -1930,6 +2063,10 @@ def safe_document_extraction_metadata(metadata: dict[str, Any]) -> dict[str, Any
         value = metadata.get(key)
         if isinstance(value, (int, float, bool)) or value is None:
             safe[key] = value
+    for key in ("layout_artifact_id", "span_map_artifact_id", "reading_order_algorithm", "coordinate_space"):
+        value = metadata.get(key)
+        if isinstance(value, str):
+            safe[key] = value[:160]
     page_failures = metadata.get("page_failures")
     if isinstance(page_failures, list):
         safe["page_failures"] = [
@@ -1949,6 +2086,10 @@ def safe_document_extraction_metadata(metadata: dict[str, Any]) -> dict[str, Any
             "silent_fallback": bool(capabilities.get("silent_fallback")),
         }
     return safe
+
+
+def json_dumps_safe(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def file_checksum(path: Path) -> str:
@@ -2259,6 +2400,8 @@ def generation_to_response(generation: DocumentExtractionGenerationRecord) -> Do
         inspection_id=generation.inspection_id,
         derived_import_job_id=generation.derived_import_job_id,
         derived_artifact_id=generation.derived_artifact_id,
+        layout_artifact_id=generation.layout_artifact_id,
+        span_map_artifact_id=generation.span_map_artifact_id,
         generation=generation.generation,
         schema_version=generation.schema_version,
         extractor_version=generation.extractor_version,
@@ -2285,6 +2428,8 @@ def empty_generation_response(
         source_import_job_id=source_job.id,
         source_artifact_id=source_job.artifact_id,
         inspection_id=inspection.id,
+        layout_artifact_id=None,
+        span_map_artifact_id=None,
         generation=0,
         schema_version=DOCUMENT_EXTRACTION_SCHEMA_VERSION,
         extractor_version=DOCUMENT_EXTRACTOR_VERSION,
@@ -2309,12 +2454,46 @@ def span_to_response(span: DocumentTextSpanRecord) -> DocumentTextSpanResponse:
         block_index=span.block_index,
         line_index=span.line_index,
         token_index=span.token_index,
+        block_id=span.block_id,
+        line_id=span.line_id,
+        token_id=span.token_id,
+        reading_order=span.reading_order,
         bbox=span.bbox,
         source_kind=span.source_kind,
         confidence=span.confidence,
         text_digest=span.text_digest,
         warning_codes=span.warning_codes,
         created_at=span.created_at,
+    )
+
+
+def mention_evidence_response(
+    *,
+    mention: ExtractedMentionRecord,
+    spans: list[DocumentTextSpanRecord],
+) -> DocumentMentionEvidenceResponse:
+    overlapping = [
+        span for span in spans
+        if span.span_start < mention.end_offset and span.span_end > mention.start_offset
+    ]
+    page_numbers = sorted({span.page_number for span in overlapping})
+    block_ids = sorted({span.block_id for span in overlapping})
+    line_ids = sorted({span.line_id for span in overlapping})
+    token_ids = [span.token_id for span in sorted(overlapping, key=lambda item: item.reading_order) if span.token_id]
+    boxes = [span.bbox for span in sorted(overlapping, key=lambda item: item.reading_order) if span.bbox]
+    methods = sorted({span.source_kind for span in overlapping})
+    return DocumentMentionEvidenceResponse(
+        mention_id=mention.id,
+        mention_text=mention.raw_text,
+        start_offset=mention.start_offset,
+        end_offset=mention.end_offset,
+        page_numbers=page_numbers,
+        block_ids=block_ids,
+        line_ids=line_ids,
+        token_ids=token_ids,
+        bounding_boxes=boxes,
+        extraction_methods=methods,
+        geometry_available=bool(boxes),
     )
 
 
