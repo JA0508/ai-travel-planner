@@ -18,6 +18,9 @@ from app.imports.document_extraction import DocumentTextExtractor, FetchedDocume
 from app.imports.domain import (
     ARTIFACT_INSPECTION_SCHEMA_VERSION,
     ARTIFACT_INSPECTOR_VERSION,
+    DOCUMENT_EXTRACTION_SCHEMA_VERSION,
+    DOCUMENT_EXTRACTOR_VERSION,
+    DOCUMENT_TEXT_TRANSFORMER_VERSION,
     IMAGE_SANITIZER_VERSION,
     ArtifactDerivationRecord,
     ArtifactDerivationResponse,
@@ -26,6 +29,13 @@ from app.imports.domain import (
     ArtifactInspectionRecord,
     ArtifactInspectionResponse,
     BinaryImportCreateResponse,
+    DocumentExtractionCreateResponse,
+    DocumentExtractionEvidenceResponse,
+    DocumentExtractionGenerationRecord,
+    DocumentExtractionGenerationResponse,
+    DocumentMentionEvidenceResponse,
+    DocumentTextSpanRecord,
+    DocumentTextSpanResponse,
     IMPORT_EXTRACTION_SCHEMA_VERSION,
     IMPORT_EXTRACTOR_VERSION,
     IMPORT_RESOLVER_VERSION,
@@ -64,6 +74,8 @@ from app.imports.domain import (
     generate_artifact_derivation_id,
     generate_artifact_inspection_finding_id,
     generate_artifact_inspection_id,
+    generate_document_extraction_generation_id,
+    generate_document_text_span_id,
     generate_import_attempt_id,
     generate_import_commit_id,
     generate_import_job_id,
@@ -75,6 +87,7 @@ from app.imports.domain import (
     source_checksum,
 )
 from app.imports.extraction import TextImportExtractor
+from app.imports.document_extraction_runner import DocumentExtractionRunner, WorkerDocumentExtractionResult, WorkerDocumentSpan
 from app.imports.inspection_runner import ArtifactInspectionRunner, WorkerInspectionResult
 from app.imports.repository import ImportRepository
 from app.imports.resolution import PlaceMentionResolver
@@ -689,6 +702,341 @@ class TextImportService:
         except FileNotFoundError as exc:
             raise TripError("import_artifact_not_found", "Sanitized image artifact was not found.", 404) from exc
 
+    def extract_document_import(
+        self,
+        *,
+        trip_id: str,
+        import_job_id: str,
+        capability: str | None,
+        idempotency_key: str | None,
+    ) -> DocumentExtractionCreateResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        if not get_import_document_extraction_enabled_inline():
+            raise TripError("import_document_extraction_disabled", "Document extraction is disabled.", 503)
+        self._require_trip_access(trip_id, capability)
+        source_job = self.import_repository.get_job(trip_id=trip_id, import_job_id=import_job_id)
+        if source_job.input_type not in {"image", "pdf"}:
+            raise TripError("import_document_source_not_binary", "Only inspected image/PDF artifacts can be extracted.", 409)
+        inspection = self._get_binary_inspection_or_raise(trip_id=trip_id, import_job_id=import_job_id)
+        if inspection.status != ImportJobStatus.ARTIFACT_READY.value:
+            raise TripError("import_document_source_not_ready", "Document extraction requires an artifact_ready binary inspection.", 409)
+        source_artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=source_job.artifact_id)
+        readable_artifact = source_artifact
+        if inspection.detected_kind == "image":
+            if not inspection.sanitized_artifact_id:
+                raise TripError("import_document_source_not_ready", "Image extraction requires a sanitized image derivative.", 409)
+            readable_artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=inspection.sanitized_artifact_id)
+        req_digest = request_digest(
+            {
+                "operation": "extract_document_import",
+                "trip_id": trip_id,
+                "source_import_job_id": source_job.id,
+                "source_artifact_id": source_artifact.id,
+                "source_checksum": source_artifact.content_checksum,
+                "inspection_id": inspection.id,
+                "extractor_version": DOCUMENT_EXTRACTOR_VERSION,
+            }
+        )
+        key_hash = hash_idempotency_key(idempotency_key.strip())
+        idempotent_job = self.import_repository.get_idempotent_job(
+            trip_id=trip_id,
+            scope="extract_document_import",
+            request_digest=req_digest,
+            idempotency_key_hash=key_hash,
+        )
+        if idempotent_job is not None:
+            generation = self.import_repository.get_document_extraction_for_derived_job(derived_import_job_id=idempotent_job.id)
+            artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=idempotent_job.artifact_id)
+            return DocumentExtractionCreateResponse(
+                generation=generation_to_response(generation) if generation else empty_generation_response(trip_id=trip_id, source_job=source_job, inspection=inspection),
+                artifact=artifact_to_response(artifact),
+                job=job_to_response(idempotent_job),
+                mentions=self._mention_responses(idempotent_job),
+                derivation=derivation_to_response(self.import_repository.get_artifact_derivation_for_child(child_artifact_id=artifact.id)),
+                spans=self._span_responses(generation.id) if generation else [],
+                duplicate_artifact=True,
+                idempotent_replay=True,
+            )
+        existing_generation = self.import_repository.get_latest_document_extraction_for_source(
+            trip_id=trip_id,
+            source_import_job_id=source_job.id,
+        )
+        if existing_generation is not None and existing_generation.derived_import_job_id:
+            existing_job = self.import_repository.get_job(
+                trip_id=trip_id,
+                import_job_id=existing_generation.derived_import_job_id,
+            )
+            self.import_repository.remember_idempotent_job(
+                trip_id=trip_id,
+                scope="extract_document_import",
+                request_digest=req_digest,
+                idempotency_key_hash=key_hash,
+                job_id=existing_job.id,
+                created_at=format_utc(self.clock(timezone.utc)),
+            )
+            artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=existing_job.artifact_id)
+            return DocumentExtractionCreateResponse(
+                generation=generation_to_response(existing_generation),
+                artifact=artifact_to_response(artifact),
+                job=job_to_response(existing_job),
+                mentions=self._mention_responses(existing_job),
+                derivation=derivation_to_response(self.import_repository.get_artifact_derivation_for_child(child_artifact_id=artifact.id)),
+                spans=self._span_responses(existing_generation.id),
+                duplicate_artifact=True,
+            )
+
+        try:
+            source_bytes = self.artifact_store.get(storage_key=readable_artifact.storage_key)
+        except FileNotFoundError as exc:
+            raise TripError("import_artifact_not_found", "Readable document artifact was not found.", 404) from exc
+        with tempfile.TemporaryDirectory() as temp_dir:
+            suffix = ".pdf" if inspection.detected_kind == "pdf" else ".img"
+            source_path = Path(temp_dir) / f"document-source{suffix}"
+            source_path.write_bytes(source_bytes)
+            runner = DocumentExtractionRunner(
+                timeout_seconds=get_import_document_extraction_timeout_seconds_inline(),
+                max_memory_mb=get_import_document_extraction_max_memory_mb_inline(),
+                max_output_bytes=get_import_document_extraction_max_output_bytes_inline(),
+            )
+            try:
+                extraction = runner.extract(
+                    path=source_path,
+                    kind=inspection.detected_kind,
+                    mime_type=readable_artifact.mime_type,
+                    limits=document_extraction_limits(),
+                )
+            except TripError:
+                raise
+        if extraction.status == "failed" or not extraction.normalized_text.strip():
+            raise TripError(
+                extraction.error_code or "import_document_extraction_no_text",
+                "Document extraction did not produce reviewable text.",
+                422,
+            )
+        normalized = validate_document_extracted_text(extraction.normalized_text)
+        now = format_utc(self.clock(timezone.utc))
+        derived_bytes = normalized.encode("utf-8")
+        derived_artifact = self._stage_child_artifact_bytes(
+            trip_id=trip_id,
+            content_bytes=derived_bytes,
+            checksum=source_checksum(derived_bytes),
+            now=now,
+            artifact_type="derived_document_text",
+            mime_type="text/plain",
+            charset="utf-8",
+            storage_type="document-text",
+            extension="txt",
+        )
+        layout_bytes = json_dumps_safe(extraction.layout_manifest).encode("utf-8")
+        layout_artifact = self._stage_child_artifact_bytes(
+            trip_id=trip_id,
+            content_bytes=layout_bytes,
+            checksum=source_checksum(layout_bytes),
+            now=now,
+            artifact_type="document_layout_manifest",
+            mime_type="application/json",
+            charset="utf-8",
+            storage_type="document-layout",
+            extension="json",
+        )
+        span_map_bytes = json_dumps_safe(extraction.span_map).encode("utf-8")
+        span_map_artifact = self._stage_child_artifact_bytes(
+            trip_id=trip_id,
+            content_bytes=span_map_bytes,
+            checksum=source_checksum(span_map_bytes),
+            now=now,
+            artifact_type="document_text_span_map",
+            mime_type="application/json",
+            charset="utf-8",
+            storage_type="document-span-map",
+            extension="json",
+        )
+        derived_job = ImportJobRecord(
+            id=generate_import_job_id(),
+            trip_id=trip_id,
+            artifact_id=derived_artifact.id,
+            input_type="document",
+            status=ImportJobStatus.CREATED.value,
+            extraction_schema_version=IMPORT_EXTRACTION_SCHEMA_VERSION,
+            extractor_version=IMPORT_EXTRACTOR_VERSION,
+            resolver_version=IMPORT_RESOLVER_VERSION,
+            review_version=0,
+            mention_count=0,
+            warning_codes=list(extraction.warning_codes),
+            error_code=None,
+            committed_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        generation_id = generate_document_extraction_generation_id()
+        generation_metadata = safe_document_extraction_metadata(extraction.metadata)
+        generation_metadata.update(
+            {
+                "layout_artifact_id": layout_artifact.id,
+                "span_map_artifact_id": span_map_artifact.id,
+                "reading_order_algorithm": "layout-reading-order-v1",
+                "coordinate_space": "normalized-top-left",
+            }
+        )
+        generation = DocumentExtractionGenerationRecord(
+            id=generation_id,
+            trip_id=trip_id,
+            source_import_job_id=source_job.id,
+            source_artifact_id=source_artifact.id,
+            inspection_id=inspection.id,
+            derived_import_job_id=derived_job.id,
+            derived_artifact_id=derived_artifact.id,
+            layout_artifact_id=layout_artifact.id,
+            span_map_artifact_id=span_map_artifact.id,
+            generation=1,
+            schema_version=extraction.schema_version,
+            extractor_version=extraction.extractor_version,
+            strategy=extraction.strategy,
+            status=ImportJobStatus.PARTIAL.value if extraction.status == "partial" else ImportJobStatus.REVIEW_READY.value,
+            page_count=extraction.page_count,
+            extracted_text_chars=len(normalized),
+            warning_codes=list(extraction.warning_codes),
+            error_code=None,
+            metadata=generation_metadata,
+            created_at=now,
+        )
+        spans = [
+            span_from_worker(generation_id=generation_id, span=span, source_text=normalized, created_at=now)
+            for span in extraction.spans
+            if span.span_end <= len(normalized) and normalized[span.span_start:span.span_end].strip()
+        ]
+        derivation = ArtifactDerivationRecord(
+            id=generate_artifact_derivation_id(),
+            parent_artifact_id=readable_artifact.id,
+            child_artifact_id=derived_artifact.id,
+            derivation_type="document_text_extraction",
+            transformer_version=DOCUMENT_TEXT_TRANSFORMER_VERSION,
+            input_checksum=readable_artifact.content_checksum,
+            output_checksum=derived_artifact.content_checksum,
+            metadata={
+                "source_import_job_id": source_job.id,
+                "source_artifact_id": source_artifact.id,
+                "inspection_id": inspection.id,
+                "strategy": extraction.strategy,
+                "schema_version": extraction.schema_version,
+                "page_count": extraction.page_count,
+                "span_count": len(spans),
+                "source_kind": inspection.detected_kind,
+                "layout_artifact_id": layout_artifact.id,
+                "span_map_artifact_id": span_map_artifact.id,
+                "reading_order_algorithm": "layout-reading-order-v1",
+                "coordinate_space": "top-left-normalized",
+            },
+            created_at=now,
+        )
+        try:
+            self.import_repository.create_document_extraction_result(
+                generation=generation,
+                spans=spans,
+                child_artifact=derived_artifact,
+                derivation=derivation,
+                derived_job=derived_job,
+                related_artifacts=[layout_artifact, span_map_artifact],
+                related_derivations=[
+                    ArtifactDerivationRecord(
+                        id=generate_artifact_derivation_id(),
+                        parent_artifact_id=readable_artifact.id,
+                        child_artifact_id=layout_artifact.id,
+                        derivation_type="document_layout_extraction",
+                        transformer_version=DOCUMENT_TEXT_TRANSFORMER_VERSION,
+                        input_checksum=readable_artifact.content_checksum,
+                        output_checksum=layout_artifact.content_checksum,
+                        metadata={
+                            "source_import_job_id": source_job.id,
+                            "inspection_id": inspection.id,
+                            "strategy": extraction.strategy,
+                            "schema_version": extraction.schema_version,
+                        },
+                        created_at=now,
+                    ),
+                    ArtifactDerivationRecord(
+                        id=generate_artifact_derivation_id(),
+                        parent_artifact_id=layout_artifact.id,
+                        child_artifact_id=span_map_artifact.id,
+                        derivation_type="document_span_map",
+                        transformer_version=DOCUMENT_TEXT_TRANSFORMER_VERSION,
+                        input_checksum=layout_artifact.content_checksum,
+                        output_checksum=span_map_artifact.content_checksum,
+                        metadata={
+                            "source_import_job_id": source_job.id,
+                            "inspection_id": inspection.id,
+                            "derived_artifact_id": derived_artifact.id,
+                        },
+                        created_at=now,
+                    ),
+                ],
+            )
+        except Exception as exc:
+            self.artifact_store.delete(storage_key=derived_artifact.storage_key)
+            if isinstance(exc, TripError):
+                raise
+            raise TripError("import_document_extraction_persist_failed", "Document extraction result could not be persisted.", 500) from exc
+        self.import_repository.remember_idempotent_job(
+            trip_id=trip_id,
+            scope="extract_document_import",
+            request_digest=req_digest,
+            idempotency_key_hash=key_hash,
+            job_id=derived_job.id,
+            created_at=now,
+        )
+        processed = self._process_inline(job=derived_job, source_text=normalized)
+        persisted_generation = self.import_repository.get_document_extraction_for_derived_job(
+            derived_import_job_id=processed.id,
+        ) or generation
+        return DocumentExtractionCreateResponse(
+            generation=generation_to_response(persisted_generation),
+            artifact=artifact_to_response(derived_artifact),
+            job=job_to_response(processed),
+            mentions=self._mention_responses(processed),
+            derivation=derivation_to_response(derivation),
+            spans=self._span_responses(persisted_generation.id),
+            duplicate_artifact=False,
+        )
+
+    def get_document_extraction_evidence(
+        self,
+        *,
+        trip_id: str,
+        import_job_id: str,
+        capability: str | None,
+    ) -> DocumentExtractionEvidenceResponse:
+        self._require_trip_access(trip_id, capability)
+        job = self.import_repository.get_job(trip_id=trip_id, import_job_id=import_job_id)
+        if job.input_type in {"image", "pdf"}:
+            generation = self.import_repository.get_latest_document_extraction_for_source(
+                trip_id=trip_id,
+                source_import_job_id=job.id,
+            )
+            if generation is None or not generation.derived_import_job_id:
+                raise TripError("import_document_extraction_not_found", "Document extraction was not found.", 404)
+            job = self.import_repository.get_job(trip_id=trip_id, import_job_id=generation.derived_import_job_id)
+        elif job.input_type == "document":
+            generation = self.import_repository.get_document_extraction_for_derived_job(derived_import_job_id=job.id)
+            if generation is None:
+                raise TripError("import_document_extraction_not_found", "Document extraction was not found.", 404)
+        else:
+            raise TripError("import_document_source_not_document", "Import job is not a document extraction job.", 409)
+        artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=job.artifact_id)
+        layout_manifest = self._load_json_artifact(trip_id=trip_id, artifact_id=generation.layout_artifact_id)
+        span_map = self._load_json_artifact(trip_id=trip_id, artifact_id=generation.span_map_artifact_id)
+        mention_records = self.import_repository.list_mentions(import_job_id=job.id)
+        spans = self.import_repository.list_document_text_spans(generation_id=generation.id)
+        return DocumentExtractionEvidenceResponse(
+            generation=generation_to_response(generation),
+            artifact=artifact_to_response(artifact),
+            job=job_to_response(job),
+            layout_manifest=layout_manifest if isinstance(layout_manifest, dict) else {},
+            span_map=span_map if isinstance(span_map, list) else [],
+            mentions=self._mention_responses(job),
+            mention_evidence=[mention_evidence_response(mention=mention, spans=spans) for mention in mention_records],
+        )
+
     def _get_binary_inspection_or_raise(self, *, trip_id: str, import_job_id: str) -> ArtifactInspectionRecord:
         job = self.import_repository.get_job(trip_id=trip_id, import_job_id=import_job_id)
         if job.input_type not in {"image", "pdf"}:
@@ -700,6 +1048,15 @@ class TextImportService:
         if inspection is None:
             raise TripError("import_artifact_not_ready", "Artifact inspection is not complete.", 409)
         return inspection
+
+    def _load_json_artifact(self, *, trip_id: str, artifact_id: str | None) -> Any:
+        if not artifact_id:
+            return {}
+        artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=artifact_id)
+        try:
+            return json.loads(self.artifact_store.get(storage_key=artifact.storage_key).decode("utf-8"))
+        except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TripError("import_document_evidence_not_found", "Document evidence artifact was not found.", 404) from exc
 
     def _binary_derivation(self, inspection: ArtifactInspectionRecord) -> ArtifactDerivationRecord | None:
         child_id = inspection.sanitized_artifact_id or inspection.manifest_artifact_id
@@ -880,7 +1237,7 @@ class TextImportService:
                         else None
                     ),
                     address_summary=selected.address_summary,
-                    source_kind=CandidateSourceKind.URL_IMPORT if job.input_type == "url" else CandidateSourceKind.TEXT_IMPORT,
+                    source_kind=candidate_source_kind_for_import(job.input_type),
                     source_ref=f"import:{import_job_id}",
                     evidence_refs=evidence_refs,
                 ),
@@ -1472,6 +1829,9 @@ class TextImportService:
             for mention in mentions
         ]
 
+    def _span_responses(self, generation_id: str) -> list[DocumentTextSpanResponse]:
+        return [span_to_response(span) for span in self.import_repository.list_document_text_spans(generation_id=generation_id)]
+
     def _trip_context(self, trip_id: str) -> dict[str, Any]:
         try:
             revision = self.trip_repository.get_current_revision(trip_id)
@@ -1567,6 +1927,36 @@ def get_import_inspection_max_output_bytes_inline() -> int:
     return get_import_inspection_max_output_bytes()
 
 
+def get_import_document_extraction_enabled_inline() -> bool:
+    from app.core.runtime_config import get_import_document_extraction_enabled
+
+    return get_import_document_extraction_enabled()
+
+
+def get_import_document_extraction_timeout_seconds_inline() -> float:
+    from app.core.runtime_config import get_import_document_extraction_timeout_seconds
+
+    return get_import_document_extraction_timeout_seconds()
+
+
+def get_import_document_extraction_max_memory_mb_inline() -> int:
+    from app.core.runtime_config import get_import_document_extraction_max_memory_mb
+
+    return get_import_document_extraction_max_memory_mb()
+
+
+def get_import_document_extraction_max_output_bytes_inline() -> int:
+    from app.core.runtime_config import get_import_document_extraction_max_output_bytes
+
+    return get_import_document_extraction_max_output_bytes()
+
+
+def get_import_document_max_text_bytes_inline() -> int:
+    from app.core.runtime_config import get_import_document_max_text_bytes
+
+    return get_import_document_max_text_bytes()
+
+
 def binary_inspection_limits() -> dict[str, Any]:
     from app.core.runtime_config import (
         get_import_image_max_dimension,
@@ -1583,6 +1973,147 @@ def binary_inspection_limits() -> dict[str, Any]:
         "max_pdf_objects": get_import_pdf_max_objects(),
         "max_pdf_scan_nodes": 3000,
     }
+
+
+def document_extraction_limits() -> dict[str, Any]:
+    from app.core.runtime_config import (
+        get_import_document_ocr_command,
+        get_import_document_ocr_languages,
+        get_import_document_ocr_timeout_seconds,
+        get_import_pdf_page_ocr_enabled,
+        get_import_pdf_max_pages,
+    )
+
+    return {
+        "max_pdf_pages": get_import_pdf_max_pages(),
+        "max_text_bytes": get_import_document_max_text_bytes_inline(),
+        "ocr_command": get_import_document_ocr_command(),
+        "ocr_languages": get_import_document_ocr_languages(),
+        "ocr_timeout_seconds": get_import_document_ocr_timeout_seconds(),
+        "enable_pdf_page_ocr": get_import_pdf_page_ocr_enabled(),
+        "pdf_render_scale": 2.0,
+    }
+
+
+def validate_document_extracted_text(text: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if "\x00" in normalized:
+        raise TripError("import_document_text_invalid_encoding", "Extracted document text contains invalid NUL bytes.", 422)
+    if not normalized.strip():
+        raise TripError("import_document_extraction_no_text", "Document extraction did not produce reviewable text.", 422)
+    encoded = normalized.encode("utf-8")
+    max_bytes = get_import_document_max_text_bytes_inline()
+    if len(encoded) > max_bytes:
+        return encoded[:max_bytes].decode("utf-8", errors="ignore").rstrip()
+    return normalized
+
+
+def span_from_worker(
+    *,
+    generation_id: str,
+    span: WorkerDocumentSpan,
+    source_text: str,
+    created_at: str,
+) -> DocumentTextSpanRecord:
+    value = source_text[span.span_start:span.span_end]
+    return DocumentTextSpanRecord(
+        id=generate_document_text_span_id(),
+        generation_id=generation_id,
+        span_start=span.span_start,
+        span_end=span.span_end,
+        page_number=span.page_number,
+        block_index=span.block_index,
+        line_index=span.line_index,
+        token_index=span.token_index,
+        block_id=span.block_id,
+        line_id=span.line_id,
+        token_id=span.token_id,
+        reading_order=span.reading_order,
+        bbox=safe_document_bbox(span.bbox),
+        source_kind=span.source_kind,
+        confidence=span.confidence,
+        text_digest=sha256_digest({"text": value, "span_start": span.span_start, "span_end": span.span_end}),
+        warning_codes=list(span.warning_codes),
+        created_at=created_at,
+    )
+
+
+def safe_document_bbox(value: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key in ("x", "y", "width", "height"):
+        raw = value.get(key)
+        if isinstance(raw, (int, float)):
+            safe[key] = round(max(0.0, min(float(raw), 1.0)), 6)
+    if safe.get("x", 0.0) + safe.get("width", 0.0) > 1.0:
+        safe["width"] = round(max(0.0, 1.0 - safe.get("x", 0.0)), 6)
+    if safe.get("y", 0.0) + safe.get("height", 0.0) > 1.0:
+        safe["height"] = round(max(0.0, 1.0 - safe.get("y", 0.0)), 6)
+    origin = value.get("origin")
+    if origin == "top-left":
+        safe["origin"] = origin
+    unit = value.get("unit")
+    if isinstance(unit, str) and unit == "normalized":
+        safe["unit"] = unit
+    return safe
+
+
+def safe_document_extraction_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key in ("native_text_pages", "ocr_pages", "image_width", "image_height"):
+        value = metadata.get(key)
+        if isinstance(value, (int, float, bool)) or value is None:
+            safe[key] = value
+    for key in ("layout_artifact_id", "span_map_artifact_id", "reading_order_algorithm", "coordinate_space"):
+        value = metadata.get(key)
+        if isinstance(value, str):
+            safe[key] = value[:160]
+    page_failures = metadata.get("page_failures")
+    if isinstance(page_failures, list):
+        safe["page_failures"] = [
+            {
+                "page_number": int(item.get("page_number", 0)),
+                "error_code": str(item.get("error_code", ""))[:80],
+            }
+            for item in page_failures
+            if isinstance(item, dict)
+        ][:80]
+    capabilities = metadata.get("ocr_capabilities")
+    if isinstance(capabilities, dict):
+        requested_languages = capabilities.get("requested_languages")
+        installed_languages = capabilities.get("installed_languages")
+        missing_languages = capabilities.get("missing_languages")
+        safe["ocr_capabilities"] = {
+            "engine": str(capabilities.get("engine") or "")[:40],
+            "available": bool(capabilities.get("available")),
+            "languages": str(capabilities.get("languages") or "")[:80],
+            "requested_languages": [
+                str(language)[:40]
+                for language in requested_languages
+                if isinstance(language, str)
+            ][:40]
+            if isinstance(requested_languages, list)
+            else [],
+            "installed_languages": [
+                str(language)[:40]
+                for language in installed_languages
+                if isinstance(language, str)
+            ][:120]
+            if isinstance(installed_languages, list)
+            else [],
+            "missing_languages": [
+                str(language)[:40]
+                for language in missing_languages
+                if isinstance(language, str)
+            ][:40]
+            if isinstance(missing_languages, list)
+            else [],
+            "silent_fallback": bool(capabilities.get("silent_fallback")),
+        }
+    return safe
+
+
+def json_dumps_safe(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def file_checksum(path: Path) -> str:
@@ -1678,6 +2209,14 @@ def latest_decision_by_mention(decisions: list[ImportReviewDecisionRecord]) -> d
 
 def evidence_ref(artifact_id: str, mention_id: str) -> str:
     return f"artifact:{artifact_id}#mention:{mention_id}"
+
+
+def candidate_source_kind_for_import(input_type: str) -> CandidateSourceKind:
+    if input_type == "url":
+        return CandidateSourceKind.URL_IMPORT
+    if input_type == "document":
+        return CandidateSourceKind.DOCUMENT_IMPORT
+    return CandidateSourceKind.TEXT_IMPORT
 
 
 def mention_to_response(
@@ -1873,6 +2412,112 @@ def inspection_to_response(
         error_code=inspection.error_code,
         started_at=inspection.started_at,
         completed_at=inspection.completed_at,
+    )
+
+
+def generation_to_response(generation: DocumentExtractionGenerationRecord) -> DocumentExtractionGenerationResponse:
+    return DocumentExtractionGenerationResponse(
+        id=generation.id,
+        trip_id=generation.trip_id,
+        source_import_job_id=generation.source_import_job_id,
+        source_artifact_id=generation.source_artifact_id,
+        inspection_id=generation.inspection_id,
+        derived_import_job_id=generation.derived_import_job_id,
+        derived_artifact_id=generation.derived_artifact_id,
+        layout_artifact_id=generation.layout_artifact_id,
+        span_map_artifact_id=generation.span_map_artifact_id,
+        generation=generation.generation,
+        schema_version=generation.schema_version,
+        extractor_version=generation.extractor_version,
+        strategy=generation.strategy,
+        status=generation.status,
+        page_count=generation.page_count,
+        extracted_text_chars=generation.extracted_text_chars,
+        warning_codes=generation.warning_codes,
+        error_code=generation.error_code,
+        metadata=generation.metadata,
+        created_at=generation.created_at,
+    )
+
+
+def empty_generation_response(
+    *,
+    trip_id: str,
+    source_job: ImportJobRecord,
+    inspection: ArtifactInspectionRecord,
+) -> DocumentExtractionGenerationResponse:
+    return DocumentExtractionGenerationResponse(
+        id="",
+        trip_id=trip_id,
+        source_import_job_id=source_job.id,
+        source_artifact_id=source_job.artifact_id,
+        inspection_id=inspection.id,
+        layout_artifact_id=None,
+        span_map_artifact_id=None,
+        generation=0,
+        schema_version=DOCUMENT_EXTRACTION_SCHEMA_VERSION,
+        extractor_version=DOCUMENT_EXTRACTOR_VERSION,
+        strategy="pdf_native_text" if source_job.input_type == "pdf" else "image_ocr",
+        status="failed",
+        page_count=0,
+        extracted_text_chars=0,
+        warning_codes=[],
+        error_code=None,
+        metadata={},
+        created_at=inspection.completed_at,
+    )
+
+
+def span_to_response(span: DocumentTextSpanRecord) -> DocumentTextSpanResponse:
+    return DocumentTextSpanResponse(
+        id=span.id,
+        generation_id=span.generation_id,
+        span_start=span.span_start,
+        span_end=span.span_end,
+        page_number=span.page_number,
+        block_index=span.block_index,
+        line_index=span.line_index,
+        token_index=span.token_index,
+        block_id=span.block_id,
+        line_id=span.line_id,
+        token_id=span.token_id,
+        reading_order=span.reading_order,
+        bbox=span.bbox,
+        source_kind=span.source_kind,
+        confidence=span.confidence,
+        text_digest=span.text_digest,
+        warning_codes=span.warning_codes,
+        created_at=span.created_at,
+    )
+
+
+def mention_evidence_response(
+    *,
+    mention: ExtractedMentionRecord,
+    spans: list[DocumentTextSpanRecord],
+) -> DocumentMentionEvidenceResponse:
+    overlapping = [
+        span for span in spans
+        if span.span_start < mention.end_offset and span.span_end > mention.start_offset
+    ]
+    page_numbers = sorted({span.page_number for span in overlapping})
+    block_ids = sorted({span.block_id for span in overlapping})
+    line_ids = sorted({span.line_id for span in overlapping})
+    token_ids = [span.token_id for span in sorted(overlapping, key=lambda item: item.reading_order) if span.token_id]
+    boxes = [span.bbox for span in sorted(overlapping, key=lambda item: item.reading_order) if span.bbox]
+    methods = sorted({span.source_kind for span in overlapping})
+    return DocumentMentionEvidenceResponse(
+        mention_id=mention.id,
+        mention_text=mention.raw_text,
+        start_offset=mention.start_offset,
+        end_offset=mention.end_offset,
+        page_numbers=page_numbers,
+        block_ids=block_ids,
+        line_ids=line_ids,
+        token_ids=token_ids,
+        bounding_boxes=boxes,
+        extraction_methods=methods,
+        geometry_available=bool(boxes),
     )
 
 

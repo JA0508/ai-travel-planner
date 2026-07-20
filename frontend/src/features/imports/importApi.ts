@@ -1,6 +1,6 @@
 import { getTripJson, postTripJson, type TripApiResult } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
-import type { BinaryImportCreateResponse, BinaryInspectionView, ImportCommitResult, ImportReviewResponse, TextImportCreateResponse, URLImportCreateResponse } from "./importTypes";
+import type { BinaryImportCreateResponse, BinaryInspectionView, DocumentExtractionCreateResponse, DocumentExtractionEvidenceResponse, ImportCommitResult, ImportReviewResponse, TextImportCreateResponse, URLImportCreateResponse } from "./importTypes";
 
 export async function submitTextImport(tripId: string, text: string, idempotencyKey: string) {
   return postTripJson<TextImportCreateResponse>(
@@ -62,6 +62,23 @@ export async function fetchSanitizedImageBlob(tripId: string, importJobId: strin
     };
   }
   return { ok: true as const, data: await response.blob() };
+}
+
+export async function extractDocumentImport(tripId: string, importJobId: string, idempotencyKey: string) {
+  return postTripJson<DocumentExtractionCreateResponse>(
+    TRIP_API_ENDPOINTS.extractDocumentImport(tripId, importJobId),
+    {},
+    "抽取文档文本失败",
+    undefined,
+    { headers: { "X-Idempotency-Key": idempotencyKey } },
+  );
+}
+
+export async function fetchDocumentExtractionEvidence(tripId: string, importJobId: string) {
+  return getTripJson<DocumentExtractionEvidenceResponse>(
+    TRIP_API_ENDPOINTS.getDocumentExtractionEvidence(tripId, importJobId),
+    "刷新文档抽取证据失败",
+  );
 }
 
 export async function fetchImportArtifact(tripId: string, importJobId: string) {

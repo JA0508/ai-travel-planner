@@ -19,6 +19,9 @@ ARTIFACT_INSPECTION_SCHEMA_VERSION = "1.0"
 ARTIFACT_INSPECTOR_VERSION = "binary-inspector-v1"
 IMAGE_SANITIZER_VERSION = "image-sanitizer-v1"
 PDF_MANIFEST_TRANSFORMER_VERSION = "pdf-manifest-v1"
+DOCUMENT_EXTRACTION_SCHEMA_VERSION = "1.0"
+DOCUMENT_EXTRACTOR_VERSION = "document-extractor-v1"
+DOCUMENT_TEXT_TRANSFORMER_VERSION = "document-text-v1"
 MAX_CONTEXT_CHARS = 80
 
 
@@ -383,6 +386,85 @@ class ImportCommitResponse(BaseModel):
     idempotent_replay: bool = False
 
 
+class DocumentTextSpanResponse(BaseModel):
+    id: str
+    generation_id: str
+    span_start: int
+    span_end: int
+    page_number: int
+    block_index: int
+    line_index: int
+    token_index: int | None = None
+    block_id: str
+    line_id: str
+    token_id: str | None = None
+    reading_order: int
+    bbox: dict[str, Any] = Field(default_factory=dict)
+    source_kind: str
+    confidence: float | None = None
+    text_digest: str
+    warning_codes: list[str] = Field(default_factory=list)
+    created_at: str
+
+
+class DocumentExtractionGenerationResponse(BaseModel):
+    id: str
+    trip_id: str
+    source_import_job_id: str
+    source_artifact_id: str
+    inspection_id: str
+    derived_import_job_id: str | None = None
+    derived_artifact_id: str | None = None
+    layout_artifact_id: str | None = None
+    span_map_artifact_id: str | None = None
+    generation: int
+    schema_version: str
+    extractor_version: str
+    strategy: str
+    status: str
+    page_count: int
+    extracted_text_chars: int
+    warning_codes: list[str] = Field(default_factory=list)
+    error_code: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class DocumentExtractionCreateResponse(BaseModel):
+    generation: DocumentExtractionGenerationResponse
+    artifact: SourceArtifactResponse | None = None
+    job: ImportJobResponse | None = None
+    mentions: list[ExtractedMentionResponse] = Field(default_factory=list)
+    derivation: ArtifactDerivationResponse | None = None
+    spans: list[DocumentTextSpanResponse] = Field(default_factory=list)
+    duplicate_artifact: bool = False
+    idempotent_replay: bool = False
+
+
+class DocumentMentionEvidenceResponse(BaseModel):
+    mention_id: str
+    mention_text: str
+    start_offset: int
+    end_offset: int
+    page_numbers: list[int] = Field(default_factory=list)
+    block_ids: list[str] = Field(default_factory=list)
+    line_ids: list[str] = Field(default_factory=list)
+    token_ids: list[str] = Field(default_factory=list)
+    bounding_boxes: list[dict[str, Any]] = Field(default_factory=list)
+    extraction_methods: list[str] = Field(default_factory=list)
+    geometry_available: bool
+
+
+class DocumentExtractionEvidenceResponse(BaseModel):
+    generation: DocumentExtractionGenerationResponse
+    artifact: SourceArtifactResponse
+    job: ImportJobResponse
+    layout_manifest: dict[str, Any] = Field(default_factory=dict)
+    span_map: list[dict[str, Any]] = Field(default_factory=list)
+    mentions: list[ExtractedMentionResponse] = Field(default_factory=list)
+    mention_evidence: list[DocumentMentionEvidenceResponse] = Field(default_factory=list)
+
+
 @dataclass(frozen=True, slots=True)
 class SourceArtifactRecord:
     id: str
@@ -607,6 +689,52 @@ class ArtifactInspectionFindingRecord:
     created_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentExtractionGenerationRecord:
+    id: str
+    trip_id: str
+    source_import_job_id: str
+    source_artifact_id: str
+    inspection_id: str
+    derived_import_job_id: str | None
+    derived_artifact_id: str | None
+    layout_artifact_id: str | None
+    span_map_artifact_id: str | None
+    generation: int
+    schema_version: str
+    extractor_version: str
+    strategy: str
+    status: str
+    page_count: int
+    extracted_text_chars: int
+    warning_codes: list[str]
+    error_code: str | None
+    metadata: dict[str, Any]
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentTextSpanRecord:
+    id: str
+    generation_id: str
+    span_start: int
+    span_end: int
+    page_number: int
+    block_index: int
+    line_index: int
+    token_index: int | None
+    block_id: str
+    line_id: str
+    token_id: str | None
+    reading_order: int
+    bbox: dict[str, Any]
+    source_kind: str
+    confidence: float | None
+    text_digest: str
+    warning_codes: list[str]
+    created_at: str
+
+
 def generate_artifact_id() -> str:
     return f"src_{uuid4().hex}"
 
@@ -649,6 +777,14 @@ def generate_artifact_inspection_id() -> str:
 
 def generate_artifact_inspection_finding_id() -> str:
     return f"art_find_{uuid4().hex}"
+
+
+def generate_document_extraction_generation_id() -> str:
+    return f"doc_ext_{uuid4().hex}"
+
+
+def generate_document_text_span_id() -> str:
+    return f"doc_span_{uuid4().hex}"
 
 
 def source_checksum(content: bytes) -> str:

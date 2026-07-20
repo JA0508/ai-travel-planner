@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -11,7 +12,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from PIL import Image
 from pypdf import PdfWriter
-from pypdf.generic import DictionaryObject, NameObject
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.imports.dependencies import reset_import_dependencies_for_tests
 from app.main import app
@@ -52,6 +53,15 @@ class BinaryImportFixture:
     expect_error: str | None = None
     expect_finding: str | None = None
     duplicate_check: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentExtractionFixture:
+    name: str
+    binary_fixture: BinaryImportFixture
+    expected_places_min: int
+    expected_strategy: str
+    commit_confirmed_only: bool = False
 
 
 FIXTURES = [
@@ -130,6 +140,23 @@ BINARY_FIXTURES = [
     BinaryImportFixture("pdf_external_uri", "pdf", "link.pdf", "application/pdf", "uri_pdf", expect_status="artifact_ready", expect_finding="PDF_EXTERNAL_URI_PRESENT"),
     BinaryImportFixture("pdf_page_limit_exceeded", "pdf", "many.pdf", "application/pdf", "many_pages_pdf", expect_status="rejected", expect_finding="PDF_PAGE_LIMIT_EXCEEDED"),
     BinaryImportFixture("pdf_polyglot_zip", "pdf", "poly.pdf", "application/pdf", "pdf_zip", expect_error="import_binary_polyglot_suspected"),
+]
+
+
+DOCUMENT_EXTRACTION_FIXTURES = [
+    DocumentExtractionFixture(
+        name="document_pdf_native_text_to_review",
+        binary_fixture=BinaryImportFixture("document_pdf_source", "pdf", "guide.pdf", "application/pdf", "text_pdf", expect_status="artifact_ready"),
+        expected_places_min=2,
+        expected_strategy="pdf_native_text",
+        commit_confirmed_only=True,
+    ),
+    DocumentExtractionFixture(
+        name="document_image_ocr_unavailable_explicit",
+        binary_fixture=BinaryImportFixture("document_image_source", "image", "guide.png", "image/png", "png_alpha", expect_status="artifact_ready"),
+        expected_places_min=0,
+        expected_strategy="image_ocr",
+    ),
 ]
 
 
@@ -220,6 +247,31 @@ INVARIANTS = [
     "BINARY_IMPORT_CREATES_NO_CANDIDATE",
     "BINARY_IMPORT_CREATES_NO_TRIP_REVISION",
     "NO_BINARY_BYTES_OR_PRIVATE_METADATA_IN_LOGS",
+    "DOCUMENT_EXTRACTION_REQUIRES_READY_INSPECTION",
+    "DOCUMENT_EXTRACTION_NATIVE_TEXT_FIRST",
+    "DOCUMENT_EXTRACTION_NO_SILENT_OCR_FALLBACK",
+    "DOCUMENT_EXTRACTION_GENERATION_IMMUTABLE",
+    "DOCUMENT_LAYOUT_MANIFEST_ARTIFACT_TRACEABLE",
+    "DOCUMENT_SPAN_MAP_ARTIFACT_TRACEABLE",
+    "DOCUMENT_READING_ORDER_DETERMINISTIC",
+    "DOCUMENT_COORDINATE_SPACE_NORMALIZED",
+    "DOCUMENT_SPANS_MAP_TO_PAGE_BBOX",
+    "DOCUMENT_LAYOUT_BLOCK_IDS_STABLE",
+    "DOCUMENT_LINE_TOKEN_IDS_STABLE",
+    "DOCUMENT_SPAN_OFFSETS_MONOTONIC",
+    "DOCUMENT_MENTION_EVIDENCE_TRACEABLE",
+    "DOCUMENT_MENTION_BBOX_NORMALIZED",
+    "DOCUMENT_EVIDENCE_ENDPOINT_SOURCE_JOB",
+    "DOCUMENT_EVIDENCE_ENDPOINT_DERIVED_JOB",
+    "DOCUMENT_DERIVED_ARTIFACT_PRIVATE",
+    "DOCUMENT_TEXT_ARTIFACT_NO_BINARY_BYTES",
+    "DOCUMENT_NO_DIRECT_TRIP_MUTATION",
+    "DOCUMENT_REVIEW_COMMIT_EXPLICIT",
+    "DOCUMENT_PARTIAL_FAILURE_EXPLICIT",
+    "DOCUMENT_OCR_CAPABILITY_REPORTED",
+    "DOCUMENT_TEXT_DERIVATION_TRACEABLE",
+    "DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE",
+    "DOCUMENT_IMPORT_CANDIDATE_PROVENANCE_TRACEABLE",
 ]
 
 
@@ -229,6 +281,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
+    started_at = time.perf_counter()
     results: list[dict] = []
     failures: list[str] = []
     with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
@@ -261,23 +314,58 @@ def main() -> int:
             if result["failed_invariants"]:
                 failures.append(f"{fixture.name}: {', '.join(result['failed_invariants'])}")
             results.append(result)
-        for index, fixture in enumerate(BINARY_FIXTURES, start=len(FIXTURES) + len(URL_FIXTURES)):
-            result = run_binary_fixture(client, trip_id, fixture, index=index)
-            if result["failed_invariants"]:
-                failures.append(f"{fixture.name}: {', '.join(result['failed_invariants'])}")
-            results.append(result)
         for index, fixture in enumerate(URL_FIXTURES, start=len(FIXTURES)):
             result = run_url_fixture(client, trip_id, fixture, index=index)
             if result["failed_invariants"]:
                 failures.append(f"{fixture.name}: {', '.join(result['failed_invariants'])}")
             results.append(result)
+        for index, fixture in enumerate(BINARY_FIXTURES, start=len(FIXTURES) + len(URL_FIXTURES)):
+            result = run_binary_fixture(client, trip_id, fixture, index=index)
+            if result["failed_invariants"]:
+                failures.append(f"{fixture.name}: {', '.join(result['failed_invariants'])}")
+            results.append(result)
+        for index, fixture in enumerate(DOCUMENT_EXTRACTION_FIXTURES, start=len(FIXTURES) + len(URL_FIXTURES) + len(BINARY_FIXTURES)):
+            result = run_document_fixture(client, trip_id, fixture, index=index)
+            if result["failed_invariants"]:
+                failures.append(f"{fixture.name}: {', '.join(result['failed_invariants'])}")
+            results.append(result)
 
+    document_invariants = [invariant for invariant in INVARIANTS if invariant.startswith("DOCUMENT_")]
+    deterministic_mismatch_count = sum(
+        1
+        for result in results
+        for invariant in result["failed_invariants"]
+        if invariant
+        in {
+            "MENTION_SPANS_MATCH_SOURCE",
+            "MENTION_SPANS_MATCH_DERIVED_TEXT",
+            "DOCUMENT_READING_ORDER_DETERMINISTIC",
+            "DOCUMENT_SPAN_OFFSETS_MONOTONIC",
+            "DOCUMENT_MENTION_BBOX_NORMALIZED",
+        }
+    )
     payload = {
         "fixtures": results,
         "invariants": INVARIANTS,
         "passed": len(failures) == 0,
+        "total_fixture_count": len(results),
+        "text_fixture_count": len(FIXTURES),
+        "url_fixture_count": len(URL_FIXTURES),
+        "binary_fixture_count": len(BINARY_FIXTURES),
+        "document_extraction_fixture_count": len(DOCUMENT_EXTRACTION_FIXTURES),
+        "invariant_count": len(INVARIANTS),
+        "document_extraction_invariant_count": len(document_invariants),
         "failure_count": len(failures),
+        "deterministic_mismatch_count": deterministic_mismatch_count,
+        "runtime_seconds": round(time.perf_counter() - started_at, 3),
     }
+    if args.ci:
+        if payload["invariant_count"] < 84:
+            failures.append("import evaluation invariant count below CI contract")
+        if payload["document_extraction_invariant_count"] < 22:
+            failures.append("document extraction invariant count below CI contract")
+        payload["passed"] = len(failures) == 0
+        payload["failure_count"] = len(failures)
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
@@ -290,6 +378,8 @@ def main() -> int:
         print(f"Import evaluation: {len(results) - len(failures)}/{len(results)} fixtures passed")
         print(f"URL import fixtures: {url_count}/{url_count}")
         print(f"Binary import fixtures: {len(BINARY_FIXTURES)}/{len(BINARY_FIXTURES)}")
+        print(f"Document extraction fixtures: {len(DOCUMENT_EXTRACTION_FIXTURES)}/{len(DOCUMENT_EXTRACTION_FIXTURES)}")
+        print(f"Invariants: {payload['invariant_count']} total · {payload['document_extraction_invariant_count']} document extraction")
     return 0 if not failures else 1
 
 
@@ -616,6 +706,181 @@ def run_binary_fixture(client: TestClient, trip_id: str, fixture: BinaryImportFi
     )
 
 
+def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtractionFixture, *, index: int) -> dict:
+    failed: list[str] = []
+    passed: list[str] = ["DOCUMENT_EXTRACTION_REQUIRES_READY_INSPECTION"]
+    content = binary_content(fixture.binary_fixture.content_factory)
+    fixture_key = f"{index}-{fixture.name}"
+    upload = client.post(
+        f"/trips/{trip_id}/imports/artifacts",
+        data={"declared_kind": fixture.binary_fixture.declared_kind, "original_label": fixture.binary_fixture.filename},
+        files={"file": (fixture.binary_fixture.filename, content, fixture.binary_fixture.content_type)},
+        headers={"Origin": "http://testserver", "X-Idempotency-Key": f"eval-document-binary-{fixture_key}"},
+    )
+    if upload.status_code != 201:
+        return fixture_result(fixture.name, passed=passed, failed=["DOCUMENT_EXTRACTION_REQUIRES_READY_INSPECTION"], error_code=upload.text)
+    binary_body = upload.json()
+    candidates_before = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
+    revisions_before = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+    env_patch = {}
+    if fixture.binary_fixture.declared_kind == "image":
+        env_patch = {"IMPORT_DOCUMENT_OCR_COMMAND": "definitely-not-installed-tesseract"}
+    with patch.dict("os.environ", env_patch):
+        response = client.post(
+            f"/trips/{trip_id}/imports/{binary_body['job']['id']}/extract-document",
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": f"eval-document-extract-{fixture_key}"},
+        )
+    if fixture.binary_fixture.declared_kind == "image":
+        code = response.json().get("error", {}).get("code")
+        if response.status_code == 422 and code == "import_document_ocr_unavailable":
+            passed.extend([
+                "DOCUMENT_EXTRACTION_NO_SILENT_OCR_FALLBACK",
+                "DOCUMENT_PARTIAL_FAILURE_EXPLICIT",
+                "BINARY_IMPORT_CREATES_NO_MENTION",
+                "BINARY_IMPORT_CREATES_NO_CANDIDATE",
+                "BINARY_IMPORT_CREATES_NO_TRIP_REVISION",
+            ])
+            return fixture_result(fixture.name, passed=sorted(set(passed)), failed=[], error_code=code)
+        return fixture_result(fixture.name, passed=passed, failed=["DOCUMENT_EXTRACTION_NO_SILENT_OCR_FALLBACK"], error_code=code)
+    if response.status_code != 201:
+        return fixture_result(fixture.name, passed=passed, failed=["DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE"], error_code=response.text)
+    body = response.json()
+    places = [mention for mention in body["mentions"] if mention["entity_type"] == "place"]
+    if body["generation"]["strategy"] == fixture.expected_strategy:
+        passed.append("DOCUMENT_EXTRACTION_NATIVE_TEXT_FIRST")
+    else:
+        failed.append("DOCUMENT_EXTRACTION_NATIVE_TEXT_FIRST")
+    if body["generation"]["id"] and body["generation"]["derived_import_job_id"] == body["job"]["id"]:
+        passed.append("DOCUMENT_EXTRACTION_GENERATION_IMMUTABLE")
+    if body["generation"].get("layout_artifact_id"):
+        passed.append("DOCUMENT_LAYOUT_MANIFEST_ARTIFACT_TRACEABLE")
+    else:
+        failed.append("DOCUMENT_LAYOUT_MANIFEST_ARTIFACT_TRACEABLE")
+    if body["generation"].get("span_map_artifact_id"):
+        passed.append("DOCUMENT_SPAN_MAP_ARTIFACT_TRACEABLE")
+    else:
+        failed.append("DOCUMENT_SPAN_MAP_ARTIFACT_TRACEABLE")
+    if body["generation"].get("metadata", {}).get("reading_order_algorithm") == "layout-reading-order-v1":
+        passed.append("DOCUMENT_READING_ORDER_DETERMINISTIC")
+    else:
+        failed.append("DOCUMENT_READING_ORDER_DETERMINISTIC")
+    if body["generation"].get("metadata", {}).get("coordinate_space") == "normalized-top-left":
+        passed.append("DOCUMENT_COORDINATE_SPACE_NORMALIZED")
+    else:
+        failed.append("DOCUMENT_COORDINATE_SPACE_NORMALIZED")
+    if body["artifact"]["privacy_level"] == "private":
+        passed.append("DOCUMENT_DERIVED_ARTIFACT_PRIVATE")
+    text = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/artifact")
+    if text.status_code == 200 and not text.content.startswith(b"%PDF"):
+        passed.append("DOCUMENT_TEXT_ARTIFACT_NO_BINARY_BYTES")
+    if body.get("derivation"):
+        passed.append("DOCUMENT_TEXT_DERIVATION_TRACEABLE")
+    if body["job"]["input_type"] == "document" and len(places) >= fixture.expected_places_min:
+        passed.append("DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE")
+    else:
+        failed.append("DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE")
+    if body["spans"] and all({"x", "y", "width", "height", "unit"}.issubset(span["bbox"]) for span in body["spans"]):
+        passed.append("DOCUMENT_SPANS_MAP_TO_PAGE_BBOX")
+    else:
+        failed.append("DOCUMENT_SPANS_MAP_TO_PAGE_BBOX")
+    if body["spans"] and all(span.get("block_id") for span in body["spans"]):
+        passed.append("DOCUMENT_LAYOUT_BLOCK_IDS_STABLE")
+    else:
+        failed.append("DOCUMENT_LAYOUT_BLOCK_IDS_STABLE")
+    if body["spans"] and all(span.get("line_id") and span.get("token_id") for span in body["spans"]):
+        passed.append("DOCUMENT_LINE_TOKEN_IDS_STABLE")
+    else:
+        failed.append("DOCUMENT_LINE_TOKEN_IDS_STABLE")
+    if body["spans"] and all(
+        span["span_start"] < span["span_end"] and (pos == 0 or body["spans"][pos - 1]["span_end"] <= span["span_start"])
+        for pos, span in enumerate(body["spans"])
+    ):
+        passed.append("DOCUMENT_SPAN_OFFSETS_MONOTONIC")
+    else:
+        failed.append("DOCUMENT_SPAN_OFFSETS_MONOTONIC")
+    source_evidence = client.get(f"/trips/{trip_id}/imports/{binary_body['job']['id']}/document-extraction")
+    derived_evidence = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/document-extraction")
+    if source_evidence.status_code == 200 and source_evidence.json()["generation"]["id"] == body["generation"]["id"]:
+        passed.append("DOCUMENT_EVIDENCE_ENDPOINT_SOURCE_JOB")
+    else:
+        failed.append("DOCUMENT_EVIDENCE_ENDPOINT_SOURCE_JOB")
+    if derived_evidence.status_code == 200 and derived_evidence.json()["generation"]["id"] == body["generation"]["id"]:
+        passed.append("DOCUMENT_EVIDENCE_ENDPOINT_DERIVED_JOB")
+    else:
+        failed.append("DOCUMENT_EVIDENCE_ENDPOINT_DERIVED_JOB")
+    evidence_body = source_evidence.json() if source_evidence.status_code == 200 else {}
+    if evidence_body.get("mention_evidence"):
+        passed.append("DOCUMENT_MENTION_EVIDENCE_TRACEABLE")
+    else:
+        failed.append("DOCUMENT_MENTION_EVIDENCE_TRACEABLE")
+    evidence_boxes = [
+        box
+        for mention in evidence_body.get("mention_evidence", [])
+        for box in mention.get("bounding_boxes", [])
+    ]
+    if evidence_boxes and all(
+        box.get("origin") == "top-left"
+        and box.get("unit") == "normalized"
+        and 0 <= box.get("x", -1) <= 1
+        and 0 <= box.get("y", -1) <= 1
+        and box.get("x", 2) + box.get("width", 2) <= 1
+        and box.get("y", 2) + box.get("height", 2) <= 1
+        for box in evidence_boxes
+    ):
+        passed.append("DOCUMENT_MENTION_BBOX_NORMALIZED")
+    else:
+        failed.append("DOCUMENT_MENTION_BBOX_NORMALIZED")
+    if body["generation"].get("metadata", {}).get("ocr_capabilities", {}).get("silent_fallback") is False:
+        passed.append("DOCUMENT_OCR_CAPABILITY_REPORTED")
+    else:
+        failed.append("DOCUMENT_OCR_CAPABILITY_REPORTED")
+    revisions_after_extraction = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+    candidates_after_extraction = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
+    if [item["id"] for item in revisions_before] == [item["id"] for item in revisions_after_extraction] and len(candidates_after_extraction) == len(candidates_before):
+        passed.append("DOCUMENT_NO_DIRECT_TRIP_MUTATION")
+    else:
+        failed.append("DOCUMENT_NO_DIRECT_TRIP_MUTATION")
+    if fixture.commit_confirmed_only and places:
+        passed.append("DOCUMENT_REVIEW_COMMIT_EXPLICIT")
+        review_version = body["job"]["review_version"]
+        for pos, mention in enumerate(places):
+            decision = decide(
+                client,
+                trip_id,
+                body,
+                mention,
+                mention["selected_resolution_candidate_id"],
+                review_version,
+                f"eval-document-confirm-{fixture_key}-{pos}",
+            )
+            if decision.status_code != 200:
+                failed.append("ONLY_CONFIRMED_PLACES_COMMITTED")
+                break
+            review_version = decision.json()["job"]["review_version"]
+        commit = client.post(
+            f"/trips/{trip_id}/imports/{body['job']['id']}/commit",
+            json={"base_review_version": review_version},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": f"eval-document-commit-{fixture_key}"},
+        )
+        revisions_after = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+        candidates_after = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
+        if commit.status_code == 200 and [item["id"] for item in revisions_before] == [item["id"] for item in revisions_after]:
+            passed.extend(["ONLY_CONFIRMED_PLACES_COMMITTED", "IMPORT_COMMIT_CREATES_NO_TRIP_REVISION"])
+        else:
+            failed.append("IMPORT_COMMIT_CREATES_NO_TRIP_REVISION")
+        if any(candidate["source_kind"] == "document_import" for candidate in candidates_after[len(candidates_before):]):
+            passed.append("DOCUMENT_IMPORT_CANDIDATE_PROVENANCE_TRACEABLE")
+        else:
+            failed.append("DOCUMENT_IMPORT_CANDIDATE_PROVENANCE_TRACEABLE")
+    return fixture_result(
+        fixture.name,
+        passed=sorted(set(passed)),
+        failed=sorted(set(failed)),
+        artifact_id=body["artifact"]["id"],
+        import_job_id=body["job"]["id"],
+    )
+
+
 def binary_error_invariants(code: str) -> list[str]:
     mapping = {
         "import_binary_signature_mismatch": ["FILE_TYPE_DETECTED_FROM_CONTENT", "DECLARED_MIME_NOT_TRUSTED"],
@@ -648,6 +913,8 @@ def binary_content(kind: str) -> bytes:
         return b"MZnot-an-image"
     if kind == "pdf":
         return pdf_bytes()
+    if kind == "text_pdf":
+        return text_pdf_bytes("景点：豫园、上海博物馆")
     if kind == "encrypted_pdf":
         return pdf_bytes(encrypted=True)
     if kind == "javascript_pdf":
@@ -661,6 +928,28 @@ def binary_content(kind: str) -> bytes:
     if kind == "pdf_zip":
         return pdf_bytes() + b"\nPK\x03\x04"
     raise ValueError(kind)
+
+
+def text_pdf_bytes(text: str) -> bytes:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=420, height=300)
+    font = DictionaryObject()
+    font.update(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})})
+    stream = DecodedStreamObject()
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream.set_data(f"BT /F1 16 Tf 40 240 Td ({escaped}) Tj ET".encode("utf-8"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 def image_bytes(fmt: str, *, size: tuple[int, int] = (32, 20), alpha: bool = False, comment: bool = False) -> bytes:

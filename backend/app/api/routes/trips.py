@@ -13,6 +13,8 @@ from app.imports.domain import (
     ImportCommitResponse,
     ArtifactInspectionResponse,
     BinaryImportCreateResponse,
+    DocumentExtractionCreateResponse,
+    DocumentExtractionEvidenceResponse,
     ImportReviewDecisionRequest,
     ImportReviewResponse,
     TextImportCreateRequest,
@@ -303,6 +305,50 @@ def get_binary_artifact_sanitized_image(
             content,
             media_type=mime_type,
             headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/imports/{import_job_id}/extract-document",
+    response_model=DocumentExtractionCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def extract_document_import(
+    trip_id: str,
+    import_job_id: str,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> DocumentExtractionCreateResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_text_import_service().extract_document_import(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get(
+    "/{trip_id}/imports/{import_job_id}/document-extraction",
+    response_model=DocumentExtractionEvidenceResponse,
+)
+def get_document_extraction_evidence(
+    trip_id: str,
+    import_job_id: str,
+    request: Request,
+) -> DocumentExtractionEvidenceResponse | JSONResponse:
+    try:
+        return get_text_import_service().get_document_extraction_evidence(
+            trip_id=trip_id,
+            import_job_id=import_job_id,
+            capability=get_trip_capability_from_request(request, trip_id),
         )
     except TripError as exc:
         return trip_error_response(exc)

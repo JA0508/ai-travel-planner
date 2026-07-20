@@ -52,10 +52,21 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Install document extraction system dependencies
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim
+
+      - name: Verify document OCR capabilities
+        run: |
+          which tesseract
+          tesseract --version
+          tesseract --list-langs
+
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
       - name: Test
+        env:
+          REQUIRE_PRODUCTION_OCR_SMOKE: "1"
         run: python -m unittest discover -s tests -t .
 
       - name: Planner evaluation

@@ -2,14 +2,14 @@
 
 ## Current phase
 
-F-002c Image/PDF Artifact Intake and Safe Document Classification
+F-002d Layout-Aware OCR and Document Text Extraction
 
 ## Active objective
 
-Extend the source artifact boundary to binary images and PDFs without OCR:
-stream bounded uploads, quarantine originals, perform content-based detection,
-run isolated structural inspection, persist explicit findings, and create only
-sanitized image previews or PDF structural manifests before future extraction.
+Convert accepted image/PDF artifacts into reviewable document text with explicit
+extraction strategy, native-text-first PDF handling, selective OCR, layout
+blocks/lines/tokens, normalized span-to-bounding-box provenance, immutable
+derived artifacts, and reuse of the existing Import Review Inbox.
 
 ## Current stable capabilities
 
@@ -31,20 +31,20 @@ sanitized image previews or PDF structural manifests before future extraction.
 - F-001b.2 Typed Route Edit and Swap Mutation Revisions
 - F-001b.3 Candidate Admission, Completion Undo, and Mutation Closure
 - F-002b Secure URL Import Adapter
+- F-002c Image/PDF Artifact Intake and Safe Document Classification
 
 ## In review
 
-- F-002c Image/PDF Artifact Intake and Safe Document Classification — in review
+- F-002d Layout-Aware OCR and Document Text Extraction — in review
 
 ## Next approved work
 
-1. F-002d Layout-Aware OCR and Document Text Extraction
-2. F-020b Planner Trace Review and Evaluation Expansion
+1. F-020b Planner Trace Review and Evaluation Expansion
 
 ## Explicitly not in scope
 
 - Counterfactual scenario explorer
 - Collaboration
 - Booking inbox
-- OCR and document text extraction from image/PDF artifacts
 - F-004 Intent Compiler
+- direct document-to-itinerary mutation

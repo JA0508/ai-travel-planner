@@ -91,3 +91,5 @@ Routine implementation details should remain in code, tests, issues, or pull req
 - ADR-0006: Trip Candidate Admission and Mutation Closure
 - ADR-0007: Text Import Provenance and Review Boundary
 - ADR-0008: Secure URL Import and Fetch Provenance
+- ADR-0009: Quarantine-First Binary Artifact Inspection
+- ADR-0010: Layout-Aware Document Text Extraction

@@ -146,8 +146,10 @@ The repository currently contains a substantial planning foundation:
 - secure URL import for public static HTML/plain-text sources
 - quarantine-first image/PDF artifact intake with safe structural inspection
 - metadata-stripped sanitized image preview and PDF structural manifest lineage
+- layout-aware document extraction from accepted image/PDF artifacts
+- native-text-first PDF extraction, selective local OCR, and span-to-bbox provenance
 - Import Review Inbox for confirming imported place mentions into TripCandidate
-- import evaluation gate with fixture-driven text, URL, image, and PDF invariants
+- import evaluation gate with fixture-driven text, URL, image, PDF, and document extraction invariants
 - fixture-driven product verification
 
 > Development branches may contain additional in-review capabilities. Required CI
@@ -225,15 +227,24 @@ Backend
               stay/departure context
 ```
 
-### Binary Artifact Intake
+### Binary Artifact Intake And Document Extraction
 
-Image/PDF upload is an artifact inspection boundary, not OCR. The backend
-streams multipart uploads into private staging, detects type from content,
-quarantines the original as `uploaded_image` or `uploaded_pdf`, runs isolated
-structural inspection, and stores explicit findings. Accepted images create a
-metadata-stripped `sanitized_image`; accepted PDFs create a private
+Image/PDF upload is an artifact inspection boundary before extraction. The
+backend streams multipart uploads into private staging, detects type from
+content, quarantines the original as `uploaded_image` or `uploaded_pdf`, runs
+isolated structural inspection, and stores explicit findings. Accepted images
+create a metadata-stripped `sanitized_image`; accepted PDFs create a private
 `document_manifest`. Binary imports do not create mentions, TripCandidates,
 TripRevisions, planner calls, or mutation calls.
+
+Accepted binary artifacts can then be explicitly extracted through the document
+extraction boundary. PDFs are native-text-first; OCR is used only for image
+artifacts or selectively rendered PDF pages without native text. Extraction
+creates immutable derived artifacts for `derived_document_text`,
+`document_layout_manifest`, and `document_text_span_map`. Document mentions keep
+offset, page, block/line/token, reading-order, method, confidence, and normalized
+top-left bounding-box provenance before entering the existing Import Review
+Inbox.
 
 ### Required architecture boundary
 
@@ -611,9 +622,10 @@ place mentions into `TripCandidate` records with evidence refs such as
 The current extractors are intentionally deterministic and limited. Text import
 recognizes explicit text lists, known local-catalog places, fixed-event/time
 phrases, and instruction-like source text. URL import derives deterministic
-plain text from static HTML/plain-text documents, then reuses the same mention
-extraction, place resolution, review, and commit path. Image, PDF, OCR, and full
-Intent Compiler flows are not implemented in this slice.
+plain text from static HTML/plain-text documents. Image/PDF import first creates
+accepted binary artifacts, then document extraction creates layout-aware derived
+text with span-to-page/bounding-box provenance. Full Intent Compiler and direct
+document-to-itinerary mutation flows are not implemented in this slice.
 
 ### Uncertainty semantics
 
@@ -646,6 +658,7 @@ Missing or stale data must not be presented as confirmed.
 - Text Import Review Inbox
 - URL Import Adapter
 - image/PDF import adapters
+- layout-aware document text extraction
 - canonical POI resolution
 - Trip Intent Compiler
 - explainable planner trace
