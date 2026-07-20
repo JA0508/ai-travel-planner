@@ -5,6 +5,7 @@ import type { TripPersistenceState } from "@/features/trip-workspace/tripPersist
 import {
   commitImport,
   decideImportMention,
+  extractDocumentImport,
   fetchBinaryInspection,
   fetchImportArtifact,
   fetchImportReview,
@@ -16,13 +17,14 @@ import {
 import { BinaryImportComposer } from "./BinaryImportComposer";
 import { BinaryInspectionResult } from "./BinaryInspectionResult";
 import {
+  type BinaryImportState,
   binaryImportIdempotencyKey,
   binaryImportReducer,
   binaryImportStorageValue,
   parseBinaryImportStorageValue,
 } from "./binaryImportState";
 import { importIdempotencyKey, importWorkspaceReducer } from "./importState";
-import type { ImportMention, URLFetchSnapshot } from "./importTypes";
+import type { DocumentExtractionGeneration, ImportMention, URLFetchSnapshot } from "./importTypes";
 import { buildImportSummary, selectedResolutionId, sourceSegments } from "./importViewModel";
 
 type ImportReviewWorkspaceProps = {
@@ -39,6 +41,12 @@ export function ImportReviewWorkspace({
   const [mode, setMode] = useState<"text" | "url" | "binary">("text");
   const [state, dispatch] = useReducer(importWorkspaceReducer, { status: "idle" });
   const [binaryState, binaryDispatch] = useReducer(binaryImportReducer, { status: "idle" });
+  const [documentExtraction, setDocumentExtraction] = useState<
+    | { status: "idle" }
+    | { status: "extracting" }
+    | { status: "ready"; generation: DocumentExtractionGeneration; spanCount: number }
+    | { status: "error"; code: string; message: string }
+  >({ status: "idle" });
   const binaryInputRef = useRef<HTMLInputElement | null>(null);
   const previewUrlRef = useRef<string | null>(null);
   const byteCount = utf8ByteLength(text);
@@ -155,6 +163,7 @@ export function ImportReviewWorkspace({
       return;
     }
     binaryDispatch({ type: "uploading" });
+    setDocumentExtraction({ status: "idle" });
     const response = await submitBinaryImport(
       savedTripId,
       binaryState.file,
@@ -221,6 +230,45 @@ export function ImportReviewWorkspace({
     if (response.data.status === "artifact_ready" && response.data.detected_kind === "image") {
       await loadSanitizedPreview(tripId, jobId);
     }
+  }
+
+  async function handleDocumentExtraction() {
+    if (!savedTripId || binaryState.status !== "artifact_ready") {
+      return;
+    }
+    setDocumentExtraction({ status: "extracting" });
+    const key = importIdempotencyKey(
+      "document-extraction",
+      savedTripId,
+      `${binaryState.job.id}:${binaryState.result.content_checksum}`,
+    );
+    const response = await extractDocumentImport(savedTripId, binaryState.job.id, key);
+    if (!response.ok || !response.data.job || !response.data.artifact) {
+      setDocumentExtraction({
+        status: "error",
+        code: response.ok ? "import_document_extraction_incomplete" : response.code ?? "import_document_extraction_failed",
+        message: response.ok ? "Document extraction did not return a reviewable import." : response.message,
+      });
+      return;
+    }
+    const artifact = await fetchImportArtifact(savedTripId, response.data.job.id);
+    if (!artifact.ok) {
+      setDocumentExtraction({ status: "error", code: artifact.code, message: artifact.message });
+      return;
+    }
+    setDocumentExtraction({
+      status: "ready",
+      generation: response.data.generation,
+      spanCount: response.data.spans.length,
+    });
+    dispatch({
+      type: "review",
+      artifact: response.data.artifact,
+      job: response.data.job,
+      mentions: response.data.mentions,
+      sourceText: artifact.data,
+      derivation: response.data.derivation,
+    });
   }
 
   async function loadSanitizedPreview(tripId: string, jobId: string) {
@@ -372,7 +420,10 @@ export function ImportReviewWorkspace({
             disabled={!savedTripId || binaryState.status === "uploading"}
             onFileSelected={(file, declaredKind) => binaryDispatch({ type: "select", file, declaredKind })}
             onUpload={() => void handleBinaryUpload()}
-            onReset={() => binaryDispatch({ type: "reset" })}
+            onReset={() => {
+              binaryDispatch({ type: "reset" });
+              setDocumentExtraction({ status: "idle" });
+            }}
             onError={(code, message) => binaryDispatch({ type: "error", code, message, recoverable: true })}
           />
         )}
@@ -431,7 +482,16 @@ export function ImportReviewWorkspace({
         </div>
       ) : null}
       {state.status === "error" ? <p style={errorStyle}>{state.code}: {state.message}</p> : null}
-      {mode === "binary" ? <BinaryInspectionResult state={binaryState} /> : null}
+      {mode === "binary" ? (
+        <>
+          <BinaryInspectionResult state={binaryState} />
+          <DocumentExtractionAction
+            binaryState={binaryState}
+            extraction={documentExtraction}
+            onExtract={() => void handleDocumentExtraction()}
+          />
+        </>
+      ) : null}
     </section>
   );
 }
@@ -443,6 +503,48 @@ function rememberBinaryImport(tripId: string, jobId: string, declaredKind: "imag
     return;
   }
   window.localStorage.setItem(BINARY_IMPORT_STORAGE_KEY, binaryImportStorageValue(tripId, jobId, declaredKind));
+}
+
+function DocumentExtractionAction({
+  binaryState,
+  extraction,
+  onExtract,
+}: {
+  binaryState: BinaryImportState;
+  extraction:
+    | { status: "idle" }
+    | { status: "extracting" }
+    | { status: "ready"; generation: DocumentExtractionGeneration; spanCount: number }
+    | { status: "error"; code: string; message: string };
+  onExtract: () => void;
+}) {
+  if (binaryState.status !== "artifact_ready") {
+    return null;
+  }
+  return (
+    <div style={documentExtractionStyle} data-document-extraction-action>
+      <div>
+        <strong style={{ color: "var(--ec-ink)", fontSize: 13 }}>Document text extraction</strong>
+        <p style={hintBlockStyle}>
+          Inspection-gated extraction creates a derived text artifact and review inbox. Original binary is not rendered inline.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onExtract}
+        disabled={extraction.status === "extracting"}
+        style={secondaryButtonStyle}
+      >
+        {extraction.status === "extracting" ? "Extracting..." : "Extract text"}
+      </button>
+      {extraction.status === "ready" ? (
+        <p style={noticeStyle}>
+          {extraction.generation.strategy} · {extraction.generation.page_count} page(s) · {extraction.spanCount} provenance span(s)
+        </p>
+      ) : null}
+      {extraction.status === "error" ? <p style={errorStyle}>{extraction.code}: {extraction.message}</p> : null}
+    </div>
+  );
 }
 
 function ReviewPane({
@@ -670,6 +772,8 @@ const primaryButtonStyle = { border: 0, borderRadius: 999, padding: "9px 13px", 
 const secondaryButtonStyle = { border: "1px solid rgba(21,21,21,0.14)", borderRadius: 999, padding: "8px 12px", background: "rgba(255,255,255,0.8)", color: "var(--ec-ink)", fontWeight: 800, cursor: "pointer" } satisfies CSSProperties;
 const noticeStyle = { margin: 0, fontSize: 12, color: "#5f6f54", lineHeight: 1.5 } satisfies CSSProperties;
 const errorStyle = { margin: 0, fontSize: 12, color: "#9d302a", lineHeight: 1.5 } satisfies CSSProperties;
+const documentExtractionStyle = { display: "grid", gap: 8, padding: 12, borderRadius: 12, border: "1px solid rgba(21,21,21,0.08)", background: "rgba(255,255,255,0.82)" } satisfies CSSProperties;
+const hintBlockStyle = { ...hintStyle, margin: "4px 0 0", lineHeight: 1.5 } satisfies CSSProperties;
 const reviewGridStyle = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 12 } satisfies CSSProperties;
 const sourcePaneStyle = { display: "grid", gap: 8, minWidth: 0 } satisfies CSSProperties;
 const provenanceStyle = { display: "grid", gap: 5, padding: 10, borderRadius: 12, border: "1px solid rgba(21,21,21,0.08)", background: "rgba(255,255,255,0.8)", fontSize: 12, color: "var(--ec-slate)" } satisfies CSSProperties;

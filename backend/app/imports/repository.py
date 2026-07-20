@@ -12,6 +12,8 @@ from app.imports.domain import (
     ArtifactDerivationRecord,
     ArtifactInspectionFindingRecord,
     ArtifactInspectionRecord,
+    DocumentExtractionGenerationRecord,
+    DocumentTextSpanRecord,
     ExtractedMentionRecord,
     ImportCommitRecord,
     ImportJobRecord,
@@ -84,6 +86,35 @@ class ImportRepository(Protocol):
         ...
 
     def list_artifact_inspection_findings(self, *, inspection_id: str) -> list[ArtifactInspectionFindingRecord]:
+        ...
+
+    def get_latest_document_extraction_for_source(
+        self,
+        *,
+        trip_id: str,
+        source_import_job_id: str,
+    ) -> DocumentExtractionGenerationRecord | None:
+        ...
+
+    def get_document_extraction_for_derived_job(
+        self,
+        *,
+        derived_import_job_id: str,
+    ) -> DocumentExtractionGenerationRecord | None:
+        ...
+
+    def list_document_text_spans(self, *, generation_id: str) -> list[DocumentTextSpanRecord]:
+        ...
+
+    def create_document_extraction_result(
+        self,
+        *,
+        generation: DocumentExtractionGenerationRecord,
+        spans: list[DocumentTextSpanRecord],
+        child_artifact: SourceArtifactRecord,
+        derivation: ArtifactDerivationRecord,
+        derived_job: ImportJobRecord,
+    ) -> DocumentExtractionGenerationRecord:
         ...
 
     def create_job(self, job: ImportJobRecord) -> ImportJobRecord:
@@ -558,6 +589,201 @@ class SQLiteImportRepository:
                 (inspection_id,),
             ).fetchall()
         return [row_to_artifact_inspection_finding(row) for row in rows]
+
+    def get_latest_document_extraction_for_source(
+        self,
+        *,
+        trip_id: str,
+        source_import_job_id: str,
+    ) -> DocumentExtractionGenerationRecord | None:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM document_extraction_generations
+                WHERE trip_id = ? AND source_import_job_id = ?
+                ORDER BY generation DESC, created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (trip_id, source_import_job_id),
+            ).fetchone()
+        return row_to_document_extraction_generation(row) if row else None
+
+    def get_document_extraction_for_derived_job(
+        self,
+        *,
+        derived_import_job_id: str,
+    ) -> DocumentExtractionGenerationRecord | None:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM document_extraction_generations
+                WHERE derived_import_job_id = ?
+                ORDER BY generation DESC, created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (derived_import_job_id,),
+            ).fetchone()
+        return row_to_document_extraction_generation(row) if row else None
+
+    def list_document_text_spans(self, *, generation_id: str) -> list[DocumentTextSpanRecord]:
+        with closing(self.connection_factory()) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM document_text_spans
+                WHERE generation_id = ?
+                ORDER BY page_number ASC, block_index ASC, line_index ASC,
+                         COALESCE(token_index, -1) ASC, span_start ASC, id ASC
+                """,
+                (generation_id,),
+            ).fetchall()
+        return [row_to_document_text_span(row) for row in rows]
+
+    def create_document_extraction_result(
+        self,
+        *,
+        generation: DocumentExtractionGenerationRecord,
+        spans: list[DocumentTextSpanRecord],
+        child_artifact: SourceArtifactRecord,
+        derivation: ArtifactDerivationRecord,
+        derived_job: ImportJobRecord,
+    ) -> DocumentExtractionGenerationRecord:
+        with self._transaction() as connection:
+            source_job = connection.execute(
+                "SELECT * FROM import_jobs WHERE trip_id = ? AND id = ?",
+                (generation.trip_id, generation.source_import_job_id),
+            ).fetchone()
+            if source_job is None:
+                raise TripError("import_not_found", "Source import job was not found.", 404)
+            connection.execute(
+                """
+                INSERT INTO source_artifacts(
+                  id, trip_id, artifact_type, mime_type, content_checksum,
+                  byte_size, charset, privacy_level, storage_key, original_label, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    child_artifact.id,
+                    child_artifact.trip_id,
+                    child_artifact.artifact_type,
+                    child_artifact.mime_type,
+                    child_artifact.content_checksum,
+                    child_artifact.byte_size,
+                    child_artifact.charset,
+                    child_artifact.privacy_level,
+                    child_artifact.storage_key,
+                    child_artifact.original_label,
+                    child_artifact.created_at,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO import_jobs(
+                  id, trip_id, artifact_id, input_type, status,
+                  extraction_schema_version, extractor_version, resolver_version,
+                  review_version, mention_count, warning_codes_json, error_code,
+                  committed_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    derived_job.id,
+                    derived_job.trip_id,
+                    derived_job.artifact_id,
+                    derived_job.input_type,
+                    derived_job.status,
+                    derived_job.extraction_schema_version,
+                    derived_job.extractor_version,
+                    derived_job.resolver_version,
+                    derived_job.review_version,
+                    derived_job.mention_count,
+                    json_dumps(derived_job.warning_codes),
+                    derived_job.error_code,
+                    derived_job.committed_at,
+                    derived_job.created_at,
+                    derived_job.updated_at,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO artifact_derivations(
+                  id, parent_artifact_id, child_artifact_id, derivation_type,
+                  transformer_version, input_checksum, output_checksum,
+                  metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    derivation.id,
+                    derivation.parent_artifact_id,
+                    derivation.child_artifact_id,
+                    derivation.derivation_type,
+                    derivation.transformer_version,
+                    derivation.input_checksum,
+                    derivation.output_checksum,
+                    json_dumps(derivation.metadata),
+                    derivation.created_at,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO document_extraction_generations(
+                  id, trip_id, source_import_job_id, source_artifact_id, inspection_id,
+                  derived_import_job_id, derived_artifact_id, generation, schema_version,
+                  extractor_version, strategy, status, page_count, extracted_text_chars,
+                  warning_codes_json, error_code, metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    generation.id,
+                    generation.trip_id,
+                    generation.source_import_job_id,
+                    generation.source_artifact_id,
+                    generation.inspection_id,
+                    generation.derived_import_job_id,
+                    generation.derived_artifact_id,
+                    generation.generation,
+                    generation.schema_version,
+                    generation.extractor_version,
+                    generation.strategy,
+                    generation.status,
+                    generation.page_count,
+                    generation.extracted_text_chars,
+                    json_dumps(generation.warning_codes),
+                    generation.error_code,
+                    json_dumps(generation.metadata),
+                    generation.created_at,
+                ),
+            )
+            for span in spans:
+                connection.execute(
+                    """
+                    INSERT INTO document_text_spans(
+                      id, generation_id, span_start, span_end, page_number,
+                      block_index, line_index, token_index, bbox_json, source_kind,
+                      confidence, text_digest, warning_codes_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        span.id,
+                        span.generation_id,
+                        span.span_start,
+                        span.span_end,
+                        span.page_number,
+                        span.block_index,
+                        span.line_index,
+                        span.token_index,
+                        json_dumps(span.bbox),
+                        span.source_kind,
+                        span.confidence,
+                        span.text_digest,
+                        json_dumps(span.warning_codes),
+                        span.created_at,
+                    ),
+                )
+        return generation
 
     def create_job(self, job: ImportJobRecord) -> ImportJobRecord:
         with self._transaction() as connection:
@@ -1109,6 +1335,8 @@ class MemoryImportRepository:
         self.artifact_derivations: dict[str, ArtifactDerivationRecord] = {}
         self.artifact_inspections: dict[str, ArtifactInspectionRecord] = {}
         self.artifact_inspection_findings: dict[str, ArtifactInspectionFindingRecord] = {}
+        self.document_extractions: dict[str, DocumentExtractionGenerationRecord] = {}
+        self.document_text_spans: dict[str, DocumentTextSpanRecord] = {}
 
     def get_artifact(self, *, trip_id: str, artifact_id: str) -> SourceArtifactRecord:
         artifact = self.artifacts.get(artifact_id)
@@ -1205,6 +1433,55 @@ class MemoryImportRepository:
             [copy.deepcopy(item) for item in self.artifact_inspection_findings.values() if item.inspection_id == inspection_id],
             key=lambda item: (item.created_at, item.id),
         )
+
+    def get_latest_document_extraction_for_source(
+        self,
+        *,
+        trip_id: str,
+        source_import_job_id: str,
+    ) -> DocumentExtractionGenerationRecord | None:
+        generations = [
+            item for item in self.document_extractions.values()
+            if item.trip_id == trip_id and item.source_import_job_id == source_import_job_id
+        ]
+        if not generations:
+            return None
+        return copy.deepcopy(sorted(generations, key=lambda item: (item.generation, item.created_at, item.id), reverse=True)[0])
+
+    def get_document_extraction_for_derived_job(
+        self,
+        *,
+        derived_import_job_id: str,
+    ) -> DocumentExtractionGenerationRecord | None:
+        generation = next(
+            (item for item in self.document_extractions.values() if item.derived_import_job_id == derived_import_job_id),
+            None,
+        )
+        return copy.deepcopy(generation) if generation else None
+
+    def list_document_text_spans(self, *, generation_id: str) -> list[DocumentTextSpanRecord]:
+        return sorted(
+            [copy.deepcopy(item) for item in self.document_text_spans.values() if item.generation_id == generation_id],
+            key=lambda item: (item.page_number, item.block_index, item.line_index, item.token_index or -1, item.span_start, item.id),
+        )
+
+    def create_document_extraction_result(
+        self,
+        *,
+        generation: DocumentExtractionGenerationRecord,
+        spans: list[DocumentTextSpanRecord],
+        child_artifact: SourceArtifactRecord,
+        derivation: ArtifactDerivationRecord,
+        derived_job: ImportJobRecord,
+    ) -> DocumentExtractionGenerationRecord:
+        self.get_job(trip_id=generation.trip_id, import_job_id=generation.source_import_job_id)
+        self.artifacts[child_artifact.id] = copy.deepcopy(child_artifact)
+        self.jobs[derived_job.id] = copy.deepcopy(derived_job)
+        self.artifact_derivations[derivation.child_artifact_id] = copy.deepcopy(derivation)
+        self.document_extractions[generation.id] = copy.deepcopy(generation)
+        for span in spans:
+            self.document_text_spans[span.id] = copy.deepcopy(span)
+        return copy.deepcopy(generation)
 
     def create_job(self, job: ImportJobRecord) -> ImportJobRecord:
         self.jobs[job.id] = copy.deepcopy(job)
@@ -1452,6 +1729,48 @@ def row_to_artifact_inspection_finding(row) -> ArtifactInspectionFindingRecord:
         severity=row["severity"],
         category=row["category"],
         evidence=dict(json_loads(row["evidence_json"], {})),
+        created_at=row["created_at"],
+    )
+
+
+def row_to_document_extraction_generation(row) -> DocumentExtractionGenerationRecord:
+    return DocumentExtractionGenerationRecord(
+        id=row["id"],
+        trip_id=row["trip_id"],
+        source_import_job_id=row["source_import_job_id"],
+        source_artifact_id=row["source_artifact_id"],
+        inspection_id=row["inspection_id"],
+        derived_import_job_id=row["derived_import_job_id"],
+        derived_artifact_id=row["derived_artifact_id"],
+        generation=row["generation"],
+        schema_version=row["schema_version"],
+        extractor_version=row["extractor_version"],
+        strategy=row["strategy"],
+        status=row["status"],
+        page_count=row["page_count"],
+        extracted_text_chars=row["extracted_text_chars"],
+        warning_codes=list(json_loads(row["warning_codes_json"], [])),
+        error_code=row["error_code"],
+        metadata=dict(json_loads(row["metadata_json"], {})),
+        created_at=row["created_at"],
+    )
+
+
+def row_to_document_text_span(row) -> DocumentTextSpanRecord:
+    return DocumentTextSpanRecord(
+        id=row["id"],
+        generation_id=row["generation_id"],
+        span_start=row["span_start"],
+        span_end=row["span_end"],
+        page_number=row["page_number"],
+        block_index=row["block_index"],
+        line_index=row["line_index"],
+        token_index=row["token_index"],
+        bbox=dict(json_loads(row["bbox_json"], {})),
+        source_kind=row["source_kind"],
+        confidence=row["confidence"],
+        text_digest=row["text_digest"],
+        warning_codes=list(json_loads(row["warning_codes_json"], [])),
         created_at=row["created_at"],
     )
 

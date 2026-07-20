@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -9,9 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from pypdf import PdfWriter
-from pypdf.generic import DictionaryObject, NameObject
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.imports.dependencies import reset_import_dependencies_for_tests
 from app.imports.binary_upload import stream_upload_to_staging
@@ -232,6 +233,116 @@ class BinaryArtifactImportTests(unittest.TestCase):
         self.assertEqual(list((artifacts_root / "sanitized-image").glob("*")), [])
         self.assertTrue(list((artifacts_root / "uploaded-image").glob("*")))
 
+    def test_pdf_native_text_extraction_creates_document_review_without_trip_mutation(self) -> None:
+        client, trip_id = create_saved_trip()
+        uploaded = upload_binary(client, trip_id, text_pdf("景点：豫园、上海博物馆"), "pdf", "guide.pdf", "application/pdf")
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        binary_job_id = uploaded.json()["job"]["id"]
+        before_revisions = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+
+        extracted = client.post(
+            f"/trips/{trip_id}/imports/{binary_job_id}/extract-document",
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "extract-pdf-native"},
+        )
+
+        self.assertEqual(extracted.status_code, 201, extracted.text)
+        body = extracted.json()
+        self.assertEqual(body["generation"]["strategy"], "pdf_native_text")
+        self.assertEqual(body["generation"]["status"], "review_ready")
+        self.assertEqual(body["artifact"]["artifact_type"], "document_text")
+        self.assertEqual(body["job"]["input_type"], "document")
+        self.assertGreaterEqual(body["job"]["mention_count"], 2)
+        self.assertTrue(body["spans"])
+        self.assertTrue(all(span["page_number"] == 1 for span in body["spans"]))
+        self.assertTrue(all({"x0", "y0", "x1", "y1", "unit"}.issubset(span["bbox"]) for span in body["spans"]))
+        text = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/artifact")
+        self.assertEqual(text.status_code, 200)
+        self.assertIn("豫园", text.text)
+        self.assertIn("上海博物馆", text.text)
+
+        review_version = body["job"]["review_version"]
+        for index, mention in enumerate([item for item in body["mentions"] if item["entity_type"] == "place"]):
+            decision = client.post(
+                f"/trips/{trip_id}/imports/{body['job']['id']}/mentions/{mention['id']}/decisions",
+                json={
+                    "base_review_version": review_version,
+                    "action": "confirm",
+                    "selected_resolution_candidate_id": mention["selected_resolution_candidate_id"],
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": f"confirm-doc-{index}"},
+            )
+            self.assertEqual(decision.status_code, 200, decision.text)
+            review_version = decision.json()["job"]["review_version"]
+        committed = client.post(
+            f"/trips/{trip_id}/imports/{body['job']['id']}/commit",
+            json={"base_review_version": review_version},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "commit-doc"},
+        )
+        self.assertEqual(committed.status_code, 200, committed.text)
+        self.assertEqual(
+            [revision["id"] for revision in before_revisions],
+            [revision["id"] for revision in client.get(f"/trips/{trip_id}/revisions").json()["revisions"]],
+        )
+        candidates = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
+        self.assertEqual({candidate["source_kind"] for candidate in candidates}, {"document_import"})
+
+        replay = client.post(
+            f"/trips/{trip_id}/imports/{binary_job_id}/extract-document",
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "extract-pdf-native"},
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        self.assertEqual(replay.json()["job"]["id"], body["job"]["id"])
+
+    def test_rejected_or_unready_binary_artifact_cannot_be_extracted(self) -> None:
+        client, trip_id = create_saved_trip()
+        rejected = upload_binary(client, trip_id, javascript_pdf(), "pdf", "active.pdf", "application/pdf")
+        self.assertEqual(rejected.status_code, 201, rejected.text)
+        response = client.post(
+            f"/trips/{trip_id}/imports/{rejected.json()['job']['id']}/extract-document",
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "extract-rejected"},
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "import_document_source_not_ready")
+
+    def test_image_ocr_missing_engine_is_explicit_and_creates_no_review_or_mutation(self) -> None:
+        client, trip_id = create_saved_trip()
+        uploaded = upload_binary(client, trip_id, valid_image("PNG"), "image", "guide.png", "image/png")
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        before_revisions = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+        with patch.dict("os.environ", {"IMPORT_DOCUMENT_OCR_COMMAND": "definitely-not-installed-tesseract"}):
+            response = client.post(
+                f"/trips/{trip_id}/imports/{uploaded.json()['job']['id']}/extract-document",
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "extract-image-no-ocr"},
+            )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["error"]["code"], "import_document_ocr_unavailable")
+        self.assertEqual(client.get(f"/trips/{trip_id}/candidates").json()["candidates"], [])
+        self.assertEqual(
+            [revision["id"] for revision in before_revisions],
+            [revision["id"] for revision in client.get(f"/trips/{trip_id}/revisions").json()["revisions"]],
+        )
+
+    @unittest.skipUnless(shutil.which("tesseract"), "tesseract OCR engine is not installed")
+    def test_image_ocr_engine_creates_layout_spans_and_review_artifact(self) -> None:
+        client, trip_id = create_saved_trip()
+        uploaded = upload_binary(client, trip_id, text_image("Starbucks Reserve Roastery"), "image", "ocr.png", "image/png")
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        with patch.dict("os.environ", {"IMPORT_DOCUMENT_OCR_LANGUAGES": "eng"}):
+            response = client.post(
+                f"/trips/{trip_id}/imports/{uploaded.json()['job']['id']}/extract-document",
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "extract-image-ocr"},
+            )
+        self.assertEqual(response.status_code, 201, response.text)
+        body = response.json()
+        self.assertEqual(body["generation"]["strategy"], "image_ocr")
+        self.assertEqual(body["job"]["input_type"], "document")
+        self.assertTrue(body["spans"])
+        self.assertTrue(all(span["source_kind"] == "ocr_token" for span in body["spans"]))
+        text = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/artifact")
+        self.assertEqual(text.status_code, 200)
+        self.assertIn("Starbucks", text.text)
+
 
 def create_saved_trip(*, raise_server_exceptions: bool = True) -> tuple[TestClient, str]:
     client = TestClient(app, raise_server_exceptions=raise_server_exceptions)
@@ -276,10 +387,54 @@ def valid_image(fmt: str) -> bytes:
     return buffer.getvalue()
 
 
+def text_image(text: str) -> bytes:
+    image = Image.new("RGB", (760, 140), "white")
+    draw = ImageDraw.Draw(image)
+    font = load_test_font(42)
+    draw.text((24, 42), text, fill="black", font=font)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def load_test_font(size: int):
+    for path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf",
+    ):
+        if Path(path).exists():
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default()
+
+
 def valid_pdf(*, pages: int = 1) -> bytes:
     writer = PdfWriter()
     for _index in range(pages):
         writer.add_blank_page(width=200, height=200)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def text_pdf(text: str) -> bytes:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=420, height=300)
+    font = DictionaryObject()
+    font.update(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    resources = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})})
+    page[NameObject("/Resources")] = resources
+    stream = DecodedStreamObject()
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream.set_data(f"BT /F1 16 Tf 40 240 Td ({escaped}) Tj ET".encode("utf-8"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
     buffer = io.BytesIO()
     writer.write(buffer)
     return buffer.getvalue()

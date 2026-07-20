@@ -206,3 +206,52 @@ export type BinaryImportCreateResponse = {
   duplicate_artifact: boolean;
   idempotent_replay: boolean;
 };
+
+export type DocumentTextSpan = {
+  id: string;
+  generation_id: string;
+  span_start: number;
+  span_end: number;
+  page_number: number;
+  block_index: number;
+  line_index: number;
+  token_index?: number | null;
+  bbox: Record<string, string | number | boolean | null>;
+  source_kind: "native_pdf_text" | "ocr_token" | "ocr_line" | string;
+  confidence?: number | null;
+  text_digest: string;
+  warning_codes: string[];
+  created_at: string;
+};
+
+export type DocumentExtractionGeneration = {
+  id: string;
+  trip_id: string;
+  source_import_job_id: string;
+  source_artifact_id: string;
+  inspection_id: string;
+  derived_import_job_id?: string | null;
+  derived_artifact_id?: string | null;
+  generation: number;
+  schema_version: string;
+  extractor_version: string;
+  strategy: "pdf_native_text" | "image_ocr" | "pdf_native_plus_selective_ocr" | string;
+  status: "review_ready" | "partial" | "failed" | string;
+  page_count: number;
+  extracted_text_chars: number;
+  warning_codes: string[];
+  error_code?: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type DocumentExtractionCreateResponse = {
+  generation: DocumentExtractionGeneration;
+  artifact?: SourceArtifact | null;
+  job?: ImportJob | null;
+  mentions: ImportMention[];
+  derivation?: ArtifactDerivation | null;
+  spans: DocumentTextSpan[];
+  duplicate_artifact: boolean;
+  idempotent_replay: boolean;
+};
