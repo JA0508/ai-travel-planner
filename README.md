@@ -1,6 +1,8 @@
-# AI Travel Planner
+# Source-to-Executable Trip Workspace
 
 > **Source-to-Executable Trip Workspace**
+> **AI Trip Compiler / Executable Trip Workspace**
+>
 > Compile guides, screenshots, preferences, time boundaries, fixed reservations,
 > and verified place facts into an explainable, constraint-safe, executable trip.
 
@@ -14,14 +16,15 @@ Backend CI badge
 
 ## Overview
 
-AI Travel Planner is a full-stack travel planning system built around a strict
-separation of responsibilities:
+This repository implements an **AI Trip Compiler / Executable Trip Workspace**:
+a full-stack travel planning system built around a strict separation of
+responsibilities:
 
 - **LLMs understand, classify, propose, summarize, and explain.**
 - **Deterministic systems resolve, validate, schedule, version, and execute.**
 
 The project is intentionally different from generic “prompt in, itinerary out”
-travel demos.
+travel demos, map demos, and consumer recommendation feeds.
 
 Its long-term product direction is a **Source-to-Executable Trip Workspace**:
 users should be able to bring fragmented travel material into the system, review
@@ -710,8 +713,9 @@ Current limitations include:
 
 - no production-grade user authentication and multi-user persistence
 - TripRevision persistence is local SQLite, not a cloud Trip Library
-- limited text-only source-import pipeline
-- incomplete canonical place/provenance graph beyond reviewed text evidence
+- source import now covers text, URL, image, and PDF/document extraction, but
+  the end-to-end Import-to-Executable compiler is not complete
+- incomplete canonical place/provenance graph beyond reviewed import evidence
 - no full booking inbox
 - no production disruption-monitoring infrastructure
 - no offline travel pack
@@ -744,11 +748,23 @@ Travel plans, locations, bookings, and uploaded artifacts should be treated as p
 - Full implementation specification:
   `docs/product/CODEX_AI_TRAVEL_PLANNER_PRODUCT_SPEC.md`
 - Research snapshot:
-  `docs/research/AI_TRAVEL_PLANNER_PRODUCT_RESEARCH_2026-07-12.docx`
+  `docs/research/AI旅行规划产品深度研究_竞品UI与功能蓝图_2026-07-12.docx`
 - Architecture decisions: `docs/decisions/`
 
-The Markdown product specification is the canonical engineering reference.
-The DOCX report is a dated human-facing research artifact.
+Documentation authority order:
+
+```text
+code / schemas / tests
+→ ADRs
+→ CURRENT_PHASE
+→ PRODUCT_DIRECTION
+→ CODEX product specification
+→ research snapshots
+```
+
+The Markdown product specification is an implementation planning reference.
+The DOCX report is a dated human-facing research artifact and must not override
+current code, schemas, tests, ADRs, or `CURRENT_PHASE.md`.
 
 ---
 

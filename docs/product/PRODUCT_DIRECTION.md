@@ -250,6 +250,8 @@ The existing project already provides a meaningful foundation:
 - route-aware editing
 - impact-preview patterns
 - provider fallback and request observability
+- persisted TripRevision and server-authoritative mutation foundations
+- text, URL, image, PDF, and layout-aware document import review foundations
 
 These strengths should be preserved while the product expands upstream into
 source import and downstream into revision-based execution.
@@ -258,22 +260,28 @@ source import and downstream into revision-based execution.
 
 ## Current priority
 
-The next major product line is:
+The current next product objective is:
 
-# Import-to-Executable v1
+# F-004 Intent Compiler
 
-Recommended sequence:
+The import stack can now produce reviewed mentions and TripCandidates from text,
+URL, image, and document sources. The next product step is to compile reviewed
+source facts into planner-ready intent:
 
-1. Restore reproducible CI and protect the current baseline.
-2. Reduce page-level coupling with characterization tests.
-3. Establish Trip and TripRevision persistence.
-4. Add text/image source import.
-5. Add Import Review and canonical POI resolution.
-6. Compile confirmed sources into a TripIntentEnvelope.
-7. expose planner trace and rejected-candidate reasons.
-8. extend place facts with provenance and freshness.
-9. add explainable optimization proposals.
-10. add share/export and deterministic evaluation fixtures.
+- hard constraints
+- soft preferences
+- assumptions
+- unresolved questions
+- source-linked TripIntentEnvelope inputs
+
+The recommended supporting follow-up is:
+
+# F-020b Planner Trace Review and Evaluation Expansion
+
+F-020b should strengthen evaluation, reviewer visibility, and regression
+coverage around the compiler and planner path. It should not block the next
+Import-to-Executable vertical slice unless current code, schemas, or tests reveal
+a concrete safety issue.
 
 The first strong vertical demo should be:
 
@@ -330,9 +338,21 @@ The project should become more intelligent without becoming less trustworthy.
 
 ## Canonical references
 
+Authority order:
+
+```text
+code / schemas / tests
+→ ADRs
+→ CURRENT_PHASE
+→ PRODUCT_DIRECTION
+→ CODEX product specification
+→ research snapshots
+```
+
 - `docs/product/CODEX_AI_TRAVEL_PLANNER_PRODUCT_SPEC.md`
-- `docs/research/AI_TRAVEL_PLANNER_PRODUCT_RESEARCH_2026-07-12.docx`
+- `docs/research/AI旅行规划产品深度研究_竞品UI与功能蓝图_2026-07-12.docx`
 - `docs/decisions/0001-source-to-executable-trip-workspace.md`
 
-The Markdown product specification is the engineering reference.
-The DOCX report is a dated human-facing research snapshot.
+The Markdown product specification is a planning and implementation reference.
+The DOCX report is a dated human-facing research snapshot. Neither may override
+current code, schemas, tests, ADRs, or `CURRENT_PHASE.md`.
