@@ -36,6 +36,7 @@ DEFAULT_IMPORT_DOCUMENT_MAX_TEXT_BYTES = 500 * 1024
 DEFAULT_IMPORT_DOCUMENT_OCR_TIMEOUT_SECONDS = 10.0
 DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_SCALE = 2.0
 DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_MAX_PIXELS = 4_000_000
+DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_MAX_TOTAL_PIXELS = 12_000_000
 DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_MAX_BYTES = 2 * 1024 * 1024
 DEFAULT_IMPORT_DOCUMENT_PDF_NATIVE_MIN_QUALITY = 0.35
 
@@ -284,6 +285,13 @@ def get_import_document_pdf_render_scale() -> float:
 
 def get_import_document_pdf_render_max_pixels() -> int:
     return parse_positive_int_env("IMPORT_DOCUMENT_PDF_RENDER_MAX_PIXELS", DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_MAX_PIXELS)
+
+
+def get_import_document_pdf_render_max_total_pixels() -> int:
+    return parse_positive_int_env(
+        "IMPORT_DOCUMENT_PDF_RENDER_MAX_TOTAL_PIXELS",
+        DEFAULT_IMPORT_DOCUMENT_PDF_RENDER_MAX_TOTAL_PIXELS,
+    )
 
 
 def get_import_document_pdf_render_max_bytes() -> int:

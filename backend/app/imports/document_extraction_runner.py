@@ -59,7 +59,8 @@ class WorkerRenderedPage(BaseModel):
     byte_size: int = Field(..., ge=0)
     width: int = Field(..., ge=1)
     height: int = Field(..., ge=1)
-    content_base64: str
+    content_base64: str | None = None
+    content_checksum: str | None = None
 
 
 class WorkerDocumentExtractionResult(BaseModel):

@@ -44,3 +44,15 @@ test("document evidence panel renders private page preview behind bbox overlay",
   assert.match(source, /fitPreviewSurface/);
   assert.equal(source.includes("DOCUMENT_EVIDENCE_SURFACE = { width: 180, height: 240 }"), false);
 });
+
+test("layout-aware document flow exposes page navigation zoom retry and linked box evidence", () => {
+  const source = readFileSync(componentPath, "utf-8");
+  const apiSource = readFileSync(importApiPath, "utf-8");
+  assert.match(apiSource, /retryDocumentPageExtraction/);
+  assert.match(apiSource, /retryDocumentPageExtraction\(tripId, importJobId, pageNumber\)/);
+  assert.match(source, /data-document-page-controls/);
+  assert.match(source, /data-document-page-retry/);
+  assert.match(source, /setZoom/);
+  assert.match(source, /mentionEvidenceBoxesForPage/);
+  assert.match(source, /box_evidence/);
+});

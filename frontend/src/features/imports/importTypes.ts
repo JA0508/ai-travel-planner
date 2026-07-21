@@ -291,6 +291,16 @@ export type DocumentMentionEvidence = {
   line_ids: string[];
   token_ids: string[];
   bounding_boxes: Array<Record<string, string | number | boolean | null>>;
+  box_evidence?: Array<{
+    page_number: number;
+    span_id: string;
+    block_id: string;
+    line_id: string;
+    token_id?: string | null;
+    bbox: Record<string, string | number | boolean | null>;
+    extraction_method: string;
+    reading_order: number;
+  }>;
   extraction_methods: string[];
   geometry_available: boolean;
 };

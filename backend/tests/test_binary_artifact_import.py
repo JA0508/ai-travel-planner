@@ -309,12 +309,17 @@ class BinaryArtifactImportTests(unittest.TestCase):
         self.assertEqual(evidence_body["generation"]["span_map_artifact_id"], body["generation"]["span_map_artifact_id"])
         self.assertEqual(evidence_body["layout_manifest"]["reading_order_algorithm"], "layout-reading-order-v2")
         self.assertEqual(evidence_body["layout_manifest"]["coordinate_space"]["unit"], "normalized")
+        self.assertTrue(evidence_body["generation"]["metadata"]["extraction_identity"]["policy_fingerprint"])
         self.assertEqual(evidence_body["pages"][0]["id"], body["pages"][0]["id"])
         self.assertEqual(evidence_body["pages"][0]["extraction_method"], "native_pdf_text")
+        self.assertIn(evidence_body["pages"][0]["metadata"]["native_bbox_source"], {"pdfium_charbox", "pypdf_estimated"})
         self.assertTrue(evidence_body["span_map"])
         self.assertTrue(evidence_body["mention_evidence"])
         self.assertTrue(
             any(item["geometry_available"] and item["bounding_boxes"] for item in evidence_body["mention_evidence"])
+        )
+        self.assertTrue(
+            any(item["box_evidence"] and item["box_evidence"][0]["page_number"] == 1 for item in evidence_body["mention_evidence"])
         )
         first_box = next(
             item["bounding_boxes"][0]
@@ -401,6 +406,9 @@ class BinaryArtifactImportTests(unittest.TestCase):
         retried_body = retried.json()
         self.assertEqual(retried_body["generation"]["generation"], 2)
         self.assertNotEqual(retried_body["generation"]["id"], first_body["generation"]["id"])
+        self.assertEqual(retried_body["generation"]["metadata"]["base_generation_id"], first_body["generation"]["id"])
+        self.assertEqual(retried_body["generation"]["metadata"]["retry_scope"], "single_page")
+        self.assertEqual(retried_body["generation"]["metadata"]["retry_page_number"], 2)
         self.assertEqual(len(retried_body["pages"]), 2)
 
         latest = client.get(f"/trips/{trip_id}/imports/{binary_job_id}/document-extraction")
@@ -481,13 +489,13 @@ class BinaryArtifactImportTests(unittest.TestCase):
         self.assertEqual(text.status_code, 200)
         self.assertIn("Starbucks", text.text)
 
-    def test_chinese_image_ocr_smoke_creates_reviewable_document_text_when_ci_requires_ocr(self) -> None:
+    def test_mixed_chinese_english_image_ocr_smoke_creates_reviewable_document_text_when_ci_requires_ocr(self) -> None:
         if not production_ocr_required():
             self.skipTest("real Chinese OCR success smoke is required only in CI")
         if not shutil.which(os.getenv("IMPORT_DOCUMENT_OCR_COMMAND", "tesseract")):
             self.fail("tesseract executable is required for production OCR smoke tests")
         client, trip_id = create_saved_trip()
-        uploaded = upload_binary(client, trip_id, chinese_text_image("上海博物馆"), "image", "ocr-cn.png", "image/png")
+        uploaded = upload_binary(client, trip_id, mixed_chinese_english_text_image(), "image", "ocr-cn-en.png", "image/png")
         self.assertEqual(uploaded.status_code, 201, uploaded.text)
         with patch.dict("os.environ", {"IMPORT_DOCUMENT_OCR_LANGUAGES": "chi_sim+eng"}):
             response = client.post(
@@ -502,6 +510,7 @@ class BinaryArtifactImportTests(unittest.TestCase):
         self.assertTrue(all(span["source_kind"] == "ocr_token" for span in body["spans"]))
         text = client.get(f"/trips/{trip_id}/imports/{body['job']['id']}/artifact")
         self.assertEqual(text.status_code, 200)
+        self.assertIn("Museum", text.text)
         self.assertTrue("上海" in text.text or "博物馆" in text.text, text.text)
 
 
@@ -562,11 +571,14 @@ def text_image(text: str) -> bytes:
     return buffer.getvalue()
 
 
-def chinese_text_image(text: str) -> bytes:
-    image = Image.new("RGB", (920, 180), "white")
+def mixed_chinese_english_text_image() -> bytes:
+    image = Image.new("RGB", (1800, 560), "white")
     draw = ImageDraw.Draw(image)
-    font = load_cjk_test_font(64)
-    draw.text((32, 52), text, fill="black", font=font)
+    cjk_font = load_cjk_test_font(150)
+    latin_font = load_test_font(88)
+    for offset in ((0, 0), (1, 0), (0, 1)):
+        draw.text((72 + offset[0], 74 + offset[1]), "上海博物馆", fill="black", font=cjk_font)
+    draw.text((72, 330), "Shanghai Museum", fill="black", font=latin_font)
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
