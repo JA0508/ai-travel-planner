@@ -1,4 +1,9 @@
-export type IntentPlannerReadyStatus = "ready" | "needs_clarification" | "blocked";
+export type IntentPlannerReadyStatus =
+  | "ready"
+  | "ready_with_assumptions"
+  | "ready_for_planning"
+  | "needs_clarification"
+  | "blocked";
 
 export type IntentSourceRef = {
   ref_id: string;
@@ -13,12 +18,31 @@ export type IntentSourceRef = {
   evidence_refs: string[];
 };
 
+export type IntentDomainValue =
+  | { type: "destination_city"; city: string }
+  | { type: "trip_days"; days: number }
+  | { type: "pace"; pace: "relaxed" | "balanced" | "intensive" }
+  | { type: "transport_preference"; mode: string }
+  | { type: "must_candidate"; candidate_id: string; display_name?: string | null }
+  | {
+      type: "fixed_event";
+      name: string;
+      fixed_day?: number | null;
+      fixed_time_start?: string | null;
+      fixed_time_end?: string | null;
+      source_label?: string | null;
+    }
+  | { type: "general_preference"; preference: string }
+  | { type: "budget"; amount?: number | null; currency?: string | null; budget_level?: "low" | "medium" | "high" | null }
+  | { type: "traveler_need"; need: string; traveler_group?: string | null }
+  | { type: "unknown"; raw?: unknown };
+
 export type TypedIntentValue = {
   field_path: string;
   field_id: string | null;
-  value: unknown;
+  value: IntentDomainValue;
   semantic_type: string;
-  semantic_value: Record<string, unknown>;
+  semantic_value: IntentDomainValue;
   kind: "hard" | "soft" | "assumption";
   confidence: number;
   confirmed_by_user: boolean;
@@ -51,7 +75,7 @@ export type IntentAssumption = {
   assumption_id: string;
   field_path: string;
   assumption_type: "missing_value" | "empty_reviewed_candidate_set" | "carried_forward_assumption";
-  value: unknown;
+  value: IntentDomainValue | IntentDomainValue[] | null;
   has_assumed_value: boolean;
   blocks_planner_ready: boolean;
   reason_code: string;
@@ -72,9 +96,9 @@ export type IntentProvenanceSummary = {
 export type IntentField = {
   field_id: string;
   field_path: string;
-  value: unknown;
+  value: IntentDomainValue;
   semantic_type: string;
-  semantic_value: Record<string, unknown>;
+  semantic_value: IntentDomainValue;
   kind: "hard" | "soft" | "assumption";
   confidence: number;
   source_refs: IntentSourceRef[];
@@ -99,7 +123,7 @@ export type IntentClarification = {
   question_id: string;
   field_paths: string[];
   answer_field_path: string | null;
-  answer_value_type: "string" | "integer" | "pace" | "string_list";
+  answer_value_type: "string" | "integer" | "pace" | "string_list" | "fixed_event" | "budget";
   question: string;
   priority: number;
   blocking: boolean;
@@ -111,10 +135,86 @@ export type IntentClarification = {
 export type IntentParserResult = {
   parser_name: string;
   parser_version: string;
-  status: "not_run" | "parsed" | "validated";
+  model_name?: string | null;
+  status: "success" | "empty_input" | "unavailable" | "timeout" | "invalid_output" | "provider_error";
   input_digests: string[];
   extracted_field_paths: string[];
   warnings: string[];
+};
+
+export type IntentSourceReference = {
+  source_type: string;
+  source_id: string | null;
+  artifact_id: string | null;
+  import_job_id: string | null;
+  mention_id: string | null;
+  review_decision_id: string | null;
+  candidate_id: string | null;
+  page_number: number | null;
+  bbox: Record<string, number | string> | null;
+  field_path: string;
+  label: string;
+  authority: string;
+  confirmed: boolean;
+  confidence: number;
+  observed_at: string | null;
+  evidence_digest: string;
+  evidence_refs: string[];
+};
+
+export type IntentFieldMetadata = {
+  field_path: string;
+  semantic_type: string;
+  kind: "hard" | "soft" | "assumption";
+  authority: string;
+  confidence: number;
+  confirmed_by_user: boolean;
+  status: "selected" | "shadowed" | "needs_clarification";
+  source_refs: IntentSourceReference[];
+  validation_codes: string[];
+  revision_id: string;
+  revision_number: number;
+};
+
+export type DestinationIntent = {
+  city: string;
+  canonical_place_id: string | null;
+  metadata: IntentFieldMetadata;
+};
+
+export type DatePolicyIntent = {
+  trip_days: number | null;
+  start_date: string | null;
+  end_date: string | null;
+  metadata: IntentFieldMetadata | null;
+};
+
+export type FormalTripIntentContract = {
+  schema_version: string;
+  compiler_version: string;
+  revision_id: string;
+  revision_number: number;
+  trip_id: string;
+  base_trip_revision_id: string;
+  parent_intent_revision_id: string | null;
+  destinations: DestinationIntent[];
+  date_policy: DatePolicyIntent;
+  arrival: Record<string, unknown> | null;
+  departure: Record<string, unknown> | null;
+  availability_windows: Array<Record<string, unknown>>;
+  fixed_events: Array<Record<string, unknown>>;
+  must_places: Array<Record<string, unknown>>;
+  optional_places: Array<Record<string, unknown>>;
+  exclusions: Array<Record<string, unknown>>;
+  pace: Record<string, unknown> | null;
+  transport_preferences: Array<Record<string, unknown>>;
+  meal_preferences: Array<Record<string, unknown>>;
+  budget: Record<string, unknown> | null;
+  traveler_needs: Array<Record<string, unknown>>;
+  assumptions: IntentAssumption[];
+  readiness: IntentReadinessPolicy;
+  semantic_digest: string | null;
+  lineage_digest: string | null;
 };
 
 export type IntentProvenanceGraph = {
@@ -125,6 +225,12 @@ export type IntentProvenanceGraph = {
     field_path: string | null;
     source_type: string | null;
     source_id: string | null;
+    artifact_id: string | null;
+    mention_id: string | null;
+    review_decision_id: string | null;
+    candidate_id: string | null;
+    page_number: number | null;
+    bbox: Record<string, number | string> | null;
     authority: string;
     confirmed: boolean;
     digest: string | null;
@@ -156,6 +262,7 @@ export type SourceLinkedTripIntentEnvelope = {
   typed_assumptions: IntentAssumption[];
   clarification_queue: IntentClarification[];
   parser_result: IntentParserResult;
+  formal_contract: FormalTripIntentContract;
   typed_intent: TypedTripIntent;
   provenance_summary: IntentProvenanceSummary[];
   provenance_graph: IntentProvenanceGraph;
@@ -174,6 +281,7 @@ export type SourceLinkedTripIntentEnvelope = {
   validation_report: Record<string, unknown>;
   source_digest: string;
   semantic_digest: string | null;
+  lineage_digest: string | null;
   content_digest: string;
   created_at: string;
 };

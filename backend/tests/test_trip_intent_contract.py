@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import concurrent.futures
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +12,8 @@ from fastapi.testclient import TestClient
 
 from app.imports.dependencies import reset_import_dependencies_for_tests
 from app.main import app
+from app.persistence.database import SQLiteConnectionFactory
+from app.persistence.sqlite_trip_repository import SQLiteTripRepository
 from app.schemas.intent import ParsedTripIntentResponse
 from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
 from app.trips.errors import StaleIntentRevisionError
@@ -50,6 +54,7 @@ class TripIntentContractTests(unittest.TestCase):
             f"/trips/{trip_id}/intent-envelope/compile",
             json={
                 "base_revision_id": base_revision_id,
+                "base_intent_revision_id": None,
                 "direct_user_text": "城市：上海\n天数：2\n偏好：不要太赶",
                 "candidate_ids": [candidate["id"]],
                 "llm_proposal": {
@@ -69,17 +74,18 @@ class TripIntentContractTests(unittest.TestCase):
         selected_days = selected_field(envelope, "trip.trip_days")
         selected_pace = selected_field(envelope, "trip.pace")
         selected_candidate = selected_field(envelope, "poi.must_candidates")
-        self.assertEqual(selected_city["value"], "上海")
+        self.assertEqual(selected_city["value"], {"type": "destination_city", "city": "上海"})
         self.assertEqual(selected_city["semantic_type"], "destination_city")
-        self.assertEqual(selected_city["semantic_value"], {"city": "上海"})
+        self.assertEqual(selected_city["semantic_value"], {"type": "destination_city", "city": "上海"})
         self.assertEqual(selected_city["kind"], "hard")
         self.assertTrue(selected_city["confirmed_by_user"])
         self.assertEqual(selected_city["source_refs"][0]["source_type"], "direct_user_language")
         self.assertEqual(selected_city["source_refs"][0]["authority"], "user_confirmed")
-        self.assertEqual(selected_days["value"], 2)
-        self.assertEqual(selected_pace["value"], "relaxed")
+        self.assertEqual(selected_days["value"], {"type": "trip_days", "days": 2})
+        self.assertEqual(selected_pace["value"], {"type": "pace", "pace": "relaxed"})
         self.assertEqual(selected_pace["kind"], "soft")
-        self.assertEqual(selected_candidate["value"], candidate["id"])
+        self.assertEqual(selected_candidate["value"]["candidate_id"], candidate["id"])
+        self.assertEqual(selected_candidate["value"]["display_name"], candidate["display_name"])
         self.assertEqual(selected_candidate["semantic_type"], "must_candidate")
         self.assertEqual(selected_candidate["source_refs"][0]["source_type"], "trip_candidate")
         self.assertEqual(selected_candidate["source_refs"][0]["authority"], "reviewed_source")
@@ -94,15 +100,15 @@ class TripIntentContractTests(unittest.TestCase):
             "schema_validated",
             selected_candidate["validation_codes"],
         )
-        self.assertTrue(any(field["status"] == "shadowed" and field["value"] == "北京" for field in envelope["fields"]))
+        self.assertTrue(any(field["status"] == "shadowed" and field["value"].get("city") == "北京" for field in envelope["fields"]))
         self.assertTrue(any(conflict["reason_code"] == "higher_priority_source_selected" for conflict in envelope["conflicts"]))
         self.assertEqual(envelope["planner_ready_intent"]["city"], "上海")
         self.assertEqual(envelope["planner_ready_intent"]["trip_days"], 2)
         self.assertIn(candidate["id"], envelope["planner_ready_intent"]["must_place_candidate_ids"])
         self.assertEqual(envelope["planner_ready_intent"]["pace"], "relaxed")
-        self.assertEqual(envelope["typed_intent"]["destinations"][0]["value"], "上海")
-        self.assertEqual(envelope["typed_intent"]["date_policy"]["trip_days"]["value"], 2)
-        self.assertEqual(envelope["typed_intent"]["poi_preferences"]["must_candidates"][0]["value"], candidate["id"])
+        self.assertEqual(envelope["typed_intent"]["destinations"][0]["value"]["city"], "上海")
+        self.assertEqual(envelope["typed_intent"]["date_policy"]["trip_days"]["value"]["days"], 2)
+        self.assertEqual(envelope["typed_intent"]["poi_preferences"]["must_candidates"][0]["value"]["candidate_id"], candidate["id"])
         self.assertTrue(
             any(
                 item["field_path"] == "trip.city"
@@ -112,9 +118,15 @@ class TripIntentContractTests(unittest.TestCase):
             )
         )
         self.assertTrue(envelope["validation_report"]["llm_proposal_validated"])
-        self.assertEqual(envelope["parser_result"]["status"], "validated")
+        self.assertEqual(envelope["parser_result"]["status"], "success")
         self.assertTrue(envelope["semantic_digest"])
+        self.assertTrue(envelope["lineage_digest"])
+        self.assertNotEqual(envelope["semantic_digest"], envelope["lineage_digest"])
         self.assertGreater(envelope["validation_report"]["provenance_graph_node_count"], 0)
+        node_types = {node["node_type"] for node in envelope["provenance_graph"]["nodes"]}
+        self.assertIn("trip_candidate", node_types)
+        self.assertIn("source_artifact", node_types)
+        self.assertIn("extracted_mention", node_types)
         self.assertTrue(
             any(
                 edge["relation"] == "supports"
@@ -132,6 +144,7 @@ class TripIntentContractTests(unittest.TestCase):
             f"/trips/{trip_id}/intent-envelope/compile",
             json={
                 "base_revision_id": base_revision_id,
+                "base_intent_revision_id": None,
                 "structured_overrides": {"city": "杭州", "trip_days": 2},
                 "llm_proposal": {
                     "city": "上海",
@@ -145,7 +158,7 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         envelope = response.json()["envelope"]
         city = selected_field(envelope, "trip.city")
-        self.assertEqual(city["value"], "杭州")
+        self.assertEqual(city["value"], {"type": "destination_city", "city": "杭州"})
         self.assertEqual(city["source_refs"][0]["source_type"], "structured_user_override")
         self.assertTrue(city["confirmed_by_user"])
         self.assertEqual(envelope["planner_ready_intent"]["city"], "杭州")
@@ -165,6 +178,7 @@ class TripIntentContractTests(unittest.TestCase):
             f"/trips/{trip_id}/intent-envelope/compile",
             json={
                 "base_revision_id": base_revision_id,
+                "base_intent_revision_id": None,
                 "direct_user_text": "偏好：不要太赶",
             },
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "clarify-city"},
@@ -186,6 +200,7 @@ class TripIntentContractTests(unittest.TestCase):
             f"/trips/{trip_id}/intent-envelope/compile",
             json={
                 "base_revision_id": base_revision_id,
+                "base_intent_revision_id": None,
                 "structured_overrides": {"city": "上海"},
             },
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "nonblocking-days"},
@@ -209,6 +224,7 @@ class TripIntentContractTests(unittest.TestCase):
         client, trip_id, base_revision_id = create_saved_trip()
         payload = {
             "base_revision_id": base_revision_id,
+            "base_intent_revision_id": None,
             "structured_overrides": {"city": "上海", "trip_days": 2},
         }
 
@@ -236,6 +252,7 @@ class TripIntentContractTests(unittest.TestCase):
         client, trip_id, base_revision_id = create_saved_trip()
         payload = {
             "base_revision_id": base_revision_id,
+            "base_intent_revision_id": None,
             "structured_overrides": {
                 "city": "上海",
                 "trip_days": 2,
@@ -251,7 +268,7 @@ class TripIntentContractTests(unittest.TestCase):
         )
         second = client.post(
             f"/trips/{trip_id}/intent-envelope/compile",
-            json=payload,
+            json={**payload, "base_intent_revision_id": first.json()["revision"]["id"]},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "semantic-two"},
         )
 
@@ -260,6 +277,7 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertNotEqual(first.json()["revision"]["id"], second.json()["revision"]["id"])
         self.assertEqual(second.json()["revision"]["parent_intent_revision_id"], first.json()["revision"]["id"])
         self.assertEqual(first.json()["envelope"]["semantic_digest"], second.json()["envelope"]["semantic_digest"])
+        self.assertNotEqual(first.json()["envelope"]["lineage_digest"], second.json()["envelope"]["lineage_digest"])
         self.assertNotEqual(first.json()["envelope"]["content_digest"], second.json()["envelope"]["content_digest"])
 
     def test_stale_base_revision_is_rejected_before_intent_revision_is_created(self) -> None:
@@ -269,6 +287,7 @@ class TripIntentContractTests(unittest.TestCase):
             f"/trips/{trip_id}/intent-envelope/compile",
             json={
                 "base_revision_id": f"{base_revision_id}-old",
+                "base_intent_revision_id": None,
                 "structured_overrides": {"city": "上海"},
             },
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "stale-intent"},
@@ -279,23 +298,45 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(response.json()["error"]["code"], "stale_base_revision")
         self.assertEqual(revisions.json()["revisions"], [])
 
+    def test_compile_rejects_stale_base_intent_revision_id(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        initial = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": None, "structured_overrides": {"city": "上海", "trip_days": 2}},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "base-intent-initial"},
+        )
+        self.assertEqual(initial.status_code, 201, initial.text)
+
+        stale = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={
+                "base_revision_id": base_revision_id,
+                "base_intent_revision_id": "intent_old",
+                "structured_overrides": {"city": "杭州", "trip_days": 2},
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "base-intent-stale"},
+        )
+
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.json()["error"]["code"], "stale_intent_revision")
+
     def test_detail_edit_and_clarification_create_intent_revision_lineage(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()
         initial = client.post(
             f"/trips/{trip_id}/intent-envelope/compile",
-            json={"base_revision_id": base_revision_id, "direct_user_text": "偏好：不要太赶"},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": None, "direct_user_text": "偏好：不要太赶"},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "lineage-initial"},
         )
         initial_revision_id = initial.json()["revision"]["id"]
 
         clarified = client.post(
             f"/trips/{trip_id}/intent-envelope/{initial_revision_id}/clarifications/clarify_trip_city/answer",
-            json={"base_revision_id": base_revision_id, "answer": "上海"},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": initial_revision_id, "answer": "上海"},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "lineage-city-answer"},
         )
         edited = client.post(
             f"/trips/{trip_id}/intent-envelope/{clarified.json()['revision']['id']}/edit",
-            json={"base_revision_id": base_revision_id, "field_updates": {"trip_days": 3}},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": clarified.json()["revision"]["id"], "field_updates": {"trip_days": 3}},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "lineage-days-edit"},
         )
         detail = client.get(f"/trips/{trip_id}/intent-envelope/{edited.json()['revision']['id']}")
@@ -306,26 +347,26 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(clarified.json()["revision"]["parent_intent_revision_id"], initial_revision_id)
         self.assertEqual(edited.json()["revision"]["parent_intent_revision_id"], clarified.json()["revision"]["id"])
-        self.assertEqual(selected_field(edited.json()["envelope"], "trip.city")["value"], "上海")
-        self.assertEqual(selected_field(edited.json()["envelope"], "trip.trip_days")["value"], 3)
+        self.assertEqual(selected_field(edited.json()["envelope"], "trip.city")["value"]["city"], "上海")
+        self.assertEqual(selected_field(edited.json()["envelope"], "trip.trip_days")["value"]["days"], 3)
         self.assertEqual([item["revision_number"] for item in history.json()["revisions"]], [3, 2, 1])
 
     def test_restore_intent_revision_appends_new_revision_without_trip_revision_mutation(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()
         initial = client.post(
             f"/trips/{trip_id}/intent-envelope/compile",
-            json={"base_revision_id": base_revision_id, "structured_overrides": {"city": "上海", "trip_days": 2}},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": None, "structured_overrides": {"city": "上海", "trip_days": 2}},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "restore-initial"},
         )
         edited = client.post(
             f"/trips/{trip_id}/intent-envelope/{initial.json()['revision']['id']}/edit",
-            json={"base_revision_id": base_revision_id, "field_updates": {"city": "杭州", "trip_days": 3}},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": initial.json()["revision"]["id"], "field_updates": {"city": "杭州", "trip_days": 3}},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "restore-edit"},
         )
 
         restored = client.post(
             f"/trips/{trip_id}/intent-envelope/{initial.json()['revision']['id']}/restore",
-            json={"base_revision_id": base_revision_id},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": edited.json()["revision"]["id"]},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "restore-old"},
         )
         history = client.get(f"/trips/{trip_id}/intent-envelope")
@@ -334,7 +375,7 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(edited.status_code, 201, edited.text)
         self.assertEqual(restored.status_code, 201, restored.text)
         self.assertEqual(restored.json()["revision"]["parent_intent_revision_id"], edited.json()["revision"]["id"])
-        self.assertEqual(selected_field(restored.json()["envelope"], "trip.city")["value"], "上海")
+        self.assertEqual(selected_field(restored.json()["envelope"], "trip.city")["value"]["city"], "上海")
         self.assertEqual(restored.json()["envelope"]["validation_report"]["restored_from_intent_revision_id"], initial.json()["revision"]["id"])
         self.assertEqual([item["revision_number"] for item in history.json()["revisions"]], [3, 2, 1])
         self.assertEqual(len(trip_revisions.json()["revisions"]), 1)
@@ -343,20 +384,20 @@ class TripIntentContractTests(unittest.TestCase):
         client, trip_id, base_revision_id = create_saved_trip()
         initial = client.post(
             f"/trips/{trip_id}/intent-envelope/compile",
-            json={"base_revision_id": base_revision_id, "structured_overrides": {"city": "上海"}},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": None, "structured_overrides": {"city": "上海"}},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "generic-days-initial"},
         )
 
         answered = client.post(
             f"/trips/{trip_id}/intent-envelope/{initial.json()['revision']['id']}/clarifications/clarify_trip_days/answer",
-            json={"base_revision_id": base_revision_id, "answer": 4},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": initial.json()["revision"]["id"], "answer": 4},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "generic-days-answer"},
         )
 
         self.assertEqual(answered.status_code, 201, answered.text)
         envelope = answered.json()["envelope"]
-        self.assertEqual(selected_field(envelope, "trip.trip_days")["value"], 4)
-        self.assertEqual(envelope["typed_intent"]["date_policy"]["trip_days"]["value"], 4)
+        self.assertEqual(selected_field(envelope, "trip.trip_days")["value"]["days"], 4)
+        self.assertEqual(envelope["typed_intent"]["date_policy"]["trip_days"]["value"]["days"], 4)
         self.assertEqual(envelope["revision_number"], 2)
         self.assertEqual(envelope["parent_intent_revision_id"], initial.json()["revision"]["id"])
 
@@ -364,11 +405,11 @@ class TripIntentContractTests(unittest.TestCase):
         client, trip_id, base_revision_id = create_saved_trip()
         initial = client.post(
             f"/trips/{trip_id}/intent-envelope/compile",
-            json={"base_revision_id": base_revision_id, "structured_overrides": {"city": "上海"}},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": None, "structured_overrides": {"city": "上海"}},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "stale-intent-initial"},
         )
         initial_revision_id = initial.json()["revision"]["id"]
-        edit_payload = {"base_revision_id": base_revision_id, "field_updates": {"trip_days": 2}}
+        edit_payload = {"base_revision_id": base_revision_id, "base_intent_revision_id": initial_revision_id, "field_updates": {"trip_days": 2}}
         first_edit = client.post(
             f"/trips/{trip_id}/intent-envelope/{initial_revision_id}/edit",
             json=edit_payload,
@@ -381,7 +422,7 @@ class TripIntentContractTests(unittest.TestCase):
         )
         stale_edit = client.post(
             f"/trips/{trip_id}/intent-envelope/{initial_revision_id}/edit",
-            json={"base_revision_id": base_revision_id, "field_updates": {"pace": "relaxed"}},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": initial_revision_id, "field_updates": {"pace": "relaxed"}},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "stale-intent-edit-new"},
         )
 
@@ -392,16 +433,125 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(stale_edit.status_code, 409)
         self.assertEqual(stale_edit.json()["error"]["code"], "stale_intent_revision")
 
+    def test_concurrent_intent_edits_cannot_create_sibling_revisions(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        initial = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": None, "structured_overrides": {"city": "上海", "trip_days": 2}},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "concurrent-initial"},
+        )
+        self.assertEqual(initial.status_code, 201, initial.text)
+        parent_id = initial.json()["revision"]["id"]
+
+        def edit_city(city: tuple[str, str]) -> tuple[int, dict]:
+            city_name, key_suffix = city
+            response = client.post(
+                f"/trips/{trip_id}/intent-envelope/{parent_id}/edit",
+                json={"base_revision_id": base_revision_id, "base_intent_revision_id": parent_id, "field_updates": {"city": city_name, "trip_days": 2}},
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": f"concurrent-edit-{key_suffix}"},
+            )
+            return response.status_code, response.json()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(edit_city, [("杭州", "hz"), ("苏州", "sz")]))
+
+        status_codes = sorted(status for status, _body in results)
+        history = client.get(f"/trips/{trip_id}/intent-envelope")
+        self.assertEqual(status_codes, [201, 409])
+        self.assertEqual([item["revision_number"] for item in history.json()["revisions"]], [2, 1])
+
+    def test_two_sqlite_connections_allocate_only_one_latest_intent_child(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        initial = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": None, "structured_overrides": {"city": "上海", "trip_days": 2}},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "two-conn-initial"},
+        )
+        self.assertEqual(initial.status_code, 201, initial.text)
+        parent_id = initial.json()["revision"]["id"]
+        factory = SQLiteConnectionFactory(self.store_path)
+        repos = [SQLiteTripRepository(factory.connect), SQLiteTripRepository(factory.connect)]
+        barrier = threading.Barrier(2)
+
+        def append_child(index: int) -> tuple[str, int | str]:
+            draft = intent_revision_record_from_response(
+                initial.json(),
+                trip_id=trip_id,
+                base_revision_id=base_revision_id,
+                record_id=f"intent_draft_{index}",
+                revision_number=0,
+                parent_intent_revision_id=parent_id,
+            )
+            barrier.wait()
+            try:
+                created = repos[index].create_intent_revision(
+                    revision=draft,
+                    request_digest=f"two-conn-request-{index}",
+                    idempotency_key_hash=f"two-conn-key-{index}",
+                    expected_parent_intent_revision_id=parent_id,
+                    expected_base_revision_id=base_revision_id,
+                    require_latest_parent=True,
+                )
+            except StaleIntentRevisionError as exc:
+                return "stale", str(exc.context["current_intent_revision_id"])
+            return "created", created.revision.revision_number
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(append_child, [0, 1]))
+
+        self.assertEqual(sorted(outcome for outcome, _detail in outcomes), ["created", "stale"])
+        self.assertEqual([detail for outcome, detail in outcomes if outcome == "created"], [2])
+        history = client.get(f"/trips/{trip_id}/intent-envelope")
+        self.assertEqual([item["revision_number"] for item in history.json()["revisions"]], [2, 1])
+
+    def test_intent_idempotency_replay_precedes_trip_base_stale_check(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        payload = {
+            "base_revision_id": base_revision_id,
+            "base_intent_revision_id": None,
+            "structured_overrides": {"city": "上海", "trip_days": 2},
+        }
+        created = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json=payload,
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "replay-before-trip-stale"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        repository = get_trip_repository()
+        trip = repository.get_trip(trip_id)
+        repository.create_revision(
+            trip_id=trip_id,
+            capability_hash=trip.capability_hash,
+            base_revision_id=base_revision_id,
+            itinerary_snapshot=simple_itinerary().model_dump(mode="json"),
+            source_type="manual_edit",
+            operation_type="test_advance_trip_revision",
+            operation_summary="advance trip revision for stale replay proof",
+            operation_metadata={"test": "intent_idempotency_precedes_trip_stale"},
+            request_digest="advance-trip-revision",
+            idempotency_key_hash="advance-trip-revision-key",
+        )
+
+        replay = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json=payload,
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "replay-before-trip-stale"},
+        )
+
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        self.assertEqual(replay.json()["revision"]["id"], created.json()["revision"]["id"])
+
     def test_repository_compare_and_append_rejects_stale_parent_inside_transaction(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()
         initial = client.post(
             f"/trips/{trip_id}/intent-envelope/compile",
-            json={"base_revision_id": base_revision_id, "structured_overrides": {"city": "上海", "trip_days": 2}},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": None, "structured_overrides": {"city": "上海", "trip_days": 2}},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "atomic-initial"},
         )
         edited = client.post(
             f"/trips/{trip_id}/intent-envelope/{initial.json()['revision']['id']}/edit",
-            json={"base_revision_id": base_revision_id, "field_updates": {"city": "杭州", "trip_days": 2}},
+            json={"base_revision_id": base_revision_id, "base_intent_revision_id": initial.json()["revision"]["id"], "field_updates": {"city": "杭州", "trip_days": 2}},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "atomic-edit"},
         )
         repository = get_trip_repository()
@@ -441,6 +591,7 @@ class TripIntentContractTests(unittest.TestCase):
             f"/trips/{trip_id}/intent-envelope/compile",
             json={
                 "base_revision_id": base_revision_id,
+                "base_intent_revision_id": None,
                 "structured_overrides": {
                     "city": "上海",
                     "trip_days": 1,
@@ -479,6 +630,7 @@ class TripIntentContractTests(unittest.TestCase):
                 f"/trips/{trip_id}/intent-envelope/compile",
                 json={
                     "base_revision_id": base_revision_id,
+                    "base_intent_revision_id": None,
                     "direct_user_text": "城市：上海\n天数：2",
                     "structured_overrides": {"city": "上海"},
                     "use_llm_proposal_adapter": True,
@@ -489,10 +641,33 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         envelope = response.json()["envelope"]
         self.assertTrue(envelope["validation_report"]["llm_proposal_validated"])
-        self.assertEqual(selected_field(envelope, "trip.city")["value"], "上海")
+        self.assertEqual(selected_field(envelope, "trip.city")["value"]["city"], "上海")
         self.assertTrue(
             any(field["status"] == "shadowed" and field["source_refs"][0]["source_type"] == "llm_proposal" for field in envelope["fields"])
         )
+
+    def test_llm_adapter_timeout_is_recorded_without_trusting_parser_output(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        with patch(
+            "app.trips.service.build_untrusted_llm_intent_proposal",
+            side_effect=TimeoutError(),
+        ):
+            response = client.post(
+                f"/trips/{trip_id}/intent-envelope/compile",
+                json={
+                    "base_revision_id": base_revision_id,
+                    "base_intent_revision_id": None,
+                    "direct_user_text": "城市：上海\n天数：2",
+                    "use_llm_proposal_adapter": True,
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "llm-adapter-timeout"},
+            )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        envelope = response.json()["envelope"]
+        self.assertEqual(envelope["parser_result"]["status"], "timeout")
+        self.assertIn("llm_adapter_timeout", envelope["parser_result"]["warnings"])
+        self.assertFalse(envelope["validation_report"]["llm_proposal_validated"])
 
     def test_sqlite_intent_revisions_are_immutable(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()
@@ -500,6 +675,7 @@ class TripIntentContractTests(unittest.TestCase):
             f"/trips/{trip_id}/intent-envelope/compile",
             json={
                 "base_revision_id": base_revision_id,
+                "base_intent_revision_id": None,
                 "structured_overrides": {"city": "上海", "trip_days": 2},
             },
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "immutable-intent"},
@@ -534,6 +710,35 @@ def create_saved_trip() -> tuple[TestClient, str, str]:
     assert response.status_code == 201, response.text
     body = response.json()
     return client, body["trip"]["id"], body["current_revision"]["id"]
+
+
+def intent_revision_record_from_response(
+    body: dict,
+    *,
+    trip_id: str,
+    base_revision_id: str,
+    record_id: str,
+    revision_number: int,
+    parent_intent_revision_id: str | None,
+) -> TripIntentRevisionRecord:
+    envelope = dict(body["envelope"])
+    envelope["id"] = record_id
+    envelope["revision_number"] = revision_number
+    envelope["parent_intent_revision_id"] = parent_intent_revision_id
+    return TripIntentRevisionRecord(
+        id=record_id,
+        trip_id=trip_id,
+        revision_number=revision_number,
+        parent_intent_revision_id=parent_intent_revision_id,
+        base_trip_revision_id=base_revision_id,
+        envelope_schema_version=envelope["schema_version"],
+        envelope=envelope,
+        content_digest=envelope["content_digest"],
+        compiler_version=envelope["compiler_version"],
+        source_digest=envelope["source_digest"],
+        validation_report=envelope["validation_report"],
+        created_at=envelope["created_at"],
+    )
 
 
 def create_reviewed_candidate(client: TestClient, trip_id: str, text: str) -> dict:

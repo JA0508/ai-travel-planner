@@ -79,4 +79,4 @@ jobs:
         run: python -m tools.run_import_evaluation --ci
 
       - name: Intent compiler evaluation
-        run: python -m tools.run_intent_compiler_evaluation --json
+        run: python -m tools.run_intent_compiler_evaluation --ci --json

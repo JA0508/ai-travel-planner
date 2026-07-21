@@ -4,14 +4,20 @@ import copy
 from datetime import datetime, timezone
 from typing import Any
 
-from app.trips.access import generate_operation_id, generate_revision_id, generate_trip_id
+from app.trips.access import generate_intent_revision_id, generate_operation_id, generate_revision_id, generate_trip_id
 from app.trips.digests import (
     TRIP_SNAPSHOT_SCHEMA_VERSION,
     itinerary_content_digest,
     lineage_digest,
     mutation_proposal_digest,
 )
-from app.trips.intent_contracts import CreateIntentRevisionResult, TripIntentRevisionRecord
+from app.trips.intent_contracts import (
+    CreateIntentRevisionResult,
+    IntentCompileRunDraft,
+    SourceLinkedTripIntentEnvelope,
+    TripIntentRevisionRecord,
+    finalize_intent_envelope_for_revision,
+)
 from app.trips.errors import (
     CandidateNotFoundError,
     IdempotencyConflictError,
@@ -58,6 +64,7 @@ class MemoryTripRepository:
         self.candidate_idempotency_records: dict[tuple[str, str], tuple[str, str, str | None]] = {}
         self.intent_revisions: dict[str, TripIntentRevisionRecord] = {}
         self.intent_idempotency_records: dict[tuple[str, str], tuple[str, str]] = {}
+        self.intent_compile_runs: dict[str, IntentCompileRunDraft] = {}
 
     def health_check(self) -> dict[str, Any]:
         return {
@@ -169,12 +176,15 @@ class MemoryTripRepository:
         self,
         *,
         revision: TripIntentRevisionRecord,
+        compile_run: IntentCompileRunDraft | None = None,
+        operation: str = "compile_trip_intent_envelope",
+        restore_source_revision_id: str | None = None,
         request_digest: str,
         idempotency_key_hash: str,
         expected_parent_intent_revision_id: str | None = None,
         require_latest_parent: bool = False,
+        expected_base_revision_id: str | None = None,
     ) -> CreateIntentRevisionResult:
-        self.get_revision(revision.trip_id, revision.base_trip_revision_id)
         key = (revision.trip_id, idempotency_key_hash)
         existing = self.intent_idempotency_records.get(key)
         if existing is not None:
@@ -185,8 +195,16 @@ class MemoryTripRepository:
                 revision=copy.deepcopy(self.intent_revisions[revision_id]),
                 idempotent_replay=True,
             )
+        trip = self.get_trip(revision.trip_id)
+        if expected_base_revision_id is not None and trip.current_revision_id != expected_base_revision_id:
+            raise StaleBaseRevisionError(
+                trip_id=revision.trip_id,
+                provided_base_revision_id=expected_base_revision_id,
+                current_revision_id=trip.current_revision_id,
+            )
+        self.get_revision(revision.trip_id, revision.base_trip_revision_id)
+        latest = self.get_latest_intent_revision(trip_id=revision.trip_id)
         if require_latest_parent:
-            latest = self.get_latest_intent_revision(trip_id=revision.trip_id)
             latest_id = latest.id if latest is not None else None
             if latest_id != expected_parent_intent_revision_id:
                 raise StaleIntentRevisionError(
@@ -194,9 +212,39 @@ class MemoryTripRepository:
                     provided_intent_revision_id=expected_parent_intent_revision_id or "",
                     current_intent_revision_id=latest_id or "",
                 )
-        self.intent_revisions[revision.id] = copy.deepcopy(revision)
-        self.intent_idempotency_records[key] = (request_digest, revision.id)
-        return CreateIntentRevisionResult(revision=copy.deepcopy(revision))
+        final_revision_number = 1 if latest is None else latest.revision_number + 1
+        final_revision_id = generate_intent_revision_id()
+        parent_lineage_digest = latest.envelope.get("lineage_digest") if latest and isinstance(latest.envelope, dict) else None
+        finalized_envelope = finalize_intent_envelope_for_revision(
+            SourceLinkedTripIntentEnvelope.model_validate(revision.envelope),
+            revision_id=final_revision_id,
+            revision_number=final_revision_number,
+            base_trip_revision_id=revision.base_trip_revision_id,
+            parent_intent_revision_id=expected_parent_intent_revision_id,
+            parent_lineage_digest=parent_lineage_digest if isinstance(parent_lineage_digest, str) else None,
+            operation=operation,
+            restore_source_revision_id=restore_source_revision_id,
+            created_at=revision.created_at,
+        )
+        final_revision = TripIntentRevisionRecord(
+            id=final_revision_id,
+            trip_id=revision.trip_id,
+            revision_number=final_revision_number,
+            parent_intent_revision_id=expected_parent_intent_revision_id,
+            base_trip_revision_id=revision.base_trip_revision_id,
+            envelope_schema_version=revision.envelope_schema_version,
+            envelope=finalized_envelope.model_dump(mode="json"),
+            content_digest=finalized_envelope.content_digest,
+            compiler_version=revision.compiler_version,
+            source_digest=revision.source_digest,
+            validation_report=finalized_envelope.validation_report,
+            created_at=revision.created_at,
+        )
+        self.intent_revisions[final_revision.id] = copy.deepcopy(final_revision)
+        if compile_run is not None:
+            self.intent_compile_runs[compile_run.id] = copy.deepcopy(compile_run)
+        self.intent_idempotency_records[key] = (request_digest, final_revision.id)
+        return CreateIntentRevisionResult(revision=copy.deepcopy(final_revision))
 
     def get_intent_revision_by_idempotency(
         self,

@@ -2,7 +2,7 @@
 
 ## Current phase
 
-F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure.
+F-004a.3 Final Intent Contract Closure.
 
 ## Recently completed and merged
 
@@ -11,6 +11,8 @@ F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure.
 - Product Direction and Roadmap Reconciliation
 - F-004a Source-Linked Intent Contract Foundation
 - F-004a.1 Typed Intent, Provenance and Concurrency Hardening
+- F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure
+- F-004a.3 Domain-Native Schema, Verified Provenance and Atomic Lineage
 
 The completed document extraction path now supports:
 
@@ -52,6 +54,8 @@ The completed document extraction path now supports:
 - F-002d.1 Page-Level Extraction, Reading Order and Visual Evidence Hardening
 - F-004a Source-Linked Intent Contract Foundation
 - F-004a.1 Typed Intent, Provenance and Concurrency Hardening
+- F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure
+- F-004a.3 Final Intent Contract Closure
 
 ## Known technical debt
 
@@ -61,18 +65,31 @@ The completed document extraction path now supports:
 - Local OCR behavior is intentionally capability-reported and may vary by
   installed language packs and rendering dependencies.
 - Import Review can produce reviewed mentions and TripCandidates, and F-004a now
-  compiles them into immutable source-linked intent revisions.
-- F-004a.2 is closing semantic intent contracts with field-level semantic
-  typing, structured provenance graphs, semantic digests, typed assumptions,
-  explicit readiness policy, intent revision restore, and transaction-level
-  compare-and-append. It still does not create TripRevisions or execute
-  itinerary mutations.
+  compiles them into immutable source-linked intent revisions with domain-native
+  values, explicit parser status, source authority, semantic and lineage digests,
+  provenance graph nodes, typed assumptions, clarification lifecycle, edit,
+  restore, and transaction-level latest-intent checks.
+- F-004a intentionally stops at planner-ready intent preview. It still does not
+  create TripRevisions, execute itinerary mutations, call providers, run the
+  scheduler, or auto-admit candidates into an itinerary.
+- Provenance graph navigation currently exposes source/candidate/artifact/mention
+  nodes from persisted evidence references. It is sufficient for F-004b handoff
+  but is not yet a full Planner Trace review workspace.
+- The intent compiler evaluation corpus now has 58 fixtures and CI gates fixture
+  counts plus deterministic invariants across semantic, provenance, parser,
+  revision, concurrency, and clarification categories. It should still expand
+  when F-004b introduces planner handoff behavior.
+- F-004a.3 records privacy-safe compile run metadata for parser/compiler policy,
+  readiness policy, semantic digest, lineage digest, and idempotency lineage. It
+  intentionally does not persist raw prompts, raw LLM responses, private source
+  text, or planner traces.
 
 ## Current next product objective
 
-1. F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure
+1. F-004b Planner Intent Handoff
 
-The current product step is to harden reviewed source facts into:
+The next product step is to hand the confirmed `TripIntentEnvelope` to planner
+input preparation without weakening the contract boundary:
 
 - hard constraints
 - soft preferences
@@ -80,12 +97,12 @@ The current product step is to harden reviewed source facts into:
 - unresolved questions
 - planner-ready intent preview
 - structured source evidence summaries and provenance graph edges
-- generic clarification answers
-- concurrency-safe intent revision edits and restore
-- stable semantic digest for equivalent intent content
+- confirmed domain-native fields
+- semantic digest and lineage ownership
 
-This phase must remain a confirmation and contract boundary until the draft PR is
-merged. Planner execution belongs to F-004b or a later explicitly scoped phase.
+F-004b may prepare planner handoff inputs from the confirmed intent contract. It
+must not let LLM explanations override user edits, reviewed evidence, fixed
+events, availability windows, or deterministic readiness policy.
 
 ## Supporting follow-up
 

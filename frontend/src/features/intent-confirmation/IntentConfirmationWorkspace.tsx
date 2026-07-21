@@ -13,6 +13,8 @@ import {
 } from "./intentApi";
 import {
   buildIntentCompileIdempotencyKey,
+  compareIntentContracts,
+  formatIntentDomainValue,
   summarizeIntentEnvelope,
 } from "./intentConfirmationModel";
 import type { SourceLinkedTripIntentEnvelope, TripIntentRevisionMetadata } from "./intentTypes";
@@ -31,9 +33,11 @@ type IntentEditForm = {
 
 export function IntentConfirmationWorkspace({ tripPersistence, directUserText }: Props) {
   const [envelope, setEnvelope] = useState<SourceLinkedTripIntentEnvelope | null>(null);
+  const [latestEnvelope, setLatestEnvelope] = useState<SourceLinkedTripIntentEnvelope | null>(null);
   const [history, setHistory] = useState<TripIntentRevisionMetadata[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [clarificationAnswer, setClarificationAnswer] = useState("");
+  const [selectedEvidenceNodeId, setSelectedEvidenceNodeId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<IntentEditForm>({
     city: "",
     tripDays: "",
@@ -42,11 +46,14 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
   });
   const summary = useMemo(() => summarizeIntentEnvelope(envelope), [envelope]);
   const saved = tripPersistence.status === "saved" ? tripPersistence : null;
+  const latestIntentRevisionId = history[0]?.id ?? latestEnvelope?.id ?? null;
+  const loadedLatest = !envelope || !latestIntentRevisionId || envelope.id === latestIntentRevisionId;
 
   useEffect(() => {
     if (!saved) {
       setHistory([]);
       setEnvelope(null);
+      setLatestEnvelope(null);
       return;
     }
     void refreshHistory(saved.tripId);
@@ -56,6 +63,15 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     const result = await listTripIntentEnvelopes(tripId);
     if (result.ok) {
       setHistory(result.data.revisions);
+      const latestRevisionId = result.data.revisions[0]?.id;
+      if (latestRevisionId) {
+        const latest = await getTripIntentEnvelope(tripId, latestRevisionId);
+        if (latest.ok) {
+          setLatestEnvelope(latest.data.envelope);
+        }
+      } else {
+        setLatestEnvelope(null);
+      }
     }
   }
 
@@ -84,6 +100,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       saved.tripId,
       {
         base_revision_id: saved.currentRevisionId,
+        base_intent_revision_id: history[0]?.id ?? null,
         direct_user_text: directUserText,
         use_llm_proposal_adapter: true,
       },
@@ -94,6 +111,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       return;
     }
     setEnvelope(result.data.envelope);
+    setLatestEnvelope(result.data.envelope);
     setStatus(result.data.idempotent_replay ? "Loaded existing compiled contract." : "Compiled immutable intent contract.");
     await refreshHistory(saved.tripId);
   }
@@ -102,11 +120,15 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     if (!saved || !envelope || !clarificationAnswer.trim()) {
       return;
     }
+    if (!loadedLatest) {
+      setStatus("Load the latest intent revision before answering a clarification.");
+      return;
+    }
     const result = await answerIntentClarification(
       saved.tripId,
       envelope.id,
       questionId,
-      { base_revision_id: saved.currentRevisionId, answer: clarificationAnswer.trim() },
+      { base_revision_id: saved.currentRevisionId, base_intent_revision_id: envelope.id, answer: clarificationAnswer.trim() },
       `intent-clarify:${envelope.id}:${questionId}:${saved.currentRevisionId}`,
     );
     if (!result.ok) {
@@ -114,6 +136,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       return;
     }
     setEnvelope(result.data.envelope);
+    setLatestEnvelope(result.data.envelope);
     setClarificationAnswer("");
     setStatus("Saved clarification as a new intent revision.");
     await refreshHistory(saved.tripId);
@@ -136,6 +159,10 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     if (!saved || !envelope) {
       return;
     }
+    if (!loadedLatest) {
+      setStatus("Load the latest intent revision before editing the contract.");
+      return;
+    }
     const tripDays = editForm.tripDays.trim() ? Number(editForm.tripDays.trim()) : null;
     if (tripDays !== null && (!Number.isInteger(tripDays) || tripDays < 1)) {
       setStatus("Trip days must be a positive whole number.");
@@ -150,6 +177,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       envelope.id,
       {
         base_revision_id: saved.currentRevisionId,
+        base_intent_revision_id: envelope.id,
         field_updates: {
           city: editForm.city.trim() || null,
           trip_days: tripDays,
@@ -164,6 +192,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       return;
     }
     setEnvelope(result.data.envelope);
+    setLatestEnvelope(result.data.envelope);
     setStatus("Saved edit as a new intent revision.");
     await refreshHistory(saved.tripId);
   }
@@ -172,10 +201,14 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     if (!saved) {
       return;
     }
+    if (!latestIntentRevisionId) {
+      setStatus("Compile an intent contract before restoring a prior revision.");
+      return;
+    }
     const result = await restoreTripIntentEnvelope(
       saved.tripId,
       intentRevisionId,
-      { base_revision_id: saved.currentRevisionId },
+      { base_revision_id: saved.currentRevisionId, base_intent_revision_id: latestIntentRevisionId },
       `intent-restore:${intentRevisionId}:${saved.currentRevisionId}`,
     );
     if (!result.ok) {
@@ -183,6 +216,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       return;
     }
     setEnvelope(result.data.envelope);
+    setLatestEnvelope(result.data.envelope);
     setStatus(`Restored intent revision as revision ${result.data.revision.revision_number}.`);
     await refreshHistory(saved.tripId);
   }
@@ -208,14 +242,19 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       {envelope ? (
         <div className="intent-confirmation-workspace__body">
           <TypedIntentPreview envelope={envelope} />
-          <ReadinessEvidence envelope={envelope} />
+          <ReadinessEvidence envelope={envelope} latestRevision={history[0] ?? null} latestEnvelope={latestEnvelope} />
           <IntentEditPanel
             form={editForm}
             onChange={setEditForm}
             onSave={() => void handleEditIntent()}
+            disabled={!loadedLatest}
           />
           <FieldList title="Selected fields" fields={summary.selectedFields} />
-          <ProvenanceList envelope={envelope} />
+          <ProvenanceList
+            envelope={envelope}
+            selectedNodeId={selectedEvidenceNodeId}
+            onSelectNode={setSelectedEvidenceNodeId}
+          />
           {envelope.conflicts.length ? (
             <div className="intent-confirmation-workspace__panel">
               <strong>Conflicts</strong>
@@ -238,7 +277,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
                   onChange={(event) => setClarificationAnswer(event.target.value)}
                   placeholder="Answer clarification"
                 />
-                <button type="button" onClick={() => void handleAnswerClarification(question.question_id)}>
+                <button type="button" onClick={() => void handleAnswerClarification(question.question_id)} disabled={!loadedLatest}>
                   Save answer
                 </button>
               </div>
@@ -401,10 +440,12 @@ function IntentEditPanel({
   form,
   onChange,
   onSave,
+  disabled,
 }: {
   form: IntentEditForm;
   onChange: (form: IntentEditForm) => void;
   onSave: () => void;
+  disabled: boolean;
 }) {
   return (
     <div className="intent-confirmation-workspace__panel">
@@ -412,16 +453,17 @@ function IntentEditPanel({
       <div className="intent-confirmation-workspace__edit-grid">
         <label>
           City
-          <input value={form.city} onChange={(event) => onChange({ ...form, city: event.target.value })} />
+          <input disabled={disabled} value={form.city} onChange={(event) => onChange({ ...form, city: event.target.value })} />
         </label>
         <label>
           Trip days
-          <input value={form.tripDays} onChange={(event) => onChange({ ...form, tripDays: event.target.value })} />
+          <input disabled={disabled} value={form.tripDays} onChange={(event) => onChange({ ...form, tripDays: event.target.value })} />
         </label>
         <label>
           Pace
           <select
             value={form.pace}
+            disabled={disabled}
             onChange={(event) => onChange({ ...form, pace: event.target.value as IntentEditForm["pace"] })}
           >
             <option value="">Unset</option>
@@ -434,11 +476,12 @@ function IntentEditPanel({
           Transport
           <input
             value={form.transportPreferences}
+            disabled={disabled}
             onChange={(event) => onChange({ ...form, transportPreferences: event.target.value })}
           />
         </label>
       </div>
-      <button type="button" onClick={onSave}>
+      <button type="button" onClick={onSave} disabled={disabled}>
         Save revision
       </button>
     </div>
@@ -451,7 +494,7 @@ function FieldList({ title, fields }: { title: string; fields: SourceLinkedTripI
       <strong>{title}</strong>
       {fields.map((field) => (
         <p key={field.field_id}>
-          {field.field_path}: {formatValue(field.value)} · {field.kind} · {field.semantic_type} ·{" "}
+          {field.field_path}: {formatIntentDomainValue(field.value)} · {field.kind} · {field.semantic_type} ·{" "}
           {field.source_refs[0]?.source_type}
         </p>
       ))}
@@ -466,21 +509,39 @@ function TypedIntentPreview({ envelope }: { envelope: SourceLinkedTripIntentEnve
   return (
     <div className="intent-confirmation-workspace__panel">
       <strong>Typed intent preview</strong>
-      <p>Destination: {destination ? formatValue(destination.value) : "unresolved"}</p>
-      <p>Trip days: {tripDays ? formatValue(tripDays.value) : "assumption needed"}</p>
+      <p>Destination: {destination ? formatIntentDomainValue(destination.value) : "unresolved"}</p>
+      <p>Trip days: {tripDays ? formatIntentDomainValue(tripDays.value) : "assumption needed"}</p>
       <p>Must places: {envelope.typed_intent.poi_preferences.must_candidates.length}</p>
       <p>Fixed events: {envelope.typed_intent.fixed_events.length}</p>
-      <p>Transport: {envelope.typed_intent.transport_preferences.map((item) => formatValue(item.value)).join(", ") || "none"}</p>
-      <p>Pace: {pace ? formatValue(pace.value) : "unset"}</p>
+      <p>Transport: {envelope.typed_intent.transport_preferences.map((item) => formatIntentDomainValue(item.value)).join(", ") || "none"}</p>
+      <p>Pace: {pace ? formatIntentDomainValue(pace.value) : "unset"}</p>
+      <p>Budget: {envelope.typed_intent.budget ? formatIntentDomainValue(envelope.typed_intent.budget.value) : "unset"}</p>
+      <p>Traveler needs: {envelope.typed_intent.travelers.map((item) => formatIntentDomainValue(item.value)).join(", ") || "none"}</p>
     </div>
   );
 }
 
-function ReadinessEvidence({ envelope }: { envelope: SourceLinkedTripIntentEnvelope }) {
+function ReadinessEvidence({
+  envelope,
+  latestRevision,
+  latestEnvelope,
+}: {
+  envelope: SourceLinkedTripIntentEnvelope;
+  latestRevision: TripIntentRevisionMetadata | null;
+  latestEnvelope: SourceLinkedTripIntentEnvelope | null;
+}) {
+  const loadedLatest = !latestRevision || latestRevision.id === envelope.id;
+  const semanticCompare = compareIntentContracts(latestEnvelope, envelope);
+  const semanticCompareLabel = semanticCompare.identical
+    ? "semantic fields match latest"
+    : `${semanticCompare.changed.length} changed · ${semanticCompare.added.length} added · ${semanticCompare.removed.length} removed`;
   return (
     <div className="intent-confirmation-workspace__panel">
       <strong>Contract evidence</strong>
       <p>Semantic digest: {envelope.semantic_digest?.slice(0, 16) ?? "missing"}</p>
+      <p>Lineage digest: {envelope.lineage_digest?.slice(0, 16) ?? "missing"}</p>
+      <p>Base state: {loadedLatest ? "loaded revision is latest" : "historical revision loaded"}</p>
+      <p>Semantic compare: {semanticCompareLabel}</p>
       <p>
         Parser: {envelope.parser_result.parser_name} · {envelope.parser_result.status} ·{" "}
         {envelope.parser_result.extracted_field_paths.length} fields
@@ -496,10 +557,19 @@ function ReadinessEvidence({ envelope }: { envelope: SourceLinkedTripIntentEnvel
   );
 }
 
-function ProvenanceList({ envelope }: { envelope: SourceLinkedTripIntentEnvelope }) {
+function ProvenanceList({
+  envelope,
+  selectedNodeId,
+  onSelectNode,
+}: {
+  envelope: SourceLinkedTripIntentEnvelope;
+  selectedNodeId: string | null;
+  onSelectNode: (nodeId: string) => void;
+}) {
   if (!envelope.provenance_summary.length) {
     return null;
   }
+  const selectedNode = envelope.provenance_graph.nodes.find((node) => node.node_id === selectedNodeId);
   return (
     <div className="intent-confirmation-workspace__panel">
       <strong>Source evidence</strong>
@@ -509,20 +579,28 @@ function ProvenanceList({ envelope }: { envelope: SourceLinkedTripIntentEnvelope
           {item.evidence_refs.length || "none"}
         </p>
       ))}
+      <div className="intent-confirmation-workspace__evidence-nodes">
+        {envelope.provenance_graph.nodes
+          .filter((node) => node.node_type !== "field" && node.node_type !== "envelope_revision")
+          .slice(0, 12)
+          .map((node) => (
+            <button type="button" key={node.node_id} onClick={() => onSelectNode(node.node_id)}>
+              {node.node_type}
+            </button>
+          ))}
+      </div>
+      {selectedNode ? (
+        <p>
+          {selectedNode.node_type}: {selectedNode.label} ·{" "}
+          {selectedNode.artifact_id ? `artifact ${selectedNode.artifact_id}` : selectedNode.source_id ?? "no source id"}
+          {selectedNode.mention_id ? ` · mention ${selectedNode.mention_id}` : ""}
+          {selectedNode.page_number ? ` · page ${selectedNode.page_number}` : ""}
+        </p>
+      ) : null}
     </div>
   );
 }
 
 function isPace(value: string | null): value is IntentEditForm["pace"] {
   return value === "relaxed" || value === "balanced" || value === "intensive";
-}
-
-function formatValue(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (value == null) {
-    return "empty";
-  }
-  return JSON.stringify(value);
 }

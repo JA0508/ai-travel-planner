@@ -13,7 +13,7 @@ from .models import (
     TripRecord,
     TripRevisionRecord,
 )
-from .intent_contracts import CreateIntentRevisionResult, TripIntentRevisionRecord
+from .intent_contracts import CreateIntentRevisionResult, IntentCompileRunDraft, TripIntentRevisionRecord
 
 
 class TripRepository(Protocol):
@@ -54,10 +54,14 @@ class TripRepository(Protocol):
         self,
         *,
         revision: TripIntentRevisionRecord,
+        compile_run: IntentCompileRunDraft | None = None,
+        operation: str = "compile_trip_intent_envelope",
+        restore_source_revision_id: str | None = None,
         request_digest: str,
         idempotency_key_hash: str,
         expected_parent_intent_revision_id: str | None = None,
         require_latest_parent: bool = False,
+        expected_base_revision_id: str | None = None,
     ) -> CreateIntentRevisionResult:
         ...
 
