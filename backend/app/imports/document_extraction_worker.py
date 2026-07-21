@@ -594,6 +594,7 @@ def ocr_image(
         executable=executable,
         path=path,
         languages=languages,
+        page_segmentation_mode=6,
         timeout=timeout,
         page_number=page_number,
         source_kind=source_kind,
@@ -609,6 +610,7 @@ def ocr_image(
                     executable=executable,
                     path=path,
                     languages=language,
+                    page_segmentation_mode=6,
                     timeout=timeout,
                     page_number=page_number,
                     source_kind=source_kind,
@@ -616,6 +618,22 @@ def ocr_image(
                     page_height=page_height,
                 ),
             )
+            if language.startswith("chi"):
+                for page_segmentation_mode in (7, 11):
+                    units = merge_ocr_units(
+                        units,
+                        run_tesseract_units(
+                            executable=executable,
+                            path=path,
+                            languages=language,
+                            page_segmentation_mode=page_segmentation_mode,
+                            timeout=timeout,
+                            page_number=page_number,
+                            source_kind=source_kind,
+                            page_width=page_width,
+                            page_height=page_height,
+                        ),
+                    )
     return sorted(units, key=lambda unit: (unit.page_number, unit.block_index, unit.line_index, unit.token_index or 0, unit.bbox["x"], unit.text))
 
 
@@ -624,6 +642,7 @@ def run_tesseract_units(
     executable: str,
     path: Path,
     languages: str,
+    page_segmentation_mode: int,
     timeout: float,
     page_number: int,
     source_kind: str,
@@ -631,7 +650,7 @@ def run_tesseract_units(
     page_height: float | None,
 ) -> list[TextUnit]:
     process = subprocess.run(
-        [executable, str(path), "stdout", "-l", languages, "--psm", "6", "tsv"],
+        [executable, str(path), "stdout", "-l", languages, "--psm", str(page_segmentation_mode), "tsv"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
