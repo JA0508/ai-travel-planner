@@ -1,6 +1,10 @@
 import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
-import type { CompileTripIntentResponse, TripIntentRevisionListResponse } from "./intentTypes";
+import type {
+  CompileTripIntentResponse,
+  TripIntentRevisionDetailResponse,
+  TripIntentRevisionListResponse,
+} from "./intentTypes";
 
 export function compileTripIntentEnvelope(
   tripId: string,
@@ -24,6 +28,51 @@ export function listTripIntentEnvelopes(tripId: string) {
   return getTripJson<TripIntentRevisionListResponse>(
     TRIP_API_ENDPOINTS.listTripIntentEnvelopes(tripId),
     "刷新意图合同历史失败",
+  );
+}
+
+export function getTripIntentEnvelope(tripId: string, intentRevisionId: string) {
+  return getTripJson<TripIntentRevisionDetailResponse>(
+    TRIP_API_ENDPOINTS.getTripIntentEnvelope(tripId, intentRevisionId),
+    "读取意图合同详情失败",
+  );
+}
+
+export function editTripIntentEnvelope(
+  tripId: string,
+  intentRevisionId: string,
+  payload: {
+    base_revision_id: string;
+    field_updates: {
+      city?: string | null;
+      trip_days?: number | null;
+      pace?: "relaxed" | "balanced" | "intensive" | null;
+      transport_preferences?: string[];
+    };
+  },
+  idempotencyKey: string,
+) {
+  return postTripJson<CompileTripIntentResponse>(
+    TRIP_API_ENDPOINTS.editTripIntentEnvelope(tripId, intentRevisionId),
+    payload,
+    "保存意图合同修改失败",
+    undefined,
+    { headers: { "X-Idempotency-Key": idempotencyKey } },
+  );
+}
+
+export function restoreTripIntentEnvelope(
+  tripId: string,
+  intentRevisionId: string,
+  payload: { base_revision_id: string },
+  idempotencyKey: string,
+) {
+  return postTripJson<CompileTripIntentResponse>(
+    TRIP_API_ENDPOINTS.restoreTripIntentEnvelope(tripId, intentRevisionId),
+    payload,
+    "恢复意图合同版本失败",
+    undefined,
+    { headers: { "X-Idempotency-Key": idempotencyKey } },
   );
 }
 

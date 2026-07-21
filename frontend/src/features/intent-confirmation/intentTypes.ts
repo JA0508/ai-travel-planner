@@ -8,6 +8,7 @@ export type IntentSourceRef = {
   label: string;
   priority: number;
   confirmed: boolean;
+  authority: string;
   evidence_digest: string;
   evidence_refs: string[];
 };
@@ -16,6 +17,8 @@ export type TypedIntentValue = {
   field_path: string;
   field_id: string | null;
   value: unknown;
+  semantic_type: string;
+  semantic_value: Record<string, unknown>;
   kind: "hard" | "soft" | "assumption";
   confidence: number;
   confirmed_by_user: boolean;
@@ -40,7 +43,20 @@ export type TypedTripIntent = {
   budget: TypedIntentValue | null;
   travelers: TypedIntentValue[];
   assumptions: string[];
+  typed_assumptions: IntentAssumption[];
   unresolved_questions: IntentClarification[];
+};
+
+export type IntentAssumption = {
+  assumption_id: string;
+  field_path: string;
+  assumption_type: "missing_value" | "empty_reviewed_candidate_set" | "carried_forward_assumption";
+  value: unknown;
+  has_assumed_value: boolean;
+  blocks_planner_ready: boolean;
+  reason_code: string;
+  explanation: string;
+  source_refs: IntentSourceRef[];
 };
 
 export type IntentProvenanceSummary = {
@@ -57,6 +73,8 @@ export type IntentField = {
   field_id: string;
   field_path: string;
   value: unknown;
+  semantic_type: string;
+  semantic_value: Record<string, unknown>;
   kind: "hard" | "soft" | "assumption";
   confidence: number;
   source_refs: IntentSourceRef[];
@@ -90,6 +108,42 @@ export type IntentClarification = {
   options: unknown[];
 };
 
+export type IntentParserResult = {
+  parser_name: string;
+  parser_version: string;
+  status: "not_run" | "parsed" | "validated";
+  input_digests: string[];
+  extracted_field_paths: string[];
+  warnings: string[];
+};
+
+export type IntentProvenanceGraph = {
+  nodes: Array<{
+    node_id: string;
+    node_type: string;
+    label: string;
+    field_path: string | null;
+    source_type: string | null;
+    source_id: string | null;
+    authority: string;
+    confirmed: boolean;
+    digest: string | null;
+  }>;
+  edges: Array<{
+    from_node_id: string;
+    to_node_id: string;
+    relation: string;
+  }>;
+};
+
+export type IntentReadinessPolicy = {
+  policy_version: string;
+  status: IntentPlannerReadyStatus;
+  blocking_reason_codes: string[];
+  allowed_assumption_ids: string[];
+  requires_user_confirmation: boolean;
+};
+
 export type SourceLinkedTripIntentEnvelope = {
   id: string;
   revision_number: number;
@@ -99,10 +153,14 @@ export type SourceLinkedTripIntentEnvelope = {
   fields: IntentField[];
   conflicts: IntentConflict[];
   assumptions: string[];
+  typed_assumptions: IntentAssumption[];
   clarification_queue: IntentClarification[];
+  parser_result: IntentParserResult;
   typed_intent: TypedTripIntent;
   provenance_summary: IntentProvenanceSummary[];
+  provenance_graph: IntentProvenanceGraph;
   planner_ready_status: IntentPlannerReadyStatus;
+  readiness_policy: IntentReadinessPolicy | null;
   planner_ready_intent: {
     city: string | null;
     trip_days: number | null;
@@ -115,6 +173,7 @@ export type SourceLinkedTripIntentEnvelope = {
   };
   validation_report: Record<string, unknown>;
   source_digest: string;
+  semantic_digest: string | null;
   content_digest: string;
   created_at: string;
 };
@@ -136,6 +195,11 @@ export type CompileTripIntentResponse = {
   envelope: SourceLinkedTripIntentEnvelope;
   revision: TripIntentRevisionMetadata;
   idempotent_replay: boolean;
+};
+
+export type TripIntentRevisionDetailResponse = {
+  envelope: SourceLinkedTripIntentEnvelope;
+  revision: TripIntentRevisionMetadata;
 };
 
 export type TripIntentRevisionListResponse = {

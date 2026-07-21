@@ -30,6 +30,7 @@ from app.trips.errors import (
     ProposalIntegrityViolationError,
     RevisionNotFoundError,
     StaleBaseRevisionError,
+    StaleIntentRevisionError,
     StaleMutationProposalError,
     TripAccessDeniedError,
     TripNotFoundError,
@@ -198,6 +199,8 @@ class SQLiteTripRepository:
         revision: TripIntentRevisionRecord,
         request_digest: str,
         idempotency_key_hash: str,
+        expected_parent_intent_revision_id: str | None = None,
+        require_latest_parent: bool = False,
     ) -> CreateIntentRevisionResult:
         with self._transaction() as connection:
             base_row = connection.execute(
@@ -226,6 +229,24 @@ class SQLiteTripRepository:
                     revision=stored_revision,
                     idempotent_replay=True,
                 )
+
+            if require_latest_parent:
+                latest_row = connection.execute(
+                    """
+                    SELECT id FROM trip_intent_revisions
+                    WHERE trip_id = ?
+                    ORDER BY revision_number DESC, created_at DESC
+                    LIMIT 1
+                    """,
+                    (revision.trip_id,),
+                ).fetchone()
+                latest_id = latest_row["id"] if latest_row is not None else None
+                if latest_id != expected_parent_intent_revision_id:
+                    raise StaleIntentRevisionError(
+                        trip_id=revision.trip_id,
+                        provided_intent_revision_id=expected_parent_intent_revision_id or "",
+                        current_intent_revision_id=latest_id or "",
+                    )
 
             self._insert_intent_revision(connection, revision)
             connection.execute(

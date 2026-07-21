@@ -93,3 +93,7 @@ Routine implementation details should remain in code, tests, issues, or pull req
 - ADR-0008: Secure URL Import and Fetch Provenance
 - ADR-0009: Quarantine-First Binary Artifact Inspection
 - ADR-0010: Layout-Aware Document Text Extraction
+- ADR-0011: Page-Level Document Extraction Evidence
+- ADR-0012: Source-Linked Intent Contract
+- ADR-0013: Typed Intent Contract Hardening
+- ADR-0014: Semantic Intent Contract and Atomic Append

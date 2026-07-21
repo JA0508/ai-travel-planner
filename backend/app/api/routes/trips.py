@@ -37,6 +37,7 @@ from app.trips.intent_contracts import (
     CompileTripIntentRequest,
     CompileTripIntentResponse,
     EditTripIntentEnvelopeRequest,
+    RestoreTripIntentEnvelopeRequest,
     TripIntentRevisionDetailResponse,
     TripIntentRevisionListResponse,
 )
@@ -267,6 +268,33 @@ def answer_trip_intent_clarification(
             capability=get_trip_capability_from_request(request, trip_id),
             revision_id=intent_revision_id,
             question_id=question_id,
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/intent-envelope/{intent_revision_id}/restore",
+    response_model=CompileTripIntentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def restore_trip_intent_envelope(
+    trip_id: str,
+    intent_revision_id: str,
+    payload: RestoreTripIntentEnvelopeRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> CompileTripIntentResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().restore_intent_envelope(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            revision_id=intent_revision_id,
             idempotency_key=x_idempotency_key,
             payload=payload,
         )

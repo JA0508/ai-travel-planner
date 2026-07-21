@@ -23,6 +23,7 @@ from app.trips.errors import (
     ProposalIntegrityViolationError,
     RevisionNotFoundError,
     StaleBaseRevisionError,
+    StaleIntentRevisionError,
     StaleMutationProposalError,
     TripAccessDeniedError,
     TripNotFoundError,
@@ -170,6 +171,8 @@ class MemoryTripRepository:
         revision: TripIntentRevisionRecord,
         request_digest: str,
         idempotency_key_hash: str,
+        expected_parent_intent_revision_id: str | None = None,
+        require_latest_parent: bool = False,
     ) -> CreateIntentRevisionResult:
         self.get_revision(revision.trip_id, revision.base_trip_revision_id)
         key = (revision.trip_id, idempotency_key_hash)
@@ -182,6 +185,15 @@ class MemoryTripRepository:
                 revision=copy.deepcopy(self.intent_revisions[revision_id]),
                 idempotent_replay=True,
             )
+        if require_latest_parent:
+            latest = self.get_latest_intent_revision(trip_id=revision.trip_id)
+            latest_id = latest.id if latest is not None else None
+            if latest_id != expected_parent_intent_revision_id:
+                raise StaleIntentRevisionError(
+                    trip_id=revision.trip_id,
+                    provided_intent_revision_id=expected_parent_intent_revision_id or "",
+                    current_intent_revision_id=latest_id or "",
+                )
         self.intent_revisions[revision.id] = copy.deepcopy(revision)
         self.intent_idempotency_records[key] = (request_digest, revision.id)
         return CreateIntentRevisionResult(revision=copy.deepcopy(revision))

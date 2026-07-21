@@ -44,6 +44,18 @@ export const TRIP_API_ENDPOINTS = {
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/intent-envelope/compile`),
   listTripIntentEnvelopes: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/intent-envelope`),
+  getTripIntentEnvelope: (tripId: string, intentRevisionId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/intent-envelope/${encodeURIComponent(intentRevisionId)}`,
+    ),
+  editTripIntentEnvelope: (tripId: string, intentRevisionId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/intent-envelope/${encodeURIComponent(intentRevisionId)}/edit`,
+    ),
+  restoreTripIntentEnvelope: (tripId: string, intentRevisionId: string) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/intent-envelope/${encodeURIComponent(intentRevisionId)}/restore`,
+    ),
   answerTripIntentClarification: (tripId: string, intentRevisionId: string, questionId: string) =>
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/intent-envelope/${encodeURIComponent(intentRevisionId)}/clarifications/${encodeURIComponent(questionId)}/answer`,

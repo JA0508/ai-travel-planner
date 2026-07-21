@@ -918,6 +918,19 @@ LLM 输出必须通过 Pydantic/schema validation；冲突检测、日期计算�
 
 - 复用现有 parseTripIntent、parsePlanningState、tripFormSync、tripIntentPayload；把 page.tsx 中状态搬到 feature store/hook。
 
+#### 当前实现状态（F-004a.2）
+
+- 已建立 `SourceLinkedTripIntentEnvelope` 的语义字段类型、标准化
+  semantic value、source authority、parser result、typed assumptions、
+  readiness policy、provenance graph 和 semantic digest。
+- intent compile / edit / clarification / restore 均创建不可变
+  IntentRevision；edit/clarification/restore 使用事务级
+  compare-and-append 防止 stale parent 产生 sibling revisions。
+- 缺失且没有实际 assumed value 的 `trip.trip_days` 不再标记为
+  planner-ready，必须进入 clarification/readiness blocker。
+- 当前仍不调用 planner、scheduler、provider lookup，不创建 TripRevision，
+  不修改 itinerary。
+
 ### F-005 Explainable Plan Compiler v2
 
 - **优先级**：P0
