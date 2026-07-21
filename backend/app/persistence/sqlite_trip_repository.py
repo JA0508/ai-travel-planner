@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from app.trips.access import generate_operation_id, generate_revision_id, generate_trip_id
+from app.trips.intent_contracts import CreateIntentRevisionResult, TripIntentRevisionRecord
 from app.trips.digests import (
     TRIP_SNAPSHOT_SCHEMA_VERSION,
     canonical_json,
@@ -190,6 +191,85 @@ class SQLiteTripRepository:
                 (trip_id,),
             ).fetchall()
         return [row_to_revision(row) for row in rows]
+
+    def create_intent_revision(
+        self,
+        *,
+        revision: TripIntentRevisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CreateIntentRevisionResult:
+        with self._transaction() as connection:
+            base_row = connection.execute(
+                "SELECT 1 FROM trip_revisions WHERE id = ? AND trip_id = ?",
+                (revision.base_trip_revision_id, revision.trip_id),
+            ).fetchone()
+            if base_row is None:
+                raise RevisionNotFoundError(revision.base_trip_revision_id)
+
+            idempotency_row = connection.execute(
+                """
+                SELECT * FROM trip_intent_idempotency_records
+                WHERE trip_id = ? AND idempotency_key_hash = ?
+                """,
+                (revision.trip_id, idempotency_key_hash),
+            ).fetchone()
+            if idempotency_row is not None:
+                if idempotency_row["request_digest"] != request_digest:
+                    raise IdempotencyConflictError()
+                stored_revision = self._get_intent_revision_in_connection(
+                    connection,
+                    revision.trip_id,
+                    idempotency_row["result_intent_revision_id"],
+                )
+                return CreateIntentRevisionResult(
+                    revision=stored_revision,
+                    idempotent_replay=True,
+                )
+
+            self._insert_intent_revision(connection, revision)
+            connection.execute(
+                """
+                INSERT INTO trip_intent_idempotency_records(
+                  trip_id, idempotency_key_hash, request_digest,
+                  result_intent_revision_id, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    revision.trip_id,
+                    idempotency_key_hash,
+                    request_digest,
+                    revision.id,
+                    revision.created_at,
+                ),
+            )
+            return CreateIntentRevisionResult(revision=revision)
+
+    def list_intent_revisions(self, *, trip_id: str) -> list[TripIntentRevisionRecord]:
+        with closing(self.connection_factory()) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM trip_intent_revisions
+                WHERE trip_id = ?
+                ORDER BY revision_number DESC, created_at DESC
+                """,
+                (trip_id,),
+            ).fetchall()
+        return [row_to_intent_revision(row) for row in rows]
+
+    def get_latest_intent_revision(self, *, trip_id: str) -> TripIntentRevisionRecord | None:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM trip_intent_revisions
+                WHERE trip_id = ?
+                ORDER BY revision_number DESC, created_at DESC
+                LIMIT 1
+                """,
+                (trip_id,),
+            ).fetchone()
+        return row_to_intent_revision(row) if row is not None else None
 
     def create_candidate(
         self,
@@ -797,6 +877,7 @@ class SQLiteTripRepository:
                 "immutable_revision_violation" in str(exc)
                 or "immutable_proposal_violation" in str(exc)
                 or "immutable_candidate_violation" in str(exc)
+                or "immutable_intent_revision_violation" in str(exc)
             ):
                 raise ImmutableRevisionViolationError() from exc
             if "schema_migrations" in str(exc):
@@ -810,6 +891,7 @@ class SQLiteTripRepository:
                 "immutable_revision_violation" in str(exc)
                 or "immutable_proposal_violation" in str(exc)
                 or "immutable_candidate_violation" in str(exc)
+                or "immutable_intent_revision_violation" in str(exc)
             ):
                 raise ImmutableRevisionViolationError() from exc
             raise
@@ -873,6 +955,37 @@ class SQLiteTripRepository:
                 "anonymous",
                 values["summary"],
                 values["created_at"],
+            ),
+        )
+
+    def _insert_intent_revision(
+        self,
+        connection: sqlite3.Connection,
+        revision: TripIntentRevisionRecord,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO trip_intent_revisions(
+              id, trip_id, revision_number, parent_intent_revision_id,
+              base_trip_revision_id, envelope_schema_version, envelope_json,
+              content_digest, compiler_version, source_digest,
+              validation_report_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                revision.id,
+                revision.trip_id,
+                revision.revision_number,
+                revision.parent_intent_revision_id,
+                revision.base_trip_revision_id,
+                revision.envelope_schema_version,
+                canonical_json(revision.envelope),
+                revision.content_digest,
+                revision.compiler_version,
+                revision.source_digest,
+                canonical_json(revision.validation_report),
+                revision.created_at,
             ),
         )
 
@@ -1001,6 +1114,20 @@ class SQLiteTripRepository:
             raise CandidateNotFoundError(decision_id)
         return row_to_candidate_decision(row)
 
+    def _get_intent_revision_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        trip_id: str,
+        revision_id: str,
+    ) -> TripIntentRevisionRecord:
+        row = connection.execute(
+            "SELECT * FROM trip_intent_revisions WHERE id = ? AND trip_id = ?",
+            (revision_id, trip_id),
+        ).fetchone()
+        if row is None:
+            raise RevisionNotFoundError(revision_id)
+        return row_to_intent_revision(row)
+
     def _assert_proposal_integrity(self, proposal: TripMutationProposalRecord) -> None:
         expected = mutation_proposal_digest(
             proposal_schema_version=proposal.proposal_schema_version,
@@ -1060,6 +1187,23 @@ def row_to_revision(row: sqlite3.Row) -> TripRevisionRecord:
         trace_schema_version=row["trace_schema_version"],
         trace_digest=row["trace_digest"],
         restored_from_revision_id=row["restored_from_revision_id"],
+        created_at=row["created_at"],
+    )
+
+
+def row_to_intent_revision(row: sqlite3.Row) -> TripIntentRevisionRecord:
+    return TripIntentRevisionRecord(
+        id=row["id"],
+        trip_id=row["trip_id"],
+        revision_number=row["revision_number"],
+        parent_intent_revision_id=row["parent_intent_revision_id"],
+        base_trip_revision_id=row["base_trip_revision_id"],
+        envelope_schema_version=row["envelope_schema_version"],
+        envelope=json.loads(row["envelope_json"]),
+        content_digest=row["content_digest"],
+        compiler_version=row["compiler_version"],
+        source_digest=row["source_digest"],
+        validation_report=json.loads(row["validation_report_json"]),
         created_at=row["created_at"],
     )
 

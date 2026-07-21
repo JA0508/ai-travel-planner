@@ -75,11 +75,23 @@ from .errors import (
     ProposalIntegrityViolationError,
     RevisionNotUndoableError,
     SnapshotSchemaUnsupportedError,
+    StaleBaseRevisionError,
     StaleMutationProposalError,
     TripAccessDeniedError,
     UndoTargetNotCurrentError,
 )
-from .models import ProposalStatus, RevisionSourceType, TripMutationProposalRecord
+from .intent_contracts import (
+    CompileTripIntentRequest,
+    CompileTripIntentResponse,
+    SourceLinkedTripIntentEnvelope,
+    TRIP_INTENT_COMPILER_VERSION,
+    TRIP_INTENT_ENVELOPE_SCHEMA_VERSION,
+    TripIntentRevisionListResponse,
+    TripIntentRevisionRecord,
+    compile_source_linked_intent,
+    intent_revision_metadata,
+)
+from .models import ProposalStatus, RevisionSourceType, TripCandidateRecord, TripMutationProposalRecord
 from .mutation_commands import TripMutationCommandEnvelope, TripMutationEngine, ensure_stable_item_ids
 from .repository import TripRepository
 from .schemas import (
@@ -258,6 +270,89 @@ class TripPersistenceService:
                 continue
             candidates.append(candidate_to_response(candidate, workflow_state=workflow_state, latest_decision_id=latest_id))
         return TripCandidateListResponse(candidates=candidates)
+
+    def compile_intent_envelope(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        idempotency_key: str | None,
+        payload: CompileTripIntentRequest,
+    ) -> CompileTripIntentResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        trip = self._require_trip_access(trip_id, capability)
+        current_revision = self.repository.get_revision(trip_id, trip.current_revision_id)
+        if current_revision.id != payload.base_revision_id:
+            raise StaleBaseRevisionError(
+                trip_id=trip_id,
+                provided_base_revision_id=payload.base_revision_id,
+                current_revision_id=current_revision.id,
+            )
+        parent_intent_revision = self.repository.get_latest_intent_revision(trip_id=trip_id)
+        candidates, candidate_workflow_states = self._intent_candidate_context(trip_id, payload)
+        next_revision_number = (
+            1 if parent_intent_revision is None else parent_intent_revision.revision_number + 1
+        )
+        now = format_utc(self.clock())
+        envelope = compile_source_linked_intent(
+            trip_id=trip_id,
+            base_revision_id=current_revision.id,
+            parent_intent_revision_id=parent_intent_revision.id if parent_intent_revision else None,
+            next_revision_number=next_revision_number,
+            created_at=now,
+            request=payload,
+            existing_trip_snapshot=current_revision.itinerary_snapshot,
+            candidates=candidates,
+            candidate_workflow_states=candidate_workflow_states,
+        )
+        req_digest = request_digest(
+            {
+                "operation": "compile_trip_intent_envelope",
+                "trip_id": trip_id,
+                "base_revision_id": current_revision.id,
+                "payload": payload.model_dump(mode="json"),
+            }
+        )
+        record = TripIntentRevisionRecord(
+            id=envelope.id,
+            trip_id=trip_id,
+            revision_number=envelope.revision_number,
+            parent_intent_revision_id=envelope.parent_intent_revision_id,
+            base_trip_revision_id=current_revision.id,
+            envelope_schema_version=TRIP_INTENT_ENVELOPE_SCHEMA_VERSION,
+            envelope=envelope.model_dump(mode="json"),
+            content_digest=envelope.content_digest,
+            compiler_version=TRIP_INTENT_COMPILER_VERSION,
+            source_digest=envelope.source_digest,
+            validation_report=envelope.validation_report,
+            created_at=now,
+        )
+        result = self.repository.create_intent_revision(
+            revision=record,
+            request_digest=req_digest,
+            idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+        )
+        stored_envelope = SourceLinkedTripIntentEnvelope.model_validate(result.revision.envelope)
+        return CompileTripIntentResponse(
+            envelope=stored_envelope,
+            revision=intent_revision_metadata(result.revision),
+            idempotent_replay=result.idempotent_replay,
+        )
+
+    def list_intent_envelopes(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+    ) -> TripIntentRevisionListResponse:
+        self._require_trip_access(trip_id, capability)
+        return TripIntentRevisionListResponse(
+            revisions=[
+                intent_revision_metadata(revision)
+                for revision in self.repository.list_intent_revisions(trip_id=trip_id)
+            ]
+        )
 
     def record_candidate_decision(
         self,
@@ -999,6 +1094,41 @@ class TripPersistenceService:
         if not verify_capability(capability, trip.capability_hash):
             raise TripAccessDeniedError()
         return trip
+
+    def _intent_candidate_context(
+        self,
+        trip_id: str,
+        payload: CompileTripIntentRequest,
+    ) -> tuple[list[TripCandidateRecord], dict[str, str]]:
+        candidate_ids = list(payload.candidate_ids)
+        if payload.structured_overrides is not None:
+            candidate_ids.extend(payload.structured_overrides.must_candidate_ids)
+        if payload.llm_proposal is not None:
+            candidate_ids.extend(payload.llm_proposal.must_candidate_ids)
+
+        ordered_ids: list[str] = []
+        seen: set[str] = set()
+        for candidate_id in candidate_ids:
+            normalized = str(candidate_id).strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                ordered_ids.append(normalized)
+
+        if not ordered_ids:
+            return [], {}
+
+        decisions_by_candidate: dict[str, list[TripCandidateDecisionRecord]] = {}
+        for decision in self.repository.list_candidate_decisions(trip_id=trip_id):
+            decisions_by_candidate.setdefault(decision.candidate_id, []).append(decision)
+
+        candidates: list[TripCandidateRecord] = []
+        states: dict[str, str] = {}
+        for candidate_id in ordered_ids:
+            candidate = self.repository.get_candidate(trip_id=trip_id, candidate_id=candidate_id)
+            workflow_state, _latest_id = infer_workflow_state(decisions_by_candidate.get(candidate_id, []))
+            candidates.append(candidate)
+            states[candidate_id] = workflow_state
+        return candidates, states
 
     def _candidate_context_for_envelope(
         self,

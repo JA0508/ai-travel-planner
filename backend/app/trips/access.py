@@ -16,6 +16,10 @@ def generate_revision_id() -> str:
     return f"rev_{secrets.token_hex(16)}"
 
 
+def generate_intent_revision_id() -> str:
+    return f"intent_rev_{secrets.token_hex(16)}"
+
+
 def generate_proposal_id() -> str:
     return f"prop_{secrets.token_hex(16)}"
 

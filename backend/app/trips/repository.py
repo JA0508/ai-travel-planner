@@ -13,6 +13,7 @@ from .models import (
     TripRecord,
     TripRevisionRecord,
 )
+from .intent_contracts import CreateIntentRevisionResult, TripIntentRevisionRecord
 
 
 class TripRepository(Protocol):
@@ -47,6 +48,21 @@ class TripRepository(Protocol):
         ...
 
     def list_revisions(self, trip_id: str) -> list[TripRevisionRecord]:
+        ...
+
+    def create_intent_revision(
+        self,
+        *,
+        revision: TripIntentRevisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CreateIntentRevisionResult:
+        ...
+
+    def list_intent_revisions(self, *, trip_id: str) -> list[TripIntentRevisionRecord]:
+        ...
+
+    def get_latest_intent_revision(self, *, trip_id: str) -> TripIntentRevisionRecord | None:
         ...
 
     def create_candidate(
