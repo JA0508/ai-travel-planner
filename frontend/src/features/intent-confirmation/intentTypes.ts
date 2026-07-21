@@ -144,7 +144,9 @@ export type IntentClarification = {
   question_id: string;
   field_paths: string[];
   answer_field_path: string | null;
-  answer_value_type: "string" | "integer" | "pace" | "string_list" | "fixed_event" | "budget";
+  answer_value_type: "string" | "integer" | "pace" | "string_list" | "fixed_event" | "budget" | null;
+  resolution_kind: "inline_answer" | "edit_contract" | "reimport_evidence";
+  editor_field_path: string | null;
   question: string;
   priority: number;
   blocking: boolean;

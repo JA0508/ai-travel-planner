@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import type { CandidateListResponse, TripCandidate } from "@/features/trip-workspace/tripCandidates";
@@ -21,13 +21,17 @@ import {
   summarizeIntentEnvelope,
 } from "./intentConfirmationModel";
 import {
+  canSubmitInlineClarification,
+  getClarificationResolutionAction,
+} from "./clarificationResolutionModel";
+import {
   buildIntentEditIdempotencyKey,
   buildIntentStructuredOverrides,
   emptyIntentEditForm,
   formFromIntentEnvelope,
   type IntentEditForm,
 } from "./intentEditorModel";
-import type { SourceLinkedTripIntentEnvelope, TripIntentRevisionMetadata } from "./intentTypes";
+import type { IntentClarification, SourceLinkedTripIntentEnvelope, TripIntentRevisionMetadata } from "./intentTypes";
 
 type Props = {
   tripPersistence: TripPersistenceState;
@@ -42,11 +46,12 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
   const [loadedIntentRevision, setLoadedIntentRevision] = useState<TripIntentRevisionMetadata | null>(null);
   const [editingBaseIntentRevision, setEditingBaseIntentRevision] = useState<TripIntentRevisionMetadata | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [clarificationAnswer, setClarificationAnswer] = useState("");
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({});
   const [selectedEvidenceNodeId, setSelectedEvidenceNodeId] = useState<string | null>(null);
   const [staleEdit, setStaleEdit] = useState(false);
   const [candidates, setCandidates] = useState<TripCandidate[]>([]);
   const [editForm, setEditForm] = useState<IntentEditForm>(emptyIntentEditForm);
+  const editorRef = useRef<HTMLDivElement | null>(null);
   const summary = useMemo(() => summarizeIntentEnvelope(envelope), [envelope]);
   const saved = tripPersistence.status === "saved" ? tripPersistence : null;
   const latestIntentRevisionId = latestIntentRevision?.id ?? latestEnvelope?.id ?? null;
@@ -136,20 +141,27 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     await refreshHistory(saved.tripId);
   }
 
-  async function handleAnswerClarification(questionId: string) {
-    if (!saved || !envelope || !clarificationAnswer.trim()) {
+  async function handleAnswerClarification(question: IntentClarification) {
+    const rawAnswer = clarificationAnswers[question.question_id]?.trim() ?? "";
+    if (!saved || !envelope || !canSubmitInlineClarification(question, rawAnswer)) {
       return;
     }
     if (!loadedLatest) {
       setStatus("Load the latest intent revision before answering a clarification.");
       return;
     }
+    const numericAnswer = question.answer_value_type === "integer" ? Number(rawAnswer) : null;
+    if (question.answer_value_type === "integer" && (!Number.isInteger(numericAnswer) || numericAnswer === null || numericAnswer < 1)) {
+      setStatus("Trip days clarification must be a positive whole number.");
+      return;
+    }
+    const answer = numericAnswer ?? rawAnswer;
     const result = await answerIntentClarification(
       saved.tripId,
       envelope.id,
-      questionId,
-      { base_revision_id: saved.currentRevisionId, base_intent_revision_id: envelope.id, answer: clarificationAnswer.trim() },
-      `intent-clarify:${envelope.id}:${questionId}:${saved.currentRevisionId}`,
+      question.question_id,
+      { base_revision_id: saved.currentRevisionId, base_intent_revision_id: envelope.id, answer },
+      `intent-clarify:${envelope.id}:${question.question_id}:${saved.currentRevisionId}`,
     );
     if (!result.ok) {
       if (result.code === "stale_intent_revision") {
@@ -165,9 +177,35 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     setLatestIntentRevision(result.data.revision);
     setLoadedIntentRevision(result.data.revision);
     setEditingBaseIntentRevision(result.data.revision);
-    setClarificationAnswer("");
+    setClarificationAnswers((current) => {
+      const next = { ...current };
+      delete next[question.question_id];
+      return next;
+    });
     setStatus("Saved clarification as a new intent revision.");
     await refreshHistory(saved.tripId);
+  }
+
+  function focusContractEditor(question: IntentClarification) {
+    const fieldPath = question.editor_field_path ?? question.field_paths[0];
+    const editorPath = fieldPath.startsWith("poi.") ? "poi.must_candidates" : fieldPath;
+    const target = editorRef.current?.querySelector<HTMLElement>(`[data-intent-field-path="${editorPath}"]`);
+    if (!target) {
+      setStatus("This clarification requires a typed contract edit. Review the confirmed trip inputs below.");
+      return;
+    }
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.querySelector<HTMLElement>("input, select, button")?.focus();
+    setStatus("Update the highlighted typed contract field, then save a new intent revision.");
+  }
+
+  function openEvidenceRecovery(question: IntentClarification) {
+    if (!envelope || typeof window === "undefined") {
+      return;
+    }
+    window.dispatchEvent(new CustomEvent("trip-import-workspace-request", { detail: { tripId: envelope.trip_id } }));
+    setStatus("Legacy evidence cannot be confirmed by text. Re-import and review an evidence-backed candidate, or remove it in the contract editor.");
+    focusContractEditor(question);
   }
 
   async function handleLoadRevision(intentRevisionId: string) {
@@ -283,14 +321,16 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
         <div className="intent-confirmation-workspace__body">
           <TypedIntentPreview envelope={envelope} />
           <ReadinessEvidence envelope={envelope} latestRevision={latestIntentRevision} latestEnvelope={latestEnvelope} />
-          <IntentEditPanel
-            form={editForm}
-            onChange={setEditForm}
-            candidates={candidates}
-            onSave={() => void handleEditIntent()}
-            onReapply={staleEdit && latestEnvelope ? () => void handleEditIntent(true) : null}
-            disabled={!loadedLatest && !staleEdit}
-          />
+          <div ref={editorRef}>
+            <IntentEditPanel
+              form={editForm}
+              onChange={setEditForm}
+              candidates={candidates}
+              onSave={() => void handleEditIntent()}
+              onReapply={staleEdit && latestEnvelope ? () => void handleEditIntent(true) : null}
+              disabled={!loadedLatest && !staleEdit}
+            />
+          </div>
           <FieldList title="Selected fields" fields={summary.selectedFields} />
           <ProvenanceList
             envelope={envelope}
@@ -308,22 +348,16 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
             </div>
           ) : null}
           {envelope.clarification_queue.map((question) => (
-            <div className="intent-confirmation-workspace__panel" key={question.question_id}>
-              <strong>{question.question}</strong>
-              <p>
-                {question.blocking ? "Blocking" : "Non-blocking"} · {question.impact} · {question.answer_field_path}
-              </p>
-              <div className="intent-confirmation-workspace__answer">
-                <input
-                  value={clarificationAnswer}
-                  onChange={(event) => setClarificationAnswer(event.target.value)}
-                  placeholder="Answer clarification"
-                />
-                <button type="button" onClick={() => void handleAnswerClarification(question.question_id)} disabled={!loadedLatest}>
-                  Save answer
-                </button>
-              </div>
-            </div>
+            <ClarificationCard
+              key={question.question_id}
+              question={question}
+              answer={clarificationAnswers[question.question_id] ?? ""}
+              disabled={!loadedLatest}
+              onAnswerChange={(answer) => setClarificationAnswers((current) => ({ ...current, [question.question_id]: answer }))}
+              onSaveAnswer={() => void handleAnswerClarification(question)}
+              onEdit={() => focusContractEditor(question)}
+              onReimport={() => openEvidenceRecovery(question)}
+            />
           ))}
           {envelope.assumptions.length ? (
             <div className="intent-confirmation-workspace__panel">
@@ -532,6 +566,66 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
   );
 }
 
+function ClarificationCard({
+  question,
+  answer,
+  disabled,
+  onAnswerChange,
+  onSaveAnswer,
+  onEdit,
+  onReimport,
+}: {
+  question: IntentClarification;
+  answer: string;
+  disabled: boolean;
+  onAnswerChange: (answer: string) => void;
+  onSaveAnswer: () => void;
+  onEdit: () => void;
+  onReimport: () => void;
+}) {
+  const resolutionAction = getClarificationResolutionAction(question);
+  return (
+    <div className="intent-confirmation-workspace__panel" data-clarification-kind={question.resolution_kind}>
+      <strong>{question.question}</strong>
+      <p>
+        {question.blocking ? "Blocking" : "Non-blocking"} · {question.impact} · {question.field_paths.join(", ")}
+      </p>
+      {resolutionAction === "answer_inline" ? (
+        <div className="intent-confirmation-workspace__answer">
+          <input
+            type={question.answer_value_type === "integer" ? "number" : "text"}
+            min={question.answer_value_type === "integer" ? 1 : undefined}
+            value={answer}
+            onChange={(event) => onAnswerChange(event.target.value)}
+            placeholder={question.answer_value_type === "integer" ? "Enter a whole number" : "Answer clarification"}
+            disabled={disabled}
+          />
+          <button type="button" onClick={onSaveAnswer} disabled={disabled || !canSubmitInlineClarification(question, answer)}>
+            Save answer
+          </button>
+        </div>
+      ) : resolutionAction === "edit_contract" ? (
+        <div className="intent-confirmation-workspace__answer">
+          <p>This issue needs an explicit typed edit; free text cannot override the contract.</p>
+          <button type="button" onClick={onEdit} disabled={disabled}>
+            Edit contract field
+          </button>
+        </div>
+      ) : (
+        <div className="intent-confirmation-workspace__answer">
+          <p>This source has no verifiable lineage. It cannot be confirmed by a text answer.</p>
+          <button type="button" onClick={onReimport} disabled={disabled}>
+            Open Import Review
+          </button>
+          <button type="button" onClick={onEdit} disabled={disabled}>
+            Remove or replace candidate
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function IntentEditPanel({
   form,
   onChange,
@@ -578,27 +672,27 @@ function IntentEditPanel({
     <div className="intent-confirmation-workspace__panel">
       <strong>Confirmed trip inputs</strong>
       <div className="intent-confirmation-workspace__edit-grid">
-        <label>
+        <label data-intent-field-path="trip.city">
           City
           <input disabled={disabled} value={form.city} onChange={(event) => onChange({ ...form, city: event.target.value })} />
         </label>
-        <label>
+        <label data-intent-field-path="trip.trip_days">
           Trip days
           <input disabled={disabled} value={form.tripDays} onChange={(event) => onChange({ ...form, tripDays: event.target.value })} />
         </label>
-        <label>
+        <label data-intent-field-path="trip.date_policy">
           Start date
           <input type="date" disabled={disabled} value={form.startDate} onChange={(event) => onChange({ ...form, startDate: event.target.value })} />
         </label>
-        <label>
+        <label data-intent-field-path="trip.date_policy">
           End date
           <input type="date" disabled={disabled} value={form.endDate} onChange={(event) => onChange({ ...form, endDate: event.target.value })} />
         </label>
-        <label>
+        <label data-intent-field-path="trip.date_policy">
           Timezone
           <input disabled={disabled} value={form.timezone} onChange={(event) => onChange({ ...form, timezone: event.target.value })} />
         </label>
-        <label>
+        <label data-intent-field-path="trip.pace">
           Pace
           <select
             value={form.pace}
@@ -611,7 +705,7 @@ function IntentEditPanel({
             <option value="intensive">Intensive</option>
           </select>
         </label>
-        <label>
+        <label data-intent-field-path="preferences.transport">
           Transport
           <input
             value={form.transportPreferences}
@@ -620,7 +714,7 @@ function IntentEditPanel({
           />
         </label>
       </div>
-      <div className="intent-confirmation-workspace__subsection">
+      <div className="intent-confirmation-workspace__subsection" data-intent-field-path="trip.arrival_boundary">
         <strong>Arrival boundary</strong>
         <div className="intent-confirmation-workspace__edit-grid">
           <label>Local date and time<input type="datetime-local" disabled={disabled} value={form.arrival.localDatetime} onChange={(event) => updateBoundary("arrival", "localDatetime", event.target.value)} /></label>
@@ -629,7 +723,7 @@ function IntentEditPanel({
           <label>Flexibility minutes<input inputMode="numeric" disabled={disabled} value={form.arrival.flexibilityMinutes} onChange={(event) => updateBoundary("arrival", "flexibilityMinutes", event.target.value)} /></label>
         </div>
       </div>
-      <div className="intent-confirmation-workspace__subsection">
+      <div className="intent-confirmation-workspace__subsection" data-intent-field-path="trip.departure_boundary">
         <strong>Departure boundary</strong>
         <div className="intent-confirmation-workspace__edit-grid">
           <label>Local date and time<input type="datetime-local" disabled={disabled} value={form.departure.localDatetime} onChange={(event) => updateBoundary("departure", "localDatetime", event.target.value)} /></label>
@@ -638,7 +732,7 @@ function IntentEditPanel({
           <label>Flexibility minutes<input inputMode="numeric" disabled={disabled} value={form.departure.flexibilityMinutes} onChange={(event) => updateBoundary("departure", "flexibilityMinutes", event.target.value)} /></label>
         </div>
       </div>
-      <div className="intent-confirmation-workspace__subsection">
+      <div className="intent-confirmation-workspace__subsection" data-intent-field-path="time.availability_windows">
         <div className="intent-confirmation-workspace__row-header"><strong>Availability windows</strong><button type="button" disabled={disabled} onClick={() => onChange({ ...form, availabilityWindows: [...form.availabilityWindows, { id: `window-${Date.now()}`, date: form.startDate, startTime: "", endTime: "", timezone: form.timezone, crossesMidnight: false }] })}>Add window</button></div>
         {form.availabilityWindows.map((window) => (
           <div className="intent-confirmation-workspace__item-grid" key={window.id}>
@@ -651,7 +745,7 @@ function IntentEditPanel({
           </div>
         ))}
       </div>
-      <div className="intent-confirmation-workspace__subsection">
+      <div className="intent-confirmation-workspace__subsection" data-intent-field-path="time.fixed_events">
         <div className="intent-confirmation-workspace__row-header"><strong>Fixed events</strong><button type="button" disabled={disabled} onClick={() => onChange({ ...form, fixedEvents: [...form.fixedEvents, { id: `event-${Date.now()}`, title: "", startAt: "", endAt: "", timezone: form.timezone, fixedDay: "", locationText: "", flexibility: "fixed" }] })}>Add event</button></div>
         {form.fixedEvents.map((event) => (
           <div className="intent-confirmation-workspace__event" key={event.id}>
@@ -667,7 +761,7 @@ function IntentEditPanel({
         ))}
       </div>
       <CandidatePreferenceEditor candidates={eligibleCandidates} form={form} disabled={disabled} onToggle={toggleCandidate} />
-      <div className="intent-confirmation-workspace__subsection">
+      <div className="intent-confirmation-workspace__subsection" data-intent-field-path="budget">
         <strong>Budget</strong>
         <div className="intent-confirmation-workspace__edit-grid">
           <label>Amount in minor units<input inputMode="numeric" disabled={disabled} value={form.budget.amountMinor} onChange={(event) => onChange({ ...form, budget: { ...form.budget, amountMinor: event.target.value } })} /></label>
@@ -677,7 +771,7 @@ function IntentEditPanel({
           <label>Flexibility percent<input inputMode="numeric" disabled={disabled} value={form.budget.flexibilityPercent} onChange={(event) => onChange({ ...form, budget: { ...form.budget, flexibilityPercent: event.target.value } })} /></label>
         </div>
       </div>
-      <div className="intent-confirmation-workspace__subsection">
+      <div className="intent-confirmation-workspace__subsection" data-intent-field-path="travelers.needs">
         <div className="intent-confirmation-workspace__row-header"><strong>Traveler needs</strong><button type="button" disabled={disabled} onClick={() => onChange({ ...form, travelerNeeds: [...form.travelerNeeds, { id: `need-${Date.now()}`, needType: "other", description: "", severity: "preferred" }] })}>Add need</button></div>
         {form.travelerNeeds.map((need) => (
           <div className="intent-confirmation-workspace__item-grid" key={need.id}>
@@ -712,7 +806,7 @@ function CandidatePreferenceEditor({
   onToggle: (field: "mustCandidateIds" | "optionalCandidateIds" | "avoidCandidateIds", candidateId: string) => void;
 }) {
   return (
-    <div className="intent-confirmation-workspace__subsection">
+    <div className="intent-confirmation-workspace__subsection" data-intent-field-path="poi.must_candidates">
       <strong>Reviewed place preferences</strong>
       {candidates.length ? (
         <div className="intent-confirmation-workspace__candidate-grid">

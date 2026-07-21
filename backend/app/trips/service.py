@@ -91,6 +91,7 @@ from .intent_contracts import (
     CompileTripIntentRequest,
     CompileTripIntentResponse,
     EditTripIntentEnvelopeRequest,
+    IntentClarificationResolutionKind,
     IntentCompileRunDraft,
     IntentProposalParseResult,
     IntentStructuredOverrides,
@@ -442,6 +443,10 @@ class TripPersistenceService:
         )
         if question is None:
             raise InvalidRevisionOperationError("Unsupported clarification question.")
+        if question.resolution_kind != IntentClarificationResolutionKind.INLINE_ANSWER:
+            raise InvalidRevisionOperationError(
+                "This clarification must be resolved through its typed contract or evidence-review workflow."
+            )
         field_updates = _field_updates_from_clarification(question, payload.answer)
         return self.edit_intent_envelope(
             trip_id=trip_id,
@@ -1823,6 +1828,10 @@ def _field_updates_from_clarification(
     question: ClarificationQuestion,
     answer: Any,
 ) -> IntentStructuredOverrides:
+    if question.resolution_kind != IntentClarificationResolutionKind.INLINE_ANSWER:
+        raise InvalidRevisionOperationError(
+            "This clarification does not accept a free-form answer."
+        )
     definition = CLARIFICATION_REGISTRY.get(question.reason_code)
     if definition is None:
         raise InvalidRevisionOperationError("Unsupported clarification issue code.")

@@ -38,6 +38,7 @@ class IntentCompilerFixture:
     expected_status: str
     expected_conflict: str | None = None
     expected_clarification: str | None = None
+    expected_clarification_reason: str | None = None
     expected_typed_section: str | None = None
     expected_provenance_field: str | None = None
     expected_semantic_type: str | None = None
@@ -108,6 +109,7 @@ FIXTURES = [
         },
         expected_status="blocked",
         expected_conflict="fixed_event_outside_trip_dates",
+        expected_clarification_reason="fixed_event_outside_trip_dates",
         expected_typed_section="fixed_events",
         expected_domain_value_type="fixed_event",
     ),
@@ -248,6 +250,15 @@ FIXTURES.extend(
         IntentCompilerFixture(name="clarify_budget_without_trip_length", category="clarification", payload={"structured_overrides": {"city": "上海", "budget": {"budget_level": "medium"}}}, expected_status="needs_clarification", expected_clarification="clarify_trip_days"),
         IntentCompilerFixture(name="clarify_traveler_need_without_destination", category="clarification", payload={"structured_overrides": {"trip_days": 2, "traveler_needs": ["轮椅可达"]}}, expected_status="needs_clarification", expected_clarification="clarify_trip_city"),
         IntentCompilerFixture(name="clarify_pace_without_destination", category="clarification", payload={"structured_overrides": {"trip_days": 2, "pace": "relaxed"}}, expected_status="needs_clarification", expected_clarification="clarify_trip_city"),
+        IntentCompilerFixture(
+            name="clarify_date_range_requires_typed_contract_edit",
+            category="clarification",
+            payload={"structured_overrides": {"city": "上海", "trip_days": 3, "start_date": "2026-10-01", "end_date": "2026-10-02", "timezone": "Asia/Shanghai"}},
+            expected_status="blocked",
+            expected_conflict="date_range_conflict",
+            expected_clarification_reason="date_range_conflict",
+            expected_typed_section="date_policy",
+        ),
         IntentCompilerFixture(name="provenance_direct_user", category="provenance", payload={"direct_user_text": "城市：上海\n天数：2"}, expected_status="ready", expected_graph_node_type="direct_user_span"),
         IntentCompilerFixture(name="provenance_structured_override", category="provenance", payload={"structured_overrides": {"city": "上海", "trip_days": 2}}, expected_status="ready", expected_provenance_field="trip.city"),
         IntentCompilerFixture(name="provenance_llm_proposal", category="provenance", payload={"llm_proposal": {"city": "上海", "trip_days": 2}}, expected_status="ready", expected_graph_node_type="llm_proposal"),
@@ -665,7 +676,7 @@ def count_deterministic_mismatches(first: list[dict], second: list[dict]) -> int
             continue
         canonical = {
             key: result.get(key)
-            for key in ("passed", "status", "conflicts", "clarifications", "typed_sections", "semantic_types", "domain_value_types", "graph_node_types", "blocking_reasons")
+            for key in ("passed", "status", "conflicts", "clarifications", "clarification_reasons", "typed_sections", "semantic_types", "domain_value_types", "graph_node_types", "blocking_reasons")
         }
         repeated = {
             key: duplicate.get(key)
@@ -693,6 +704,7 @@ def evaluate_response(fixture: IntentCompilerFixture, response) -> tuple[bool, d
     envelope = response.json()["envelope"]
     conflicts = [conflict["reason_code"] for conflict in envelope["conflicts"]]
     clarifications = [item["question_id"] for item in envelope["clarification_queue"]]
+    clarification_reasons = [item["reason_code"] for item in envelope["clarification_queue"]]
     invariants: list[dict] = []
     def invariant(code: str, value: bool) -> None:
         invariants.append({"code": code, "passed": value})
@@ -706,6 +718,10 @@ def evaluate_response(fixture: IntentCompilerFixture, response) -> tuple[bool, d
     if fixture.expected_clarification:
         value = fixture.expected_clarification in clarifications
         invariant("expected_clarification", value)
+        passed = passed and value
+    if fixture.expected_clarification_reason:
+        value = fixture.expected_clarification_reason in clarification_reasons
+        invariant("expected_clarification_reason", value)
         passed = passed and value
     typed_sections = envelope["validation_report"].get("typed_intent_sections", [])
     provenance_fields = [item["field_path"] for item in envelope.get("provenance_summary", [])]
@@ -751,6 +767,7 @@ def evaluate_response(fixture: IntentCompilerFixture, response) -> tuple[bool, d
         "status": envelope["planner_ready_status"],
         "conflicts": conflicts,
         "clarifications": clarifications,
+        "clarification_reasons": clarification_reasons,
         "typed_sections": typed_sections,
         "provenance_fields": provenance_fields,
         "semantic_types": semantic_types,

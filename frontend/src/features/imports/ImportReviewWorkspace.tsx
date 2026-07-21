@@ -59,6 +59,7 @@ export function ImportReviewWorkspace({
     | { status: "error"; code: string; message: string }
   >({ status: "idle" });
   const binaryInputRef = useRef<HTMLInputElement | null>(null);
+  const workspaceRef = useRef<HTMLElement | null>(null);
   const previewUrlRef = useRef<string | null>(null);
   const byteCount = utf8ByteLength(text);
   const normalizedUrl = url.trim();
@@ -83,6 +84,22 @@ export function ImportReviewWorkspace({
       return;
     }
     void hydrateBinaryInspection(savedTripId, stored.jobId, stored.declaredKind);
+  }, [savedTripId]);
+
+  useEffect(() => {
+    if (!savedTripId || typeof window === "undefined") {
+      return;
+    }
+    const handleIntentEvidenceRecovery = (event: Event) => {
+      const detail = (event as CustomEvent<{ tripId?: string }>).detail;
+      if (!detail || detail.tripId !== savedTripId) {
+        return;
+      }
+      workspaceRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      setMode("text");
+    };
+    window.addEventListener("trip-import-workspace-request", handleIntentEvidenceRecovery);
+    return () => window.removeEventListener("trip-import-workspace-request", handleIntentEvidenceRecovery);
   }, [savedTripId]);
 
   useEffect(() => {
@@ -493,7 +510,7 @@ export function ImportReviewWorkspace({
   }
 
   return (
-    <section style={panelStyle} data-import-workspace>
+    <section ref={workspaceRef} style={panelStyle} data-import-workspace>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start" }}>
         <div>
           <p style={eyebrowStyle}>Source import</p>

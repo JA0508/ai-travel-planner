@@ -55,6 +55,14 @@ class IntentPlannerReadyStatus(str, Enum):
     READY_FOR_PLANNING = "ready_for_planning"
 
 
+class IntentClarificationResolutionKind(str, Enum):
+    """The only supported ways a user can resolve an intent clarification."""
+
+    INLINE_ANSWER = "inline_answer"
+    EDIT_CONTRACT = "edit_contract"
+    REIMPORT_EVIDENCE = "reimport_evidence"
+
+
 class IntentAuthority(str, Enum):
     USER_CONFIRMED = "user_confirmed"
     REVIEWED_SOURCE = "reviewed_source"
@@ -626,7 +634,9 @@ class ClarificationQuestion(BaseModel):
     question_id: str
     field_paths: list[str]
     answer_field_path: str | None = None
-    answer_value_type: Literal["string", "integer", "pace", "string_list", "fixed_event", "budget"] = "string"
+    answer_value_type: Literal["string", "integer", "pace", "string_list", "fixed_event", "budget"] | None = "string"
+    resolution_kind: IntentClarificationResolutionKind = IntentClarificationResolutionKind.INLINE_ANSWER
+    editor_field_path: str | None = None
     question: str
     priority: int = Field(..., ge=0, le=100)
     blocking: bool
@@ -1189,20 +1199,38 @@ def compile_source_linked_intent(
                 candidate_display_names,
             )
         )
-        # An explicit structured edit is authoritative, including an empty value
-        # that deliberately clears an earlier suggestion or saved intent field.
-        # Without this filter, lower-authority parent/direct/LLM fields can silently
-        # reappear after a user removes them in the confirmation workspace.
+        # An explicit structured edit remains authoritative.  For non-empty singleton
+        # edits, retain lower-authority candidates as shadowed evidence so the
+        # envelope can explain why a prior LLM proposal no longer applies.  Empty
+        # edits still remove prior values: an intentional clear must not allow an
+        # older suggestion or saved field to reappear.
         if structured_override_paths:
             manual_override_priority_enforced = any(
                 field.field_path in structured_override_paths
                 and field.source_ref.source_type != IntentSourceType.STRUCTURED_USER_OVERRIDE
                 for field in field_candidates
             )
+            retained_singleton_paths: set[str] = set()
+            if (
+                "city" in request.structured_overrides.model_fields_set
+                and request.structured_overrides.city is not None
+            ):
+                retained_singleton_paths.add("trip.city")
+            if (
+                "trip_days" in request.structured_overrides.model_fields_set
+                and request.structured_overrides.trip_days is not None
+            ):
+                retained_singleton_paths.add("trip.trip_days")
+            if (
+                "pace" in request.structured_overrides.model_fields_set
+                and request.structured_overrides.pace is not None
+            ):
+                retained_singleton_paths.add("trip.pace")
+            paths_requiring_removal = structured_override_paths - retained_singleton_paths
             field_candidates = [
                 field
                 for field in field_candidates
-                if field.field_path not in structured_override_paths
+                if field.field_path not in paths_requiring_removal
                 or field.source_ref.source_type == IntentSourceType.STRUCTURED_USER_OVERRIDE
             ]
 
@@ -1228,8 +1256,10 @@ def compile_source_linked_intent(
                     question_id=f"clarify:legacy_candidate_evidence_not_verified:{candidate_id}",
                     field_paths=[selected_candidate.field_path],
                     answer_field_path=None,
-                    answer_value_type="string",
-                    question="This imported place has legacy evidence that cannot be verified. Confirm or replace it before planning.",
+                    answer_value_type=None,
+                    resolution_kind=IntentClarificationResolutionKind.REIMPORT_EVIDENCE,
+                    editor_field_path=selected_candidate.field_path,
+                    question="This imported place has legacy evidence that cannot be verified. Re-import and review it, or remove and replace it with an evidence-backed candidate before planning.",
                     priority=100,
                     blocking=True,
                     impact="planner_blocking",
@@ -1242,6 +1272,7 @@ def compile_source_linked_intent(
     validation_conflicts = _validate_selected_fields(selected, planner_ready)
     conflicts.extend(validation_conflicts)
     conflicts.extend(_validate_date_policy_fields(selected))
+    clarifications.extend(_clarifications_for_blocking_conflicts(conflicts, clarifications))
     typed_assumptions = _build_typed_assumptions(selected, planner_ready)
     assumptions = [assumption.explanation for assumption in typed_assumptions]
     for assumption in assumptions:
@@ -2106,6 +2137,78 @@ def _select_singleton(field_path: str, items: list[_CandidateField]) -> tuple[_C
             source_refs=[winner.source_ref, *[item.source_ref for item in losers]],
         )
     return winner, ordered[1:], conflict
+
+
+def _clarifications_for_blocking_conflicts(
+    conflicts: list[IntentConflict],
+    existing: list[ClarificationQuestion],
+) -> list[ClarificationQuestion]:
+    """Make every deterministic blocking conflict actionable without weakening it.
+
+    A conflict is not a user workflow by itself.  Inline answers remain limited to
+    small scalar values; date, event, and source-evidence corrections must pass
+    through their typed contract or Import Review flows instead of a free-text
+    endpoint that could silently reinterpret authoritative state.
+    """
+
+    existing_keys = {(question.reason_code, tuple(question.field_paths)) for question in existing}
+    questions: list[ClarificationQuestion] = []
+    for conflict in conflicts:
+        if not conflict.requires_clarification or conflict.severity != "blocking":
+            continue
+        key = (conflict.reason_code, (conflict.field_path,))
+        if key in existing_keys:
+            continue
+        question = _clarification_for_conflict(conflict)
+        if question is None:
+            continue
+        questions.append(question)
+        existing_keys.add(key)
+    return questions
+
+
+def _clarification_for_conflict(conflict: IntentConflict) -> ClarificationQuestion | None:
+    question_id = f"clarify:{conflict.reason_code}:{conflict.conflict_id}"
+    if conflict.reason_code == "same_priority_conflict":
+        return ClarificationQuestion(
+            question_id=question_id,
+            field_paths=[conflict.field_path],
+            answer_value_type=None,
+            resolution_kind=IntentClarificationResolutionKind.EDIT_CONTRACT,
+            editor_field_path=conflict.field_path,
+            question="Two equally authoritative sources disagree. Choose the value you want to keep in the intent contract.",
+            priority=95,
+            blocking=True,
+            impact="planner_blocking",
+            reason_code=conflict.reason_code,
+        )
+    if conflict.reason_code in {"date_invalid", "date_range_conflict", "relative_date_requires_anchor"}:
+        return ClarificationQuestion(
+            question_id=question_id,
+            field_paths=["trip.date_policy"],
+            answer_value_type=None,
+            resolution_kind=IntentClarificationResolutionKind.EDIT_CONTRACT,
+            editor_field_path="trip.date_policy",
+            question="The trip date policy is inconsistent. Correct the dates, trip length, or reference date in the typed contract.",
+            priority=98,
+            blocking=True,
+            impact="planner_blocking",
+            reason_code=conflict.reason_code,
+        )
+    if conflict.reason_code == "fixed_event_outside_trip_dates":
+        return ClarificationQuestion(
+            question_id=question_id,
+            field_paths=["time.fixed_events"],
+            answer_value_type=None,
+            resolution_kind=IntentClarificationResolutionKind.EDIT_CONTRACT,
+            editor_field_path="time.fixed_events",
+            question="A fixed event falls outside the trip. Correct the event or trip boundaries before planning.",
+            priority=98,
+            blocking=True,
+            impact="planner_blocking",
+            reason_code=conflict.reason_code,
+        )
+    return None
 
 
 def _to_field(item: _CandidateField, status: IntentFieldStatus) -> IntentField:
