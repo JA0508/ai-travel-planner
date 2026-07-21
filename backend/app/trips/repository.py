@@ -56,6 +56,8 @@ class TripRepository(Protocol):
         revision: TripIntentRevisionRecord,
         request_digest: str,
         idempotency_key_hash: str,
+        expected_parent_intent_revision_id: str | None = None,
+        require_latest_parent: bool = False,
     ) -> CreateIntentRevisionResult:
         ...
 

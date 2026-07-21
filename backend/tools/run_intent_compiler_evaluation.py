@@ -24,6 +24,11 @@ class IntentCompilerFixture:
     expected_clarification: str | None = None
     expected_typed_section: str | None = None
     expected_provenance_field: str | None = None
+    expected_semantic_type: str | None = None
+    expected_blocking_reason: str | None = None
+
+
+MIN_FIXTURE_COUNT = 10
 
 
 FIXTURES = [
@@ -51,11 +56,12 @@ FIXTURES = [
         expected_clarification="clarify_trip_city",
     ),
     IntentCompilerFixture(
-        name="missing_trip_days_is_planner_ready_with_assumption",
+        name="missing_trip_days_requires_clarification",
         payload={"structured_overrides": {"city": "上海"}},
-        expected_status="ready",
+        expected_status="needs_clarification",
         expected_clarification="clarify_trip_days",
         expected_typed_section="unresolved_questions",
+        expected_blocking_reason="missing_trip_length",
     ),
     IntentCompilerFixture(
         name="fixed_event_outside_trip_dates",
@@ -75,6 +81,7 @@ FIXTURES = [
         payload={"llm_proposal": {"city": "上海", "trip_days": 2}},
         expected_status="ready",
         expected_typed_section="destinations",
+        expected_semantic_type="destination_city",
     ),
     IntentCompilerFixture(
         name="transport_preference_is_typed_soft_field",
@@ -82,6 +89,28 @@ FIXTURES = [
         expected_status="ready",
         expected_typed_section="transport_preferences",
         expected_provenance_field="preferences.transport",
+        expected_semantic_type="transport_preference",
+    ),
+    IntentCompilerFixture(
+        name="manual_pace_is_semantic_soft_field",
+        payload={"structured_overrides": {"city": "上海", "trip_days": 2, "pace": "balanced"}},
+        expected_status="ready",
+        expected_typed_section="pace",
+        expected_semantic_type="pace",
+    ),
+    IntentCompilerFixture(
+        name="reviewed_candidate_absence_is_allowed_typed_assumption",
+        payload={"structured_overrides": {"city": "上海", "trip_days": 2}},
+        expected_status="ready",
+        expected_blocking_reason=None,
+    ),
+    IntentCompilerFixture(
+        name="direct_user_text_parser_result_is_recorded",
+        payload={"direct_user_text": "城市：杭州\n天数：3\n偏好：轻松"},
+        expected_status="ready",
+        expected_typed_section="destinations",
+        expected_provenance_field="trip.city",
+        expected_semantic_type="destination_city",
     ),
 ]
 
@@ -91,6 +120,15 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     results = run_evaluation()
+    if len(results) < MIN_FIXTURE_COUNT:
+        results.append(
+            {
+                "name": "fixture_count_gate",
+                "passed": False,
+                "status": "blocked",
+                "error": f"Intent evaluation requires at least {MIN_FIXTURE_COUNT} fixtures.",
+            }
+        )
     failed = [result for result in results if not result["passed"]]
     if args.json:
         print(json.dumps({"total": len(results), "failed": len(failed), "results": results}, ensure_ascii=False, indent=2))
@@ -161,16 +199,30 @@ def evaluate_response(fixture: IntentCompilerFixture, response) -> tuple[bool, d
         passed = passed and fixture.expected_clarification in clarifications
     typed_sections = envelope["validation_report"].get("typed_intent_sections", [])
     provenance_fields = [item["field_path"] for item in envelope.get("provenance_summary", [])]
+    semantic_types = [field["semantic_type"] for field in envelope["fields"]]
+    blocking_reasons = envelope.get("readiness_policy", {}).get("blocking_reason_codes", [])
     if fixture.expected_typed_section:
         passed = passed and fixture.expected_typed_section in typed_sections
     if fixture.expected_provenance_field:
         passed = passed and fixture.expected_provenance_field in provenance_fields
+    if fixture.expected_semantic_type:
+        passed = passed and fixture.expected_semantic_type in semantic_types
+    if fixture.expected_blocking_reason:
+        passed = passed and fixture.expected_blocking_reason in blocking_reasons
+    passed = passed and bool(envelope.get("semantic_digest"))
+    passed = passed and envelope["validation_report"].get("provenance_graph_node_count", 0) > 0
+    passed = passed and "typed_assumptions" in envelope
+    passed = passed and "parser_result" in envelope
     return passed, {
         "status": envelope["planner_ready_status"],
         "conflicts": conflicts,
         "clarifications": clarifications,
         "typed_sections": typed_sections,
         "provenance_fields": provenance_fields,
+        "semantic_types": semantic_types,
+        "blocking_reasons": blocking_reasons,
+        "semantic_digest": envelope.get("semantic_digest"),
+        "provenance_graph_node_count": envelope["validation_report"].get("provenance_graph_node_count", 0),
         "field_count": len(envelope["fields"]),
     }
 

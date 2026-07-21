@@ -12,8 +12,8 @@ from app.trips.candidates import TripCandidateRecord
 from app.trips.digests import sha256_digest
 
 
-TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.1"
-TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v2"
+TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.2"
+TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v3"
 
 
 class IntentSourceType(str, Enum):
@@ -43,6 +43,42 @@ class IntentPlannerReadyStatus(str, Enum):
     BLOCKED = "blocked"
 
 
+class IntentAuthority(str, Enum):
+    USER_CONFIRMED = "user_confirmed"
+    REVIEWED_SOURCE = "reviewed_source"
+    SAVED_STATE = "saved_state"
+    LLM_UNTRUSTED = "llm_untrusted"
+    DETERMINISTIC_CONTEXT = "deterministic_context"
+    LEGACY_UNKNOWN = "legacy_unknown"
+
+
+class IntentValueType(str, Enum):
+    UNKNOWN = "unknown"
+    DESTINATION_CITY = "destination_city"
+    TRIP_DAYS = "trip_days"
+    PACE = "pace"
+    TRANSPORT_PREFERENCE = "transport_preference"
+    MUST_CANDIDATE = "must_candidate"
+    FIXED_EVENT = "fixed_event"
+    GENERAL_PREFERENCE = "general_preference"
+
+
+class ProvenanceNodeType(str, Enum):
+    ENVELOPE_REVISION = "envelope_revision"
+    PARSER_RESULT = "parser_result"
+    SOURCE = "source"
+    FIELD = "field"
+    ASSUMPTION = "assumption"
+
+
+class ProvenanceEdgeType(str, Enum):
+    PRODUCED = "produced"
+    SUPPORTS = "supports"
+    SELECTED_IN = "selected_in"
+    SHADOWED_IN = "shadowed_in"
+    CREATED_ASSUMPTION = "created_assumption"
+
+
 class IntentSourceRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -53,6 +89,7 @@ class IntentSourceRef(BaseModel):
     label: str
     priority: int = Field(..., ge=0, le=100)
     confirmed: bool = False
+    authority: IntentAuthority = IntentAuthority.LEGACY_UNKNOWN
     evidence_digest: str
     evidence_refs: list[str] = Field(default_factory=list)
 
@@ -63,6 +100,8 @@ class IntentField(BaseModel):
     field_id: str
     field_path: str
     value: Any
+    semantic_type: IntentValueType = IntentValueType.UNKNOWN
+    semantic_value: dict[str, Any] = Field(default_factory=dict)
     kind: IntentFieldKind
     confidence: float = Field(..., ge=0, le=1)
     source_refs: list[IntentSourceRef] = Field(default_factory=list)
@@ -108,6 +147,8 @@ class TypedIntentValue(BaseModel):
     field_path: str
     field_id: str | None = None
     value: Any
+    semantic_type: IntentValueType = IntentValueType.UNKNOWN
+    semantic_value: dict[str, Any] = Field(default_factory=dict)
     kind: IntentFieldKind
     confidence: float = Field(..., ge=0, le=1)
     confirmed_by_user: bool
@@ -142,7 +183,22 @@ class TypedTripIntent(BaseModel):
     budget: TypedIntentValue | None = None
     travelers: list[TypedIntentValue] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
+    typed_assumptions: list["IntentAssumption"] = Field(default_factory=list)
     unresolved_questions: list[ClarificationQuestion] = Field(default_factory=list)
+
+
+class IntentAssumption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assumption_id: str
+    field_path: str
+    assumption_type: Literal["missing_value", "empty_reviewed_candidate_set", "carried_forward_assumption"]
+    value: Any = None
+    has_assumed_value: bool
+    blocks_planner_ready: bool
+    reason_code: str
+    explanation: str
+    source_refs: list[IntentSourceRef] = Field(default_factory=list)
 
 
 class IntentProvenanceSummary(BaseModel):
@@ -155,6 +211,56 @@ class IntentProvenanceSummary(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
     confirmed: bool
     max_confidence: float = Field(..., ge=0, le=1)
+
+
+class IntentParserResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parser_name: str
+    parser_version: str
+    status: Literal["not_run", "parsed", "validated"]
+    input_digests: list[str] = Field(default_factory=list)
+    extracted_field_paths: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class IntentProvenanceNode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    node_type: ProvenanceNodeType
+    label: str
+    field_path: str | None = None
+    source_type: IntentSourceType | None = None
+    source_id: str | None = None
+    authority: IntentAuthority = IntentAuthority.LEGACY_UNKNOWN
+    confirmed: bool = False
+    digest: str | None = None
+
+
+class IntentProvenanceEdge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    from_node_id: str
+    to_node_id: str
+    relation: ProvenanceEdgeType
+
+
+class IntentProvenanceGraph(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nodes: list[IntentProvenanceNode] = Field(default_factory=list)
+    edges: list[IntentProvenanceEdge] = Field(default_factory=list)
+
+
+class IntentReadinessPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_version: str = "intent-readiness-v2"
+    status: IntentPlannerReadyStatus
+    blocking_reason_codes: list[str] = Field(default_factory=list)
+    allowed_assumption_ids: list[str] = Field(default_factory=list)
+    requires_user_confirmation: bool = False
 
 
 class PlannerReadyIntentPreview(BaseModel):
@@ -183,13 +289,22 @@ class SourceLinkedTripIntentEnvelope(BaseModel):
     fields: list[IntentField] = Field(default_factory=list)
     conflicts: list[IntentConflict] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
+    typed_assumptions: list[IntentAssumption] = Field(default_factory=list)
     clarification_queue: list[ClarificationQuestion] = Field(default_factory=list)
+    parser_result: IntentParserResult = Field(default_factory=lambda: IntentParserResult(
+        parser_name="intent_contract_compiler",
+        parser_version=TRIP_INTENT_COMPILER_VERSION,
+        status="not_run",
+    ))
     typed_intent: TypedTripIntent = Field(default_factory=TypedTripIntent)
     provenance_summary: list[IntentProvenanceSummary] = Field(default_factory=list)
+    provenance_graph: IntentProvenanceGraph = Field(default_factory=IntentProvenanceGraph)
     planner_ready_intent: PlannerReadyIntentPreview
     planner_ready_status: IntentPlannerReadyStatus
+    readiness_policy: IntentReadinessPolicy | None = None
     validation_report: dict[str, Any]
     source_digest: str
+    semantic_digest: str | None = None
     content_digest: str
     created_at: str
 
@@ -252,6 +367,12 @@ class AnswerIntentClarificationRequest(BaseModel):
     answer: Any
 
 
+class RestoreTripIntentEnvelopeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision_id: str = Field(..., min_length=1)
+
+
 class TripIntentRevisionMetadata(BaseModel):
     id: str
     trip_id: str
@@ -306,6 +427,8 @@ class CreateIntentRevisionResult:
 class _CandidateField:
     field_path: str
     value: Any
+    semantic_type: IntentValueType
+    semantic_value: dict[str, Any]
     kind: IntentFieldKind
     confidence: float
     source_ref: IntentSourceRef
@@ -342,25 +465,55 @@ def compile_source_linked_intent(
     planner_ready = _build_planner_ready(selected)
     validation_conflicts = _validate_selected_fields(selected, planner_ready)
     conflicts.extend(validation_conflicts)
-    assumptions = _build_assumptions(selected, planner_ready)
+    typed_assumptions = _build_typed_assumptions(selected, planner_ready)
+    assumptions = [assumption.explanation for assumption in typed_assumptions]
     for assumption in assumptions:
         if assumption not in planner_ready.assumptions:
             planner_ready.assumptions.append(assumption)
-    typed_intent = _build_typed_intent(selected, clarifications, assumptions)
+    typed_intent = _build_typed_intent(selected, clarifications, assumptions, typed_assumptions)
     provenance_summary = _build_provenance_summary(selected, shadowed)
+    parser_result = _build_parser_result(request, fields)
+    provenance_graph = _build_provenance_graph(
+        envelope_id=f"intent_revision:{trip_id}:{next_revision_number}",
+        parser_result=parser_result,
+        fields=fields,
+        assumptions=typed_assumptions,
+    )
     blocking_conflicts = [item for item in conflicts if item.severity == "blocking"]
     blocking_clarifications = [item for item in clarifications if item.blocking]
+    blocking_assumptions = [
+        assumption
+        for assumption in typed_assumptions
+        if assumption.blocks_planner_ready and not assumption.has_assumed_value
+    ]
     status = (
         IntentPlannerReadyStatus.BLOCKED
         if blocking_conflicts
         else IntentPlannerReadyStatus.NEEDS_CLARIFICATION
-        if blocking_clarifications
+        if blocking_clarifications or blocking_assumptions
         else IntentPlannerReadyStatus.READY
     )
+    readiness_policy = IntentReadinessPolicy(
+        status=status,
+        blocking_reason_codes=unique_texts(
+            [
+                *[conflict.reason_code for conflict in blocking_conflicts],
+                *[item.reason_code for item in blocking_clarifications],
+                *[item.reason_code for item in blocking_assumptions],
+            ]
+        ),
+        allowed_assumption_ids=[
+            assumption.assumption_id
+            for assumption in typed_assumptions
+            if not assumption.blocks_planner_ready or assumption.has_assumed_value
+        ],
+        requires_user_confirmation=bool(blocking_clarifications or blocking_assumptions),
+    )
     validation_report = {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "compiler_version": TRIP_INTENT_COMPILER_VERSION,
         "llm_proposal_validated": request.llm_proposal is not None,
+        "parser_status": parser_result.status,
         "manual_override_priority_enforced": any(
             conflict.reason_code == "higher_priority_source_selected"
             and any(ref.source_type == IntentSourceType.STRUCTURED_USER_OVERRIDE for ref in conflict.source_refs)
@@ -369,8 +522,10 @@ def compile_source_linked_intent(
         "blocking_conflict_count": sum(1 for conflict in conflicts if conflict.severity == "blocking"),
         "clarification_count": len(clarifications),
         "blocking_clarification_count": len(blocking_clarifications),
+        "blocking_unvalued_assumption_count": len(blocking_assumptions),
         "typed_intent_sections": _typed_section_names(typed_intent),
         "provenance_summary_count": len(provenance_summary),
+        "provenance_graph_node_count": len(provenance_graph.nodes),
         "planner_ready": status == IntentPlannerReadyStatus.READY,
         "excluded_candidate_ids": [
             candidate.id
@@ -385,6 +540,12 @@ def compile_source_linked_intent(
             "base_revision_id": base_revision_id,
         }
     )
+    semantic_digest = _build_semantic_digest(
+        selected=selected,
+        conflicts=conflicts,
+        assumptions=typed_assumptions,
+        planner_ready_status=status,
+    )
     envelope_without_digest = {
         "trip_id": trip_id,
         "base_trip_revision_id": base_revision_id,
@@ -393,13 +554,18 @@ def compile_source_linked_intent(
         "fields": [field.model_dump(mode="json") for field in fields],
         "conflicts": [conflict.model_dump(mode="json") for conflict in conflicts],
         "assumptions": assumptions,
+        "typed_assumptions": [assumption.model_dump(mode="json") for assumption in typed_assumptions],
         "clarification_queue": [item.model_dump(mode="json") for item in clarifications],
+        "parser_result": parser_result.model_dump(mode="json"),
         "typed_intent": typed_intent.model_dump(mode="json"),
         "provenance_summary": [item.model_dump(mode="json") for item in provenance_summary],
+        "provenance_graph": provenance_graph.model_dump(mode="json"),
         "planner_ready_intent": planner_ready.model_dump(mode="json"),
         "planner_ready_status": status.value,
+        "readiness_policy": readiness_policy.model_dump(mode="json"),
         "validation_report": validation_report,
         "source_digest": source_digest,
+        "semantic_digest": semantic_digest,
     }
     content_digest = sha256_digest(envelope_without_digest)
     return SourceLinkedTripIntentEnvelope(
@@ -411,13 +577,18 @@ def compile_source_linked_intent(
         fields=fields,
         conflicts=conflicts,
         assumptions=assumptions,
+        typed_assumptions=typed_assumptions,
         clarification_queue=clarifications,
+        parser_result=parser_result,
         typed_intent=typed_intent,
         provenance_summary=provenance_summary,
+        provenance_graph=provenance_graph,
         planner_ready_intent=planner_ready,
         planner_ready_status=status,
+        readiness_policy=readiness_policy,
         validation_report=validation_report,
         source_digest=source_digest,
+        semantic_digest=semantic_digest,
         content_digest=content_digest,
         created_at=created_at,
     )
@@ -458,6 +629,7 @@ def _source_ref(
         label=label,
         priority=priority,
         confirmed=confirmed,
+        authority=_authority_for_source(source_type, confirmed),
         evidence_digest=sha256_digest(
             {
                 "field_path": field_path,
@@ -470,15 +642,69 @@ def _source_ref(
     )
 
 
-def _candidate(field_path: str, value: Any, *, kind: IntentFieldKind, confidence: float, source_ref: IntentSourceRef, explanation: str) -> _CandidateField:
+def _authority_for_source(source_type: IntentSourceType, confirmed: bool) -> IntentAuthority:
+    if source_type == IntentSourceType.STRUCTURED_USER_OVERRIDE or (
+        source_type == IntentSourceType.DIRECT_USER_LANGUAGE and confirmed
+    ):
+        return IntentAuthority.USER_CONFIRMED
+    if source_type == IntentSourceType.TRIP_CANDIDATE:
+        return IntentAuthority.REVIEWED_SOURCE
+    if source_type in {IntentSourceType.EXISTING_TRIP_STATE, IntentSourceType.EXISTING_INTENT_REVISION}:
+        return IntentAuthority.SAVED_STATE
+    if source_type == IntentSourceType.LLM_PROPOSAL:
+        return IntentAuthority.LLM_UNTRUSTED
+    return IntentAuthority.LEGACY_UNKNOWN
+
+
+def _candidate(
+    field_path: str,
+    value: Any,
+    *,
+    kind: IntentFieldKind,
+    confidence: float,
+    source_ref: IntentSourceRef,
+    explanation: str,
+) -> _CandidateField:
     return _CandidateField(
         field_path=field_path,
         value=value,
+        semantic_type=_semantic_type_for_field(field_path),
+        semantic_value=_semantic_value_for_field(field_path, value),
         kind=kind,
         confidence=confidence,
         source_ref=source_ref,
         explanation=explanation,
     )
+
+
+def _semantic_type_for_field(field_path: str) -> IntentValueType:
+    return {
+        "trip.city": IntentValueType.DESTINATION_CITY,
+        "trip.trip_days": IntentValueType.TRIP_DAYS,
+        "trip.pace": IntentValueType.PACE,
+        "preferences.transport": IntentValueType.TRANSPORT_PREFERENCE,
+        "poi.must_candidates": IntentValueType.MUST_CANDIDATE,
+        "time.fixed_events": IntentValueType.FIXED_EVENT,
+        "preferences.general": IntentValueType.GENERAL_PREFERENCE,
+    }.get(field_path, IntentValueType.UNKNOWN)
+
+
+def _semantic_value_for_field(field_path: str, value: Any) -> dict[str, Any]:
+    if field_path == "trip.city":
+        return {"city": str(value).strip()}
+    if field_path == "trip.trip_days":
+        return {"days": int(value)}
+    if field_path == "trip.pace":
+        return {"pace": str(value).strip()}
+    if field_path == "preferences.transport":
+        return {"mode": str(value).strip()}
+    if field_path == "poi.must_candidates":
+        return {"candidate_id": str(value).strip()}
+    if field_path == "time.fixed_events":
+        return {"event": value if isinstance(value, dict) else {"value": value}}
+    if field_path == "preferences.general":
+        return {"preference": str(value).strip()}
+    return {"value": value}
 
 
 def _fields_from_payload(payload: dict[str, Any], source_type: IntentSourceType) -> list[_CandidateField]:
@@ -749,8 +975,8 @@ def _select_fields(candidates: list[_CandidateField]) -> tuple[list[IntentField]
                 answer_value_type="integer",
                 question="How many days should the trip cover?",
                 priority=70,
-                blocking=False,
-                impact="planner_quality",
+                blocking=True,
+                impact="planner_blocking",
                 reason_code="missing_trip_length",
             )
         )
@@ -788,6 +1014,8 @@ def _to_field(item: _CandidateField, status: IntentFieldStatus) -> IntentField:
         field_id=_field_id(item),
         field_path=item.field_path,
         value=item.value,
+        semantic_type=item.semantic_type,
+        semantic_value=item.semantic_value,
         kind=item.kind,
         confidence=item.confidence,
         source_refs=[item.source_ref],
@@ -838,8 +1066,13 @@ def _build_typed_intent(
     fields: list[IntentField],
     clarifications: list[ClarificationQuestion],
     assumptions: list[str],
+    typed_assumptions: list[IntentAssumption],
 ) -> TypedTripIntent:
-    typed = TypedTripIntent(assumptions=assumptions, unresolved_questions=clarifications)
+    typed = TypedTripIntent(
+        assumptions=assumptions,
+        typed_assumptions=typed_assumptions,
+        unresolved_questions=clarifications,
+    )
     for field in fields:
         if field.status != IntentFieldStatus.SELECTED:
             continue
@@ -864,6 +1097,8 @@ def _typed_value(field: IntentField) -> TypedIntentValue:
         field_path=field.field_path,
         field_id=field.field_id,
         value=field.value,
+        semantic_type=field.semantic_type,
+        semantic_value=field.semantic_value,
         kind=field.kind,
         confidence=field.confidence,
         confirmed_by_user=field.confirmed_by_user,
@@ -962,16 +1197,263 @@ def _validate_selected_fields(
     return conflicts
 
 
-def _build_assumptions(fields: list[IntentField], preview: PlannerReadyIntentPreview) -> list[str]:
-    assumptions: list[str] = []
+def _build_typed_assumptions(fields: list[IntentField], preview: PlannerReadyIntentPreview) -> list[IntentAssumption]:
+    assumptions: list[IntentAssumption] = []
     if preview.trip_days is None:
-        assumptions.append("Trip length is unresolved and must be inferred or clarified before deterministic planning.")
+        assumptions.append(
+            IntentAssumption(
+                assumption_id=f"asm_{sha256_digest({'field_path': 'trip.trip_days', 'reason': 'missing_trip_length'})[:16]}",
+                field_path="trip.trip_days",
+                assumption_type="missing_value",
+                value=None,
+                has_assumed_value=False,
+                blocks_planner_ready=True,
+                reason_code="missing_trip_length",
+                explanation="Trip length is unresolved and must be clarified before deterministic planning.",
+            )
+        )
     if not preview.must_place_candidate_ids:
-        assumptions.append("No reviewed must-visit TripCandidate has been selected yet.")
+        assumptions.append(
+            IntentAssumption(
+                assumption_id=f"asm_{sha256_digest({'field_path': 'poi.must_candidates', 'reason': 'empty_reviewed_candidate_set'})[:16]}",
+                field_path="poi.must_candidates",
+                assumption_type="empty_reviewed_candidate_set",
+                value=[],
+                has_assumed_value=True,
+                blocks_planner_ready=False,
+                reason_code="no_reviewed_must_candidates",
+                explanation="No reviewed must-visit TripCandidate has been selected yet.",
+            )
+        )
     for field in fields:
         if field.kind == IntentFieldKind.ASSUMPTION:
-            assumptions.append(f"{field.field_path} is carried as an assumption from {field.source_refs[0].label}.")
-    return unique_texts(assumptions)
+            assumptions.append(
+                IntentAssumption(
+                    assumption_id=f"asm_{sha256_digest({'field_id': field.field_id, 'reason': 'carried_forward_assumption'})[:16]}",
+                    field_path=field.field_path,
+                    assumption_type="carried_forward_assumption",
+                    value=field.value,
+                    has_assumed_value=True,
+                    blocks_planner_ready=False,
+                    reason_code="carried_forward_assumption",
+                    explanation=f"{field.field_path} is carried as an assumption from {field.source_refs[0].label}.",
+                    source_refs=field.source_refs,
+                )
+            )
+    by_id: dict[str, IntentAssumption] = {}
+    for assumption in assumptions:
+        by_id.setdefault(assumption.assumption_id, assumption)
+    return list(by_id.values())
+
+
+def _build_parser_result(request: CompileTripIntentRequest, fields: list[IntentField]) -> IntentParserResult:
+    input_digests: list[str] = []
+    warnings: list[str] = []
+    parser_name = "intent_contract_compiler"
+    status: Literal["not_run", "parsed", "validated"] = "not_run"
+    if request.direct_user_text and request.direct_user_text.strip():
+        input_digests.append(f"direct_user_text:{sha256_digest(request.direct_user_text.strip())[:16]}")
+        parser_name = "deterministic_text_fallback"
+        status = "parsed"
+    if request.llm_proposal is not None:
+        input_digests.append(f"llm_proposal:{sha256_digest(request.llm_proposal.model_dump(mode='json'))[:16]}")
+        status = "validated"
+    if request.use_llm_proposal_adapter:
+        warnings.append("LLM proposal adapter output was treated as untrusted input and deterministically recompiled.")
+    return IntentParserResult(
+        parser_name=parser_name,
+        parser_version=TRIP_INTENT_COMPILER_VERSION,
+        status=status,
+        input_digests=input_digests,
+        extracted_field_paths=sorted(
+            {
+                field.field_path
+                for field in fields
+                if any(
+                    ref.source_type in {IntentSourceType.DIRECT_USER_LANGUAGE, IntentSourceType.LLM_PROPOSAL}
+                    for ref in field.source_refs
+                )
+            }
+        ),
+        warnings=warnings,
+    )
+
+
+def _build_provenance_graph(
+    *,
+    envelope_id: str,
+    parser_result: IntentParserResult,
+    fields: list[IntentField],
+    assumptions: list[IntentAssumption],
+) -> IntentProvenanceGraph:
+    nodes: dict[str, IntentProvenanceNode] = {
+        envelope_id: IntentProvenanceNode(
+            node_id=envelope_id,
+            node_type=ProvenanceNodeType.ENVELOPE_REVISION,
+            label="TripIntentEnvelope revision",
+            authority=IntentAuthority.DETERMINISTIC_CONTEXT,
+            confirmed=True,
+        )
+    }
+    edges: list[IntentProvenanceEdge] = []
+    parser_node_id = f"parser:{sha256_digest(parser_result.model_dump(mode='json'))[:16]}"
+    nodes[parser_node_id] = IntentProvenanceNode(
+        node_id=parser_node_id,
+        node_type=ProvenanceNodeType.PARSER_RESULT,
+        label=parser_result.parser_name,
+        authority=IntentAuthority.DETERMINISTIC_CONTEXT,
+        confirmed=parser_result.status in {"parsed", "validated"},
+        digest=sha256_digest(parser_result.model_dump(mode="json")),
+    )
+    edges.append(
+        IntentProvenanceEdge(
+            from_node_id=parser_node_id,
+            to_node_id=envelope_id,
+            relation=ProvenanceEdgeType.PRODUCED,
+        )
+    )
+    for field in fields:
+        field_node_id = f"field:{field.field_id}"
+        nodes[field_node_id] = IntentProvenanceNode(
+            node_id=field_node_id,
+            node_type=ProvenanceNodeType.FIELD,
+            label=field.field_path,
+            field_path=field.field_path,
+            authority=_strongest_authority(field.source_refs),
+            confirmed=field.confirmed_by_user,
+            digest=sha256_digest(
+                {
+                    "field_path": field.field_path,
+                    "semantic_type": field.semantic_type.value,
+                    "semantic_value": field.semantic_value,
+                    "kind": field.kind.value,
+                }
+            ),
+        )
+        edges.append(
+            IntentProvenanceEdge(
+                from_node_id=field_node_id,
+                to_node_id=envelope_id,
+                relation=ProvenanceEdgeType.SELECTED_IN
+                if field.status == IntentFieldStatus.SELECTED
+                else ProvenanceEdgeType.SHADOWED_IN,
+            )
+        )
+        for ref in field.source_refs:
+            source_node_id = f"source:{ref.ref_id}"
+            nodes[source_node_id] = IntentProvenanceNode(
+                node_id=source_node_id,
+                node_type=ProvenanceNodeType.SOURCE,
+                label=ref.label,
+                field_path=ref.field_path,
+                source_type=ref.source_type,
+                source_id=ref.source_id,
+                authority=ref.authority,
+                confirmed=ref.confirmed,
+                digest=ref.evidence_digest,
+            )
+            edges.append(
+                IntentProvenanceEdge(
+                    from_node_id=source_node_id,
+                    to_node_id=field_node_id,
+                    relation=ProvenanceEdgeType.SUPPORTS,
+                )
+            )
+    for assumption in assumptions:
+        assumption_node_id = f"assumption:{assumption.assumption_id}"
+        nodes[assumption_node_id] = IntentProvenanceNode(
+            node_id=assumption_node_id,
+            node_type=ProvenanceNodeType.ASSUMPTION,
+            label=assumption.reason_code,
+            field_path=assumption.field_path,
+            authority=IntentAuthority.DETERMINISTIC_CONTEXT,
+            confirmed=False,
+            digest=sha256_digest(assumption.model_dump(mode="json")),
+        )
+        edges.append(
+            IntentProvenanceEdge(
+                from_node_id=assumption_node_id,
+                to_node_id=envelope_id,
+                relation=ProvenanceEdgeType.CREATED_ASSUMPTION,
+            )
+        )
+    return IntentProvenanceGraph(
+        nodes=sorted(nodes.values(), key=lambda node: node.node_id),
+        edges=sorted(edges, key=lambda edge: (edge.from_node_id, edge.to_node_id, edge.relation.value)),
+    )
+
+
+def _strongest_authority(refs: list[IntentSourceRef]) -> IntentAuthority:
+    rank = {
+        IntentAuthority.USER_CONFIRMED: 5,
+        IntentAuthority.REVIEWED_SOURCE: 4,
+        IntentAuthority.SAVED_STATE: 3,
+        IntentAuthority.DETERMINISTIC_CONTEXT: 2,
+        IntentAuthority.LLM_UNTRUSTED: 1,
+        IntentAuthority.LEGACY_UNKNOWN: 0,
+    }
+    return max((ref.authority for ref in refs), key=lambda authority: rank[authority], default=IntentAuthority.LEGACY_UNKNOWN)
+
+
+def _build_semantic_digest(
+    *,
+    selected: list[IntentField],
+    conflicts: list[IntentConflict],
+    assumptions: list[IntentAssumption],
+    planner_ready_status: IntentPlannerReadyStatus,
+) -> str:
+    return sha256_digest(
+        {
+            "compiler_version": TRIP_INTENT_COMPILER_VERSION,
+            "planner_ready_status": planner_ready_status.value,
+            "selected_fields": sorted(
+                [
+                    {
+                        "field_path": field.field_path,
+                        "semantic_type": field.semantic_type.value,
+                        "semantic_value": field.semantic_value,
+                        "kind": field.kind.value,
+                        "confirmed_by_user": field.confirmed_by_user,
+                        "authority": _strongest_authority(field.source_refs).value,
+                    }
+                    for field in selected
+                    if field.status == IntentFieldStatus.SELECTED
+                ],
+                key=lambda item: (
+                    str(item["field_path"]),
+                    str(item["semantic_type"]),
+                    sha256_digest(item["semantic_value"]),
+                    str(item["authority"]),
+                ),
+            ),
+            "blocking_conflicts": sorted(
+                [
+                    {
+                        "field_path": conflict.field_path,
+                        "severity": conflict.severity,
+                        "reason_code": conflict.reason_code,
+                    }
+                    for conflict in conflicts
+                    if conflict.severity == "blocking"
+                ],
+                key=lambda item: (str(item["field_path"]), str(item["reason_code"])),
+            ),
+            "assumptions": sorted(
+                [
+                    {
+                        "field_path": assumption.field_path,
+                        "assumption_type": assumption.assumption_type,
+                        "has_assumed_value": assumption.has_assumed_value,
+                        "blocks_planner_ready": assumption.blocks_planner_ready,
+                        "reason_code": assumption.reason_code,
+                        "value": assumption.value,
+                    }
+                    for assumption in assumptions
+                ],
+                key=lambda item: (str(item["field_path"]), str(item["reason_code"])),
+            ),
+        }
+    )
 
 
 def unique_texts(values: list[str]) -> list[str]:
