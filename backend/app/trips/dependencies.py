@@ -31,7 +31,10 @@ def get_trip_repository() -> TripRepository:
 
 
 def get_trip_persistence_service() -> TripPersistenceService:
-    return TripPersistenceService(get_trip_repository())
+    # Imported lazily to avoid a dependency-cycle during Import service setup.
+    from app.imports.dependencies import get_import_repository
+
+    return TripPersistenceService(get_trip_repository(), import_repository=get_import_repository())
 
 
 def reset_trip_repository_cache_for_tests() -> None:

@@ -75,6 +75,41 @@ class CandidateCoordinate(BaseModel):
     longitude: float = Field(..., ge=-180, le=180)
 
 
+class CandidateEvidenceLinkInput(BaseModel):
+    """Structured Import Review lineage committed alongside an imported candidate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_artifact_id: str = Field(..., min_length=1, max_length=120)
+    import_job_id: str = Field(..., min_length=1, max_length=120)
+    mention_id: str = Field(..., min_length=1, max_length=120)
+    review_decision_id: str = Field(..., min_length=1, max_length=120)
+    resolution_candidate_id: str = Field(..., min_length=1, max_length=120)
+    document_generation_id: str | None = Field(default=None, max_length=120)
+    document_page_number: int | None = Field(default=None, ge=1)
+    document_span_id: str | None = Field(default=None, max_length=120)
+    bounding_boxes: list[dict[str, float | str]] = Field(default_factory=list, max_length=16)
+    source_digest: str = Field(..., min_length=16, max_length=128)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateEvidenceLinkRecord:
+    id: str
+    trip_id: str
+    trip_candidate_id: str
+    source_artifact_id: str
+    import_job_id: str
+    mention_id: str
+    review_decision_id: str
+    resolution_candidate_id: str
+    document_generation_id: str | None
+    document_page_number: int | None
+    document_span_id: str | None
+    bounding_boxes: list[dict[str, float | str]]
+    source_digest: str
+    created_at: str
+
+
 class TripCandidateCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -91,6 +126,7 @@ class TripCandidateCreateRequest(BaseModel):
     source_kind: CandidateSourceKind = CandidateSourceKind.MANUAL_ENTRY
     source_ref: str | None = Field(default=None, max_length=160)
     evidence_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
+    evidence_links: list["CandidateEvidenceLinkInput"] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
 
     @model_validator(mode="after")
     def validate_text(self) -> "TripCandidateCreateRequest":

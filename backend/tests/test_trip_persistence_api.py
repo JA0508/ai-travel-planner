@@ -13,6 +13,7 @@ from app.main import app
 from app.planner.trace import PlannerInputSnapshot, PlannerResultSummary, PlannerTrace
 from app.schemas import (
     CompletionTaskActionResponse,
+    ItineraryCompletionOption,
     ItineraryResponse,
     PlanningAnchorSource,
     RegenerationIntentSummary,
@@ -889,6 +890,14 @@ class TripPersistenceApiTests(unittest.TestCase):
     def test_completion_undo_creates_compensating_revision(self) -> None:
         client, trip_id, base_revision_id = create_command_trip()
         inserted = ScheduledPOI.model_validate(find_item(command_itinerary().model_dump(mode="json"), "豫园"))
+        selected_candidate = ItineraryCompletionOption(
+            name="豫园",
+            type=POIType.SCENIC,
+            suggested_day=1,
+            suggested_block=TimeBlockType.AFTERNOON,
+            reasoning_summary="Fits the requested afternoon repair.",
+            itinerary_relation_summary="A deterministic candidate selected from the preview.",
+        )
         next_itinerary = command_itinerary().model_copy(
             update={
                 "days": command_itinerary().days,
@@ -912,6 +921,8 @@ class TripPersistenceApiTests(unittest.TestCase):
                     "task_instance_key": "fill-afternoon-1",
                     "day": 1,
                     "block_type": "afternoon",
+                    "selected_candidate": selected_candidate.model_dump(mode="json"),
+                    "completion_candidate_history": [selected_candidate.model_dump(mode="json")],
                 },
                 headers={
                     "Origin": "http://testserver",

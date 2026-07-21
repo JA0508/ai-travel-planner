@@ -128,6 +128,7 @@ class CreateRevisionResult:
 
 
 from .candidates import (  # noqa: E402
+    CandidateEvidenceLinkRecord,
     CandidateDecisionResult,
     CandidateRegistrationResult,
     TripCandidateDecisionRecord,

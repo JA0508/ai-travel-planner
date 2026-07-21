@@ -94,6 +94,9 @@ export function formatIntentDomainValue(value: IntentDomainValue): string {
       return value.mode;
     case "must_candidate":
       return value.display_name ? `${value.display_name} (${value.candidate_id})` : value.candidate_id;
+    case "optional_candidate":
+    case "avoid_candidate":
+      return value.display_name ? `${value.display_name} (${value.candidate_id})` : value.candidate_id;
     case "fixed_event":
       return [value.name, value.fixed_day ? `day ${value.fixed_day}` : null, value.fixed_time_start]
         .filter(Boolean)
@@ -101,7 +104,7 @@ export function formatIntentDomainValue(value: IntentDomainValue): string {
     case "general_preference":
       return value.preference;
     case "budget":
-      return [value.budget_level, value.amount, value.currency].filter((item) => item != null && item !== "").join(" ");
+      return [value.budget_level, value.amount_minor, value.currency].filter((item) => item != null && item !== "").join(" ");
     case "traveler_need":
       return value.traveler_group ? `${value.traveler_group}: ${value.need}` : value.need;
     case "unknown":
@@ -125,22 +128,33 @@ function flattenFormalContract(envelope: SourceLinkedTripIntentEnvelope | null):
   const fields: Record<string, string> = {};
   for (const destination of envelope.formal_contract.destinations) {
     fields[destination.metadata.field_path] = stableSerialize({
-      city: destination.city,
-      canonical_place_id: destination.canonical_place_id,
+      city_name: destination.city_name,
+      country_code: destination.country_code,
+      timezone: destination.timezone,
     });
   }
-  if (envelope.formal_contract.date_policy.metadata) {
-    fields[envelope.formal_contract.date_policy.metadata.field_path] = stableSerialize({
-      trip_days: envelope.formal_contract.date_policy.trip_days,
-      start_date: envelope.formal_contract.date_policy.start_date,
-      end_date: envelope.formal_contract.date_policy.end_date,
+  const datePolicy = envelope.formal_contract.date_policy;
+  if (datePolicy) {
+    fields[datePolicy.metadata.field_path] = stableSerialize({
+      trip_days: datePolicy.trip_days,
+      start_date: datePolicy.start_date,
+      end_date: datePolicy.end_date,
+      timezone: datePolicy.timezone,
+      reference_date: datePolicy.reference_date,
+      original_expressions: datePolicy.original_expressions,
     });
+  }
+  for (const item of [envelope.formal_contract.arrival_boundary, envelope.formal_contract.departure_boundary]) {
+    if (item) {
+      fields[item.metadata.field_path] = stableSerialize(item);
+    }
   }
   for (const section of [
+    envelope.formal_contract.availability_windows,
     envelope.formal_contract.fixed_events,
-    envelope.formal_contract.must_places,
+    envelope.formal_contract.must_visit_places,
     envelope.formal_contract.optional_places,
-    envelope.formal_contract.exclusions,
+    envelope.formal_contract.avoid_places,
     envelope.formal_contract.transport_preferences,
     envelope.formal_contract.meal_preferences,
     envelope.formal_contract.traveler_needs,
@@ -154,12 +168,16 @@ function flattenFormalContract(envelope: SourceLinkedTripIntentEnvelope | null):
   }
   for (const [fieldPath, value] of Object.entries({
     "trip.pace": envelope.formal_contract.pace,
-    "trip.budget": envelope.formal_contract.budget,
+    "budget": envelope.formal_contract.budget,
   })) {
     if (value) {
       fields[fieldPath] = stableSerialize(value);
     }
   }
+  fields["contract.assumptions"] = stableSerialize(envelope.formal_contract.assumptions);
+  fields["contract.conflicts"] = stableSerialize(envelope.formal_contract.conflicts);
+  fields["contract.clarifications"] = stableSerialize(envelope.formal_contract.clarifications);
+  fields["contract.readiness"] = stableSerialize(envelope.formal_contract.readiness);
   return fields;
 }
 

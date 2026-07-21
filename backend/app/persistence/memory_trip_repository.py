@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -35,6 +36,7 @@ from app.trips.errors import (
     TripNotFoundError,
 )
 from app.trips.models import (
+    CandidateEvidenceLinkRecord,
     CandidateDecisionResult,
     CandidateRegistrationResult,
     CreateRevisionResult,
@@ -62,6 +64,7 @@ class MemoryTripRepository:
         self.candidates: dict[str, TripCandidateRecord] = {}
         self.candidate_decisions: dict[str, TripCandidateDecisionRecord] = {}
         self.candidate_idempotency_records: dict[tuple[str, str], tuple[str, str, str | None]] = {}
+        self.candidate_evidence_links: dict[str, CandidateEvidenceLinkRecord] = {}
         self.intent_revisions: dict[str, TripIntentRevisionRecord] = {}
         self.intent_idempotency_records: dict[tuple[str, str], tuple[str, str]] = {}
         self.intent_compile_runs: dict[str, IntentCompileRunDraft] = {}
@@ -292,6 +295,7 @@ class MemoryTripRepository:
         decision: TripCandidateDecisionRecord,
         request_digest: str,
         idempotency_key_hash: str,
+        evidence_links: list[CandidateEvidenceLinkRecord] | None = None,
     ) -> CandidateRegistrationResult:
         key = (candidate.trip_id, idempotency_key_hash)
         existing_idempotency = self.candidate_idempotency_records.get(key)
@@ -318,9 +322,16 @@ class MemoryTripRepository:
             None,
         )
         if duplicate is not None:
+            for evidence_link in evidence_links or []:
+                stored_link = replace(evidence_link, trip_candidate_id=duplicate.id)
+                self.candidate_evidence_links[stored_link.id] = copy.deepcopy(stored_link)
             self.candidate_idempotency_records[key] = (request_digest, duplicate.id, None)
             return CandidateRegistrationResult(candidate=copy.deepcopy(duplicate), deduplicated=True)
         self.candidates[candidate.id] = copy.deepcopy(candidate)
+        for evidence_link in evidence_links or []:
+            if evidence_link.trip_id != candidate.trip_id or evidence_link.trip_candidate_id != candidate.id:
+                raise CandidateNotFoundError(candidate.id)
+            self.candidate_evidence_links[evidence_link.id] = copy.deepcopy(evidence_link)
         self.candidate_decisions[decision.id] = copy.deepcopy(decision)
         self.candidate_idempotency_records[key] = (request_digest, candidate.id, decision.id)
         return CandidateRegistrationResult(candidate=copy.deepcopy(candidate), decision=copy.deepcopy(decision))
@@ -335,6 +346,21 @@ class MemoryTripRepository:
         return sorted(
             [copy.deepcopy(candidate) for candidate in self.candidates.values() if candidate.trip_id == trip_id],
             key=lambda candidate: (candidate.created_at, candidate.id),
+        )
+
+    def list_candidate_evidence_links(
+        self,
+        *,
+        trip_id: str,
+        candidate_id: str,
+    ) -> list[CandidateEvidenceLinkRecord]:
+        return sorted(
+            [
+                copy.deepcopy(link)
+                for link in self.candidate_evidence_links.values()
+                if link.trip_id == trip_id and link.trip_candidate_id == candidate_id
+            ],
+            key=lambda link: (link.created_at, link.id),
         )
 
     def list_candidate_decisions(

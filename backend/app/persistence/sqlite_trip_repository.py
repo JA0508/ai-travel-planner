@@ -4,6 +4,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing, contextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
@@ -15,6 +16,7 @@ from app.trips.intent_contracts import (
     TripIntentRevisionRecord,
     finalize_intent_envelope_for_revision,
 )
+from app.trips.candidates import CandidateEvidenceLinkRecord
 from app.trips.digests import (
     TRIP_SNAPSHOT_SCHEMA_VERSION,
     canonical_json,
@@ -390,6 +392,7 @@ class SQLiteTripRepository:
         decision: TripCandidateDecisionRecord,
         request_digest: str,
         idempotency_key_hash: str,
+        evidence_links: list[CandidateEvidenceLinkRecord] | None = None,
     ) -> CandidateRegistrationResult:
         with self._transaction() as connection:
             existing_idempotency = connection.execute(
@@ -431,6 +434,11 @@ class SQLiteTripRepository:
             ).fetchone()
             if duplicate is not None:
                 stored_candidate = row_to_candidate(duplicate)
+                for evidence_link in evidence_links or []:
+                    self._insert_candidate_evidence_link(
+                        connection,
+                        replace(evidence_link, trip_candidate_id=stored_candidate.id),
+                    )
                 connection.execute(
                     """
                     INSERT INTO candidate_idempotency_records(
@@ -450,6 +458,8 @@ class SQLiteTripRepository:
                 return CandidateRegistrationResult(candidate=stored_candidate, deduplicated=True)
 
             self._insert_candidate(connection, candidate)
+            for evidence_link in evidence_links or []:
+                self._insert_candidate_evidence_link(connection, evidence_link)
             self._insert_candidate_decision(connection, decision)
             connection.execute(
                 """
@@ -485,6 +495,23 @@ class SQLiteTripRepository:
                 (trip_id,),
             ).fetchall()
         return [row_to_candidate(row) for row in rows]
+
+    def list_candidate_evidence_links(
+        self,
+        *,
+        trip_id: str,
+        candidate_id: str,
+    ) -> list[CandidateEvidenceLinkRecord]:
+        with closing(self.connection_factory()) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM trip_candidate_evidence_links
+                WHERE trip_id = ? AND trip_candidate_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (trip_id, candidate_id),
+            ).fetchall()
+        return [row_to_candidate_evidence_link(row) for row in rows]
 
     def list_candidate_decisions(
         self,
@@ -1188,6 +1215,29 @@ class SQLiteTripRepository:
             ),
         )
 
+    def _insert_candidate_evidence_link(
+        self,
+        connection: sqlite3.Connection,
+        link: CandidateEvidenceLinkRecord,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO trip_candidate_evidence_links(
+              id, trip_id, trip_candidate_id, source_artifact_id, import_job_id,
+              mention_id, review_decision_id, resolution_candidate_id,
+              document_generation_id, document_page_number, document_span_id,
+              bounding_boxes_json, source_digest, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                link.id, link.trip_id, link.trip_candidate_id, link.source_artifact_id,
+                link.import_job_id, link.mention_id, link.review_decision_id,
+                link.resolution_candidate_id, link.document_generation_id,
+                link.document_page_number, link.document_span_id,
+                canonical_json(link.bounding_boxes), link.source_digest, link.created_at,
+            ),
+        )
+
     def _insert_candidate_decision(
         self,
         connection: sqlite3.Connection,
@@ -1424,6 +1474,25 @@ def row_to_candidate(row: sqlite3.Row) -> TripCandidateRecord:
         duration_state=row["duration_state"],
         confidence=row["confidence"],
         content_digest=row["content_digest"],
+        created_at=row["created_at"],
+    )
+
+
+def row_to_candidate_evidence_link(row: sqlite3.Row) -> CandidateEvidenceLinkRecord:
+    return CandidateEvidenceLinkRecord(
+        id=row["id"],
+        trip_id=row["trip_id"],
+        trip_candidate_id=row["trip_candidate_id"],
+        source_artifact_id=row["source_artifact_id"],
+        import_job_id=row["import_job_id"],
+        mention_id=row["mention_id"],
+        review_decision_id=row["review_decision_id"],
+        resolution_candidate_id=row["resolution_candidate_id"],
+        document_generation_id=row["document_generation_id"],
+        document_page_number=row["document_page_number"],
+        document_span_id=row["document_span_id"],
+        bounding_boxes=json.loads(row["bounding_boxes_json"]),
+        source_digest=row["source_digest"],
         created_at=row["created_at"],
     )
 

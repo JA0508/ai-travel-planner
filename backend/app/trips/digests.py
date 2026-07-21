@@ -7,6 +7,8 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
+from pydantic import BaseModel
+
 
 TRIP_SNAPSHOT_SCHEMA_VERSION = "1.0"
 TRIP_MUTATION_PROPOSAL_SCHEMA_VERSION = "1.0"
@@ -15,6 +17,8 @@ TRIP_MUTATION_ENGINE_VERSION = "current-baseline"
 
 
 def canonicalize(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return canonicalize(value.model_dump(mode="json"))
     if isinstance(value, dict):
         return {str(key): canonicalize(value[key]) for key in sorted(value)}
     if isinstance(value, list):

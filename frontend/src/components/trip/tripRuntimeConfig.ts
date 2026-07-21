@@ -129,7 +129,9 @@ function buildApiUrl(path: `/${string}`): string {
 }
 
 function normalizeApiBaseUrl(value: string | undefined): string {
-  return (value || "http://localhost:8000").replace(/\/+$/, "");
+  // Keep browser requests same-origin by default. Next proxies /api to the
+  // private backend target, avoiding browser-specific cross-port failures.
+  return (value || "/api").replace(/\/+$/, "");
 }
 
 function normalizeOptionalEnv(value: string | undefined): string | undefined {

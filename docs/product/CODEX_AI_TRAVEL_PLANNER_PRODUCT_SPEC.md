@@ -920,6 +920,10 @@ LLM 输出必须通过 Pydantic/schema validation；冲突检测、日期计算�
 
 #### 当前实现状态（F-004a.3）
 
+> Integrity repair is in review. PR #20 established the foundation; the following
+> describes the repaired branch and must not be read as a merged-completion claim
+> until CI and review have accepted it.
+
 - 已建立 `SourceLinkedTripIntentEnvelope` 的 domain-native formal contract：
   destination、date policy、fixed event、place preference、pace、transport、
   meal、budget、traveler need、exclusion 和 typed assumption 均带 metadata、
@@ -930,6 +934,10 @@ LLM 输出必须通过 Pydantic/schema validation；冲突检测、日期计算�
 - parser 结果为 server-only 结果，不接受客户端伪造 parser error；显式记录
   `success`、`empty_input`、`unavailable`、`timeout`、`invalid_output` 和
   `provider_error`。
+- reviewed Import commit persists structured candidate-to-artifact/import
+  job/mention/review decision/resolution/page/bbox links. Intent compilation
+  rehydrates those records rather than parsing string evidence references;
+  legacy candidates that cannot be verified remain planner-blocking.
 - provenance graph 由结构化 source refs 构建，覆盖 TripCandidate、source
   artifact、import job、mention、review decision、resolution candidate、direct
   user span、LLM proposal、field 和 envelope revision 节点；page/bbox 信息在
@@ -944,9 +952,10 @@ LLM 输出必须通过 Pydantic/schema validation；冲突检测、日期计算�
   planner-ready，必须进入 clarification/readiness blocker。
 - Intent Confirmation Workspace 可加载 history/detail、编辑 latest revision、
   restore 历史 revision、显示 semantic/lineage digest、semantic compare 和
-  provenance evidence nodes；历史 revision 不能直接编辑，只能 restore 成新
-  revision。
-- Intent compiler evaluation 现有 58 个 fixtures，按 semantic、provenance、
+  provenance evidence nodes；带 import/page identity 的节点会复用现有私有
+  Import Review workspace。历史 revision 不能直接编辑，只能 restore 成新
+  revision；stale edit 保留 draft，必须显式 reapply 到 latest revision。
+- Intent compiler evaluation 现有 62 个 fixtures，按 semantic、provenance、
   parser、revision、concurrency、clarification 分类，并在 CI 下 gate fixture
   数量与 deterministic invariants。
 - 当前仍不调用 planner、scheduler、provider lookup，不创建 TripRevision，

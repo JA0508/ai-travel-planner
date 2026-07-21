@@ -36,6 +36,13 @@ type ImportReviewWorkspaceProps = {
   onCandidatesChanged: (tripId: string) => void;
 };
 
+type IntentEvidenceFocus = {
+  tripId: string;
+  importJobId: string;
+  mentionId?: string | null;
+  pageNumber?: number | null;
+};
+
 export function ImportReviewWorkspace({
   tripPersistence,
   onCandidatesChanged,
@@ -52,6 +59,7 @@ export function ImportReviewWorkspace({
     | { status: "error"; code: string; message: string }
   >({ status: "idle" });
   const binaryInputRef = useRef<HTMLInputElement | null>(null);
+  const workspaceRef = useRef<HTMLElement | null>(null);
   const previewUrlRef = useRef<string | null>(null);
   const byteCount = utf8ByteLength(text);
   const normalizedUrl = url.trim();
@@ -77,6 +85,70 @@ export function ImportReviewWorkspace({
     }
     void hydrateBinaryInspection(savedTripId, stored.jobId, stored.declaredKind);
   }, [savedTripId]);
+
+  useEffect(() => {
+    if (!savedTripId || typeof window === "undefined") {
+      return;
+    }
+    const handleIntentEvidenceRecovery = (event: Event) => {
+      const detail = (event as CustomEvent<{ tripId?: string }>).detail;
+      if (!detail || detail.tripId !== savedTripId) {
+        return;
+      }
+      workspaceRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      setMode("text");
+    };
+    window.addEventListener("trip-import-workspace-request", handleIntentEvidenceRecovery);
+    return () => window.removeEventListener("trip-import-workspace-request", handleIntentEvidenceRecovery);
+  }, [savedTripId]);
+
+  useEffect(() => {
+    if (!savedTripId || typeof window === "undefined") {
+      return;
+    }
+    const handleIntentEvidenceFocus = (event: Event) => {
+      const detail = (event as CustomEvent<IntentEvidenceFocus>).detail;
+      if (!detail || detail.tripId !== savedTripId) {
+        return;
+      }
+      void loadIntentEvidence(detail);
+    };
+    window.addEventListener("trip-import-evidence-focus", handleIntentEvidenceFocus);
+    return () => window.removeEventListener("trip-import-evidence-focus", handleIntentEvidenceFocus);
+  }, [savedTripId]);
+
+  async function loadIntentEvidence(detail: IntentEvidenceFocus) {
+    if (!savedTripId) {
+      return;
+    }
+    const review = await fetchImportReview(savedTripId, detail.importJobId);
+    if (!review.ok) {
+      dispatch({ type: "error", code: review.code ?? "intent_evidence_review_fetch_failed", message: review.message, recoverable: true });
+      return;
+    }
+    const artifact = await fetchImportArtifact(savedTripId, detail.importJobId);
+    dispatch({
+      type: "review",
+      artifact: review.data.artifact,
+      job: review.data.job,
+      mentions: review.data.mentions,
+      sourceText: artifact.ok ? artifact.data : "",
+      sourceFetch: review.data.source_fetch,
+      derivation: review.data.derivation,
+    });
+    if (detail.pageNumber) {
+      const evidence = await fetchDocumentExtractionEvidence(savedTripId, detail.importJobId);
+      if (evidence.ok) {
+        setMode("binary");
+        setDocumentExtraction({
+          status: "ready",
+          generation: evidence.data.generation,
+          spanCount: evidence.data.span_map.length,
+          evidence: evidence.data,
+        });
+      }
+    }
+  }
 
   async function handleSubmit() {
     if (!savedTripId) {
@@ -438,7 +510,7 @@ export function ImportReviewWorkspace({
   }
 
   return (
-    <section style={panelStyle} data-import-workspace>
+    <section ref={workspaceRef} style={panelStyle} data-import-workspace>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start" }}>
         <div>
           <p style={eyebrowStyle}>Source import</p>
