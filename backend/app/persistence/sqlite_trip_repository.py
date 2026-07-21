@@ -271,6 +271,16 @@ class SQLiteTripRepository:
             ).fetchone()
         return row_to_intent_revision(row) if row is not None else None
 
+    def get_intent_revision(self, *, trip_id: str, revision_id: str) -> TripIntentRevisionRecord:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute(
+                "SELECT * FROM trip_intent_revisions WHERE id = ? AND trip_id = ?",
+                (revision_id, trip_id),
+            ).fetchone()
+        if row is None:
+            raise RevisionNotFoundError(revision_id)
+        return row_to_intent_revision(row)
+
     def create_candidate(
         self,
         *,

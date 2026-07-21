@@ -49,6 +49,7 @@ import {
   type TripCandidate,
 } from "@/features/trip-workspace/tripCandidates";
 import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
+import { IntentConfirmationWorkspace } from "@/features/intent-confirmation/IntentConfirmationWorkspace";
 import { ConversationalReplanPanel } from "@/components/trip/replanning/ConversationalReplanPanel";
 import type {
   ReplanExecutionResult,
@@ -5134,6 +5135,10 @@ function buildRegenerationSemanticsViewModel(
                       <ImportReviewWorkspace
                         tripPersistence={tripPersistence}
                         onCandidatesChanged={(tripId) => void refreshCandidates(tripId)}
+                      />
+                      <IntentConfirmationWorkspace
+                        tripPersistence={tripPersistence}
+                        directUserText={tripText}
                       />
                       {result.completion_intelligence.score_breakdown ? (
                         <details

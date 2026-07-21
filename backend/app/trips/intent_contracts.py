@@ -22,6 +22,7 @@ class IntentSourceType(str, Enum):
     LLM_PROPOSAL = "llm_proposal"
     TRIP_CANDIDATE = "trip_candidate"
     EXISTING_TRIP_STATE = "existing_trip_state"
+    EXISTING_INTENT_REVISION = "existing_intent_revision"
 
 
 class IntentFieldKind(str, Enum):
@@ -174,6 +175,21 @@ class CompileTripIntentRequest(BaseModel):
     candidate_ids: list[str] = Field(default_factory=list, max_length=80)
     structured_overrides: IntentStructuredOverrides | None = None
     llm_proposal: UntrustedIntentProposal | None = None
+    use_llm_proposal_adapter: bool = False
+
+
+class EditTripIntentEnvelopeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision_id: str = Field(..., min_length=1)
+    field_updates: IntentStructuredOverrides
+
+
+class AnswerIntentClarificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision_id: str = Field(..., min_length=1)
+    answer: Any
 
 
 class TripIntentRevisionMetadata(BaseModel):
@@ -193,6 +209,11 @@ class CompileTripIntentResponse(BaseModel):
     envelope: SourceLinkedTripIntentEnvelope
     revision: TripIntentRevisionMetadata
     idempotent_replay: bool = False
+
+
+class TripIntentRevisionDetailResponse(BaseModel):
+    envelope: SourceLinkedTripIntentEnvelope
+    revision: TripIntentRevisionMetadata
 
 
 class TripIntentRevisionListResponse(BaseModel):
@@ -240,10 +261,13 @@ def compile_source_linked_intent(
     created_at: str,
     request: CompileTripIntentRequest,
     existing_trip_snapshot: dict[str, Any],
+    parent_intent_snapshot: dict[str, Any] | None = None,
     candidates: list[TripCandidateRecord],
     candidate_workflow_states: dict[str, str],
 ) -> SourceLinkedTripIntentEnvelope:
     field_candidates: list[_CandidateField] = []
+    if parent_intent_snapshot is not None:
+        field_candidates.extend(_fields_from_existing_intent_revision(parent_intent_snapshot))
     field_candidates.extend(_fields_from_existing_trip(existing_trip_snapshot))
     if request.direct_user_text and request.direct_user_text.strip():
         field_candidates.extend(_fields_from_user_text(request.direct_user_text.strip()))
@@ -256,6 +280,8 @@ def compile_source_linked_intent(
     selected, shadowed, conflicts, clarifications = _select_fields(field_candidates)
     fields = [*selected, *shadowed]
     planner_ready = _build_planner_ready(selected)
+    validation_conflicts = _validate_selected_fields(selected, planner_ready)
+    conflicts.extend(validation_conflicts)
     assumptions = _build_assumptions(selected, planner_ready)
     for assumption in assumptions:
         if assumption not in planner_ready.assumptions:
@@ -280,6 +306,11 @@ def compile_source_linked_intent(
         "blocking_conflict_count": sum(1 for conflict in conflicts if conflict.severity == "blocking"),
         "clarification_count": len(clarifications),
         "planner_ready": status == IntentPlannerReadyStatus.READY,
+        "excluded_candidate_ids": [
+            candidate.id
+            for candidate in candidates
+            if candidate_workflow_states.get(candidate.id) in {"rejected", "deferred"}
+        ],
     }
     source_digest = sha256_digest(
         {
@@ -548,6 +579,37 @@ def _fields_from_existing_trip(snapshot: dict[str, Any]) -> list[_CandidateField
     return fields
 
 
+def _fields_from_existing_intent_revision(snapshot: dict[str, Any]) -> list[_CandidateField]:
+    fields: list[_CandidateField] = []
+    revision_id = str(snapshot.get("id") or "unknown_intent_revision")
+    for field in snapshot.get("fields") or []:
+        if not isinstance(field, dict) or field.get("status") != IntentFieldStatus.SELECTED.value:
+            continue
+        field_path = str(field.get("field_path") or "")
+        if not field_path:
+            continue
+        fields.append(
+            _candidate(
+                field_path,
+                field.get("value"),
+                kind=IntentFieldKind(field.get("kind") or IntentFieldKind.ASSUMPTION.value),
+                confidence=min(float(field.get("confidence") or 0.6), 0.75),
+                source_ref=_source_ref(
+                    IntentSourceType.EXISTING_INTENT_REVISION,
+                    field_path=field_path,
+                    label=f"Intent revision {snapshot.get('revision_number', '?')}",
+                    source_id=revision_id,
+                    priority=60,
+                    confirmed=bool(field.get("confirmed_by_user")),
+                    value=field.get("value"),
+                    evidence_refs=[f"intent_revision:{revision_id}"],
+                ),
+                explanation="Carried from the parent TripIntentEnvelope revision.",
+            )
+        )
+    return fields
+
+
 def _existing_field(field_path: str, value: Any, kind: IntentFieldKind) -> _CandidateField:
     return _candidate(
         field_path,
@@ -683,6 +745,41 @@ def _build_planner_ready(fields: list[IntentField]) -> PlannerReadyIntentPreview
         elif field.field_path == "time.fixed_events":
             preview.fixed_events.append(field.value)
     return preview
+
+
+def _validate_selected_fields(
+    fields: list[IntentField],
+    preview: PlannerReadyIntentPreview,
+) -> list[IntentConflict]:
+    conflicts: list[IntentConflict] = []
+    if preview.trip_days is None:
+        return conflicts
+    for field in fields:
+        if field.field_path != "time.fixed_events" or field.status != IntentFieldStatus.SELECTED:
+            continue
+        event = field.value if isinstance(field.value, dict) else {}
+        fixed_day = event.get("fixed_day")
+        if fixed_day is None:
+            continue
+        try:
+            day_number = int(fixed_day)
+        except (TypeError, ValueError):
+            continue
+        if day_number < 1 or day_number > preview.trip_days:
+            conflicts.append(
+                IntentConflict(
+                    conflict_id=f"conf_{sha256_digest({'field_path': field.field_path, 'field_id': field.field_id, 'fixed_day': fixed_day, 'trip_days': preview.trip_days})[:16]}",
+                    field_path=field.field_path,
+                    severity="blocking",
+                    winner_field_id=None,
+                    losing_field_ids=[field.field_id],
+                    reason_code="fixed_event_outside_trip_dates",
+                    explanation="A fixed event falls outside the compiled trip length and cannot enter planner safely.",
+                    requires_clarification=True,
+                    source_refs=field.source_refs,
+                )
+            )
+    return conflicts
 
 
 def _build_assumptions(fields: list[IntentField], preview: PlannerReadyIntentPreview) -> list[str]:

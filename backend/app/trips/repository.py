@@ -65,6 +65,9 @@ class TripRepository(Protocol):
     def get_latest_intent_revision(self, *, trip_id: str) -> TripIntentRevisionRecord | None:
         ...
 
+    def get_intent_revision(self, *, trip_id: str, revision_id: str) -> TripIntentRevisionRecord:
+        ...
+
     def create_candidate(
         self,
         *,

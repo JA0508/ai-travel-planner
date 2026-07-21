@@ -201,6 +201,12 @@ class MemoryTripRepository:
         revisions = self.list_intent_revisions(trip_id=trip_id)
         return revisions[0] if revisions else None
 
+    def get_intent_revision(self, *, trip_id: str, revision_id: str) -> TripIntentRevisionRecord:
+        revision = self.intent_revisions.get(revision_id)
+        if revision is None or revision.trip_id != trip_id:
+            raise RevisionNotFoundError(revision_id)
+        return copy.deepcopy(revision)
+
     def create_candidate(
         self,
         *,

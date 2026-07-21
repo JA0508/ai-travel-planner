@@ -81,16 +81,20 @@ from .errors import (
     UndoTargetNotCurrentError,
 )
 from .intent_contracts import (
+    AnswerIntentClarificationRequest,
     CompileTripIntentRequest,
     CompileTripIntentResponse,
+    EditTripIntentEnvelopeRequest,
     SourceLinkedTripIntentEnvelope,
     TRIP_INTENT_COMPILER_VERSION,
     TRIP_INTENT_ENVELOPE_SCHEMA_VERSION,
+    TripIntentRevisionDetailResponse,
     TripIntentRevisionListResponse,
     TripIntentRevisionRecord,
     compile_source_linked_intent,
     intent_revision_metadata,
 )
+from .intent_llm_adapter import build_untrusted_llm_intent_proposal
 from .models import ProposalStatus, RevisionSourceType, TripCandidateRecord, TripMutationProposalRecord
 from .mutation_commands import TripMutationCommandEnvelope, TripMutationEngine, ensure_stable_item_ids
 from .repository import TripRepository
@@ -289,11 +293,110 @@ class TripPersistenceService:
                 provided_base_revision_id=payload.base_revision_id,
                 current_revision_id=current_revision.id,
             )
-        parent_intent_revision = self.repository.get_latest_intent_revision(trip_id=trip_id)
-        candidates, candidate_workflow_states = self._intent_candidate_context(trip_id, payload)
-        next_revision_number = (
-            1 if parent_intent_revision is None else parent_intent_revision.revision_number + 1
+        if payload.use_llm_proposal_adapter and payload.llm_proposal is None and payload.direct_user_text:
+            payload = payload.model_copy(
+                update={
+                    "llm_proposal": build_untrusted_llm_intent_proposal(payload.direct_user_text)
+                }
+            )
+        return self._create_intent_revision_from_request(
+            trip_id=trip_id,
+            current_revision=current_revision,
+            parent_intent_revision=None,
+            parent_intent_snapshot=None,
+            payload=payload,
+            idempotency_key=idempotency_key,
+            operation="compile_trip_intent_envelope",
         )
+
+    def get_intent_envelope_detail(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        revision_id: str,
+    ) -> TripIntentRevisionDetailResponse:
+        self._require_trip_access(trip_id, capability)
+        revision = self.repository.get_intent_revision(trip_id=trip_id, revision_id=revision_id)
+        return TripIntentRevisionDetailResponse(
+            envelope=SourceLinkedTripIntentEnvelope.model_validate(revision.envelope),
+            revision=intent_revision_metadata(revision),
+        )
+
+    def edit_intent_envelope(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        revision_id: str,
+        idempotency_key: str | None,
+        payload: EditTripIntentEnvelopeRequest,
+    ) -> CompileTripIntentResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        trip = self._require_trip_access(trip_id, capability)
+        current_revision = self.repository.get_revision(trip_id, trip.current_revision_id)
+        if current_revision.id != payload.base_revision_id:
+            raise StaleBaseRevisionError(
+                trip_id=trip_id,
+                provided_base_revision_id=payload.base_revision_id,
+                current_revision_id=current_revision.id,
+            )
+        parent = self.repository.get_intent_revision(trip_id=trip_id, revision_id=revision_id)
+        request = CompileTripIntentRequest(
+            base_revision_id=payload.base_revision_id,
+            structured_overrides=payload.field_updates,
+        )
+        return self._create_intent_revision_from_request(
+            trip_id=trip_id,
+            current_revision=current_revision,
+            parent_intent_revision=parent,
+            parent_intent_snapshot=parent.envelope,
+            payload=request,
+            idempotency_key=idempotency_key,
+            operation="edit_trip_intent_envelope",
+        )
+
+    def answer_intent_clarification(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        revision_id: str,
+        question_id: str,
+        idempotency_key: str | None,
+        payload: AnswerIntentClarificationRequest,
+    ) -> CompileTripIntentResponse:
+        if question_id != "clarify_trip_city":
+            raise InvalidRevisionOperationError("Unsupported clarification question.")
+        answer = str(payload.answer).strip() if payload.answer is not None else ""
+        if not answer:
+            raise InvalidRevisionOperationError("Clarification answer is required.")
+        return self.edit_intent_envelope(
+            trip_id=trip_id,
+            capability=capability,
+            revision_id=revision_id,
+            idempotency_key=idempotency_key,
+            payload=EditTripIntentEnvelopeRequest(
+                base_revision_id=payload.base_revision_id,
+                field_updates={"city": answer},  # type: ignore[arg-type]
+            ),
+        )
+
+    def _create_intent_revision_from_request(
+        self,
+        *,
+        trip_id: str,
+        current_revision,
+        parent_intent_revision: TripIntentRevisionRecord | None,
+        parent_intent_snapshot: dict[str, Any] | None,
+        payload: CompileTripIntentRequest,
+        idempotency_key: str,
+        operation: str,
+    ) -> CompileTripIntentResponse:
+        candidates, candidate_workflow_states = self._intent_candidate_context(trip_id, payload)
+        latest_for_number = parent_intent_revision or self.repository.get_latest_intent_revision(trip_id=trip_id)
+        next_revision_number = 1 if latest_for_number is None else latest_for_number.revision_number + 1
         now = format_utc(self.clock())
         envelope = compile_source_linked_intent(
             trip_id=trip_id,
@@ -303,14 +406,16 @@ class TripPersistenceService:
             created_at=now,
             request=payload,
             existing_trip_snapshot=current_revision.itinerary_snapshot,
+            parent_intent_snapshot=parent_intent_snapshot,
             candidates=candidates,
             candidate_workflow_states=candidate_workflow_states,
         )
         req_digest = request_digest(
             {
-                "operation": "compile_trip_intent_envelope",
+                "operation": operation,
                 "trip_id": trip_id,
                 "base_revision_id": current_revision.id,
+                "parent_intent_revision_id": parent_intent_revision.id if parent_intent_revision else None,
                 "payload": payload.model_dump(mode="json"),
             }
         )

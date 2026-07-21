@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.imports.dependencies import reset_import_dependencies_for_tests
 from app.main import app
+from app.schemas.intent import ParsedTripIntentResponse
 from app.trips.dependencies import reset_trip_repository_cache_for_tests
 from tests.test_trip_persistence_api import simple_itinerary
 
@@ -191,6 +192,97 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["error"]["code"], "stale_base_revision")
         self.assertEqual(revisions.json()["revisions"], [])
+
+    def test_detail_edit_and_clarification_create_intent_revision_lineage(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        initial = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={"base_revision_id": base_revision_id, "direct_user_text": "偏好：不要太赶"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "lineage-initial"},
+        )
+        initial_revision_id = initial.json()["revision"]["id"]
+
+        clarified = client.post(
+            f"/trips/{trip_id}/intent-envelope/{initial_revision_id}/clarifications/clarify_trip_city/answer",
+            json={"base_revision_id": base_revision_id, "answer": "上海"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "lineage-city-answer"},
+        )
+        edited = client.post(
+            f"/trips/{trip_id}/intent-envelope/{clarified.json()['revision']['id']}/edit",
+            json={"base_revision_id": base_revision_id, "field_updates": {"trip_days": 3}},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "lineage-days-edit"},
+        )
+        detail = client.get(f"/trips/{trip_id}/intent-envelope/{edited.json()['revision']['id']}")
+        history = client.get(f"/trips/{trip_id}/intent-envelope")
+
+        self.assertEqual(clarified.status_code, 201, clarified.text)
+        self.assertEqual(edited.status_code, 201, edited.text)
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(clarified.json()["revision"]["parent_intent_revision_id"], initial_revision_id)
+        self.assertEqual(edited.json()["revision"]["parent_intent_revision_id"], clarified.json()["revision"]["id"])
+        self.assertEqual(selected_field(edited.json()["envelope"], "trip.city")["value"], "上海")
+        self.assertEqual(selected_field(edited.json()["envelope"], "trip.trip_days")["value"], 3)
+        self.assertEqual([item["revision_number"] for item in history.json()["revisions"]], [3, 2, 1])
+
+    def test_fixed_event_outside_trip_days_blocks_planner_ready(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+
+        response = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={
+                "base_revision_id": base_revision_id,
+                "structured_overrides": {
+                    "city": "上海",
+                    "trip_days": 1,
+                    "fixed_events": [
+                        {
+                            "name": "第二天博物馆预约",
+                            "fixed_day": 2,
+                            "fixed_time_start": "14:00",
+                            "fixed_time_end": "15:00",
+                        }
+                    ],
+                },
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "fixed-outside"},
+        )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        envelope = response.json()["envelope"]
+        self.assertEqual(envelope["planner_ready_status"], "blocked")
+        self.assertTrue(
+            any(
+                conflict["reason_code"] == "fixed_event_outside_trip_dates"
+                and conflict["severity"] == "blocking"
+                for conflict in envelope["conflicts"]
+            )
+        )
+        self.assertFalse(envelope["validation_report"]["planner_ready"])
+
+    def test_llm_adapter_proposal_is_untrusted_and_loses_to_manual_override(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        with patch(
+            "app.trips.intent_llm_adapter.parse_trip_text_with_llm",
+            return_value=ParsedTripIntentResponse(city="北京", trip_days=5),
+        ):
+            response = client.post(
+                f"/trips/{trip_id}/intent-envelope/compile",
+                json={
+                    "base_revision_id": base_revision_id,
+                    "direct_user_text": "城市：上海\n天数：2",
+                    "structured_overrides": {"city": "上海"},
+                    "use_llm_proposal_adapter": True,
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "llm-adapter"},
+            )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        envelope = response.json()["envelope"]
+        self.assertTrue(envelope["validation_report"]["llm_proposal_validated"])
+        self.assertEqual(selected_field(envelope, "trip.city")["value"], "上海")
+        self.assertTrue(
+            any(field["status"] == "shadowed" and field["source_refs"][0]["source_type"] == "llm_proposal" for field in envelope["fields"])
+        )
 
     def test_sqlite_intent_revisions_are_immutable(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()
