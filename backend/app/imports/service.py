@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import base64
 import json
 import tempfile
 from collections import defaultdict
@@ -36,6 +35,7 @@ from app.imports.domain import (
     DocumentExtractionGenerationResponse,
     DocumentExtractionPageRecord,
     DocumentExtractionPageResponse,
+    DocumentMentionBoxEvidenceResponse,
     DocumentMentionEvidenceResponse,
     DocumentTextSpanRecord,
     DocumentTextSpanResponse,
@@ -733,6 +733,19 @@ class TextImportService:
             if not inspection.sanitized_artifact_id:
                 raise TripError("import_document_source_not_ready", "Image extraction requires a sanitized image derivative.", 409)
             readable_artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=inspection.sanitized_artifact_id)
+        limits = document_extraction_limits()
+        base_generation = self.import_repository.get_latest_document_extraction_for_source(
+            trip_id=trip_id,
+            source_import_job_id=source_job.id,
+        ) if force_new_generation else None
+        if retry_page_number:
+            limits["retry_page_number"] = retry_page_number
+        policy_identity = document_extraction_policy_identity(limits)
+        digest_base_generation_id = base_generation.id if base_generation else None
+        digest_base_generation = base_generation.generation if base_generation else None
+        if base_generation and base_generation.metadata.get("retry_page_number") == retry_page_number:
+            digest_base_generation_id = base_generation.metadata.get("base_generation_id") or digest_base_generation_id
+            digest_base_generation = base_generation.metadata.get("base_generation") or digest_base_generation
         req_digest = request_digest(
             {
                 "operation": "retry_document_extraction_page" if force_new_generation else "extract_document_import",
@@ -742,6 +755,9 @@ class TextImportService:
                 "source_checksum": source_artifact.content_checksum,
                 "inspection_id": inspection.id,
                 "extractor_version": DOCUMENT_EXTRACTOR_VERSION,
+                "policy_fingerprint": policy_identity["policy_fingerprint"],
+                "base_generation_id": digest_base_generation_id,
+                "base_generation": digest_base_generation,
                 "retry_page_number": retry_page_number,
             }
         )
@@ -766,7 +782,7 @@ class TextImportService:
                 duplicate_artifact=True,
                 idempotent_replay=True,
             )
-        existing_generation = self.import_repository.get_latest_document_extraction_for_source(
+        existing_generation = base_generation or self.import_repository.get_latest_document_extraction_for_source(
             trip_id=trip_id,
             source_import_job_id=source_job.id,
         )
@@ -813,10 +829,17 @@ class TextImportService:
                     path=source_path,
                     kind=inspection.detected_kind,
                     mime_type=readable_artifact.mime_type,
-                    limits=document_extraction_limits(),
+                    limits=limits,
                 )
             except TripError:
                 raise
+        if force_new_generation and existing_generation and retry_page_number:
+            extraction = self._merge_page_retry_extraction(
+                trip_id=trip_id,
+                base_generation=existing_generation,
+                retry_page_number=retry_page_number,
+                retry_extraction=extraction,
+            )
         if extraction.status == "failed" or not extraction.normalized_text.strip():
             raise TripError(
                 extraction.error_code or "import_document_extraction_no_text",
@@ -871,14 +894,19 @@ class TextImportService:
         rendered_artifacts_by_ref: dict[str, SourceArtifactRecord] = {}
         rendered_artifacts_by_checksum: dict[str, SourceArtifactRecord] = {}
         rendered_artifacts: list[SourceArtifactRecord] = []
+        rendered_temp_paths: list[Path] = []
         for rendered_page in extraction.rendered_pages:
+            rendered_path = Path(rendered_page.ref)
+            rendered_temp_paths.append(rendered_path)
             try:
-                rendered_bytes = base64.b64decode(rendered_page.content_base64.encode("ascii"), validate=True)
-            except Exception as exc:
+                rendered_bytes = rendered_path.read_bytes()
+            except OSError as exc:
                 raise TripError("import_document_page_preview_invalid", "Rendered document page preview was invalid.", 422) from exc
             if len(rendered_bytes) != rendered_page.byte_size:
                 raise TripError("import_document_page_preview_invalid", "Rendered document page preview size was invalid.", 422)
             rendered_checksum = source_checksum(rendered_bytes)
+            if rendered_page.content_checksum and rendered_page.content_checksum != hashlib.sha256(rendered_bytes).hexdigest():
+                raise TripError("import_document_page_preview_invalid", "Rendered document page preview checksum was invalid.", 422)
             rendered_artifact = rendered_artifacts_by_checksum.get(rendered_checksum)
             if rendered_artifact is None:
                 rendered_artifact, rendered_staged = self._stage_or_reuse_child_artifact_bytes(
@@ -898,6 +926,8 @@ class TextImportService:
             rendered_artifacts_by_ref[rendered_page.ref] = rendered_artifact
             if all(item.id != rendered_artifact.id for item in rendered_artifacts):
                 rendered_artifacts.append(rendered_artifact)
+        for rendered_temp_path in rendered_temp_paths:
+            rendered_temp_path.unlink(missing_ok=True)
         derived_job = ImportJobRecord(
             id=generate_import_job_id(),
             trip_id=trip_id,
@@ -923,6 +953,10 @@ class TextImportService:
                 "span_map_artifact_id": span_map_artifact.id,
                 "reading_order_algorithm": "layout-reading-order-v2",
                 "coordinate_space": "normalized-top-left",
+                "extraction_identity": policy_identity,
+                "base_generation_id": existing_generation.id if force_new_generation and existing_generation else None,
+                "base_generation": existing_generation.generation if force_new_generation and existing_generation else None,
+                "retry_page_number": retry_page_number,
             }
         )
         generation = DocumentExtractionGenerationRecord(
@@ -983,6 +1017,9 @@ class TextImportService:
                 "span_map_artifact_id": span_map_artifact.id,
                 "reading_order_algorithm": "layout-reading-order-v2",
                 "coordinate_space": "top-left-normalized",
+                "extraction_identity": policy_identity,
+                "base_generation_id": existing_generation.id if force_new_generation and existing_generation else None,
+                "retry_page_number": retry_page_number,
             },
             created_at=now,
         )
@@ -1213,6 +1250,37 @@ class TextImportService:
             return json.loads(self.artifact_store.get(storage_key=artifact.storage_key).decode("utf-8"))
         except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise TripError("import_document_evidence_not_found", "Document evidence artifact was not found.", 404) from exc
+
+    def _merge_page_retry_extraction(
+        self,
+        *,
+        trip_id: str,
+        base_generation: DocumentExtractionGenerationRecord,
+        retry_page_number: int,
+        retry_extraction: WorkerDocumentExtractionResult,
+    ) -> WorkerDocumentExtractionResult:
+        base_text = ""
+        if base_generation.derived_artifact_id:
+            artifact = self.import_repository.get_artifact(trip_id=trip_id, artifact_id=base_generation.derived_artifact_id)
+            try:
+                base_text = self.artifact_store.get(storage_key=artifact.storage_key).decode("utf-8")
+            except (FileNotFoundError, UnicodeDecodeError):
+                base_text = ""
+        base_spans = self.import_repository.list_document_text_spans(generation_id=base_generation.id)
+        base_pages = self.import_repository.list_document_extraction_pages(generation_id=base_generation.id)
+        base_layout = self._load_json_artifact(trip_id=trip_id, artifact_id=base_generation.layout_artifact_id)
+        base_span_map = self._load_json_artifact(trip_id=trip_id, artifact_id=base_generation.span_map_artifact_id)
+        merged = merge_page_retry_extraction(
+            base_generation=base_generation,
+            base_text=base_text,
+            base_spans=base_spans,
+            base_pages=base_pages,
+            base_layout=base_layout if isinstance(base_layout, dict) else {},
+            base_span_map=base_span_map if isinstance(base_span_map, list) else [],
+            retry_page_number=retry_page_number,
+            retry_extraction=retry_extraction,
+        )
+        return merged
 
     def _binary_derivation(self, inspection: ArtifactInspectionRecord) -> ArtifactDerivationRecord | None:
         child_id = inspection.sanitized_artifact_id or inspection.manifest_artifact_id
@@ -2174,6 +2242,7 @@ def document_extraction_limits() -> dict[str, Any]:
         get_import_document_pdf_native_min_quality,
         get_import_document_pdf_render_max_bytes,
         get_import_document_pdf_render_max_pixels,
+        get_import_document_pdf_render_max_total_pixels,
         get_import_document_pdf_render_scale,
         get_import_document_ocr_command,
         get_import_document_ocr_languages,
@@ -2191,10 +2260,215 @@ def document_extraction_limits() -> dict[str, Any]:
         "enable_pdf_page_ocr": get_import_pdf_page_ocr_enabled(),
         "pdf_render_scale": get_import_document_pdf_render_scale(),
         "pdf_render_max_pixels": get_import_document_pdf_render_max_pixels(),
+        "pdf_render_max_total_pixels": get_import_document_pdf_render_max_total_pixels(),
         "pdf_render_max_bytes": get_import_document_pdf_render_max_bytes(),
         "pdf_native_min_quality": get_import_document_pdf_native_min_quality(),
         "persist_pdf_page_previews": True,
     }
+
+
+def document_extraction_policy_identity(limits: dict[str, Any]) -> dict[str, Any]:
+    safe_limits = {
+        key: limits.get(key)
+        for key in (
+            "max_pdf_pages",
+            "ocr_command",
+            "ocr_languages",
+            "ocr_timeout_seconds",
+            "enable_pdf_page_ocr",
+            "pdf_render_scale",
+            "pdf_render_max_pixels",
+            "pdf_render_max_total_pixels",
+            "pdf_render_max_bytes",
+            "pdf_native_min_quality",
+            "persist_pdf_page_previews",
+        )
+    }
+    return {
+        "extractor_version": DOCUMENT_EXTRACTOR_VERSION,
+        "schema_version": DOCUMENT_EXTRACTION_SCHEMA_VERSION,
+        "policy_fingerprint": sha256_digest(safe_limits),
+        "policy": safe_limits,
+    }
+
+
+def merge_page_retry_extraction(
+    *,
+    base_generation: DocumentExtractionGenerationRecord,
+    base_text: str,
+    base_spans: list[DocumentTextSpanRecord],
+    base_pages: list[DocumentExtractionPageRecord],
+    base_layout: dict[str, Any],
+    base_span_map: list[dict[str, Any]],
+    retry_page_number: int,
+    retry_extraction: WorkerDocumentExtractionResult,
+) -> WorkerDocumentExtractionResult:
+    retry_text = retry_extraction.normalized_text.strip()
+    page_texts: dict[int, str] = {}
+    page_spans: dict[int, list[WorkerDocumentSpan]] = {}
+    for page_number in sorted({page.page_number for page in base_pages} | {retry_page_number}):
+        if page_number == retry_page_number and retry_text:
+            page_texts[page_number] = retry_text
+            page_spans[page_number] = list(retry_extraction.spans)
+            continue
+        spans_for_page = [span for span in base_spans if span.page_number == page_number]
+        text, spans = worker_spans_from_previous_page(base_text=base_text, spans=spans_for_page)
+        page_texts[page_number] = text
+        page_spans[page_number] = spans
+
+    text_parts: list[str] = []
+    merged_spans: list[WorkerDocumentSpan] = []
+    for page_number in sorted(page_texts):
+        page_text = page_texts[page_number].strip()
+        if not page_text:
+            continue
+        if text_parts:
+            text_parts.append("\n")
+        offset = sum(len(part) for part in text_parts)
+        text_parts.append(page_text)
+        for span in page_spans.get(page_number, []):
+            if span.span_end <= len(page_text):
+                merged_spans.append(
+                    span.model_copy(update={"span_start": span.span_start + offset, "span_end": span.span_end + offset})
+                )
+    merged_text = "".join(text_parts).strip()
+
+    retry_pages = {page.page_number: page for page in retry_extraction.pages}
+    merged_pages: list[WorkerDocumentPage] = []
+    for page in sorted(base_pages, key=lambda item: item.page_number):
+        if page.page_number == retry_page_number and page.page_number in retry_pages:
+            merged_pages.append(retry_pages[page.page_number])
+            continue
+        merged_pages.append(worker_page_from_previous(page, base_generation_id=base_generation.id))
+    if retry_page_number not in {page.page_number for page in base_pages} and retry_page_number in retry_pages:
+        merged_pages.append(retry_pages[retry_page_number])
+    merged_pages.sort(key=lambda item: item.page_number)
+
+    layout_pages = []
+    retry_layout_pages = {
+        int(page.get("page_number", 0)): page
+        for page in retry_extraction.layout_manifest.get("pages", [])
+        if isinstance(page, dict)
+    }
+    for page in base_layout.get("pages", []):
+        if not isinstance(page, dict):
+            continue
+        page_number = int(page.get("page_number", 0))
+        layout_pages.append(retry_layout_pages.get(page_number, page) if page_number == retry_page_number else page)
+    if retry_page_number not in {int(page.get("page_number", 0)) for page in layout_pages if isinstance(page, dict)}:
+        retry_page = retry_layout_pages.get(retry_page_number)
+        if retry_page:
+            layout_pages.append(retry_page)
+    merged_layout = {**base_layout, "pages": sorted(layout_pages, key=lambda item: int(item.get("page_number", 0)))}
+
+    merged_span_map = span_map_from_worker_spans(merged_spans, merged_text)
+
+    page_failed = any(page.page_number == retry_page_number and page.status == "failed" for page in merged_pages)
+    warning_codes = sorted(set(retry_extraction.warning_codes + (["partial_page_extraction_failed"] if page_failed else [])))
+    metadata = {
+        **retry_extraction.metadata,
+        "base_generation_id": base_generation.id,
+        "base_generation": base_generation.generation,
+        "retry_page_number": retry_page_number,
+        "retry_scope": "single_page",
+        "page_retry_merged_from_base": True,
+        "reading_order_algorithm": "layout-reading-order-v2",
+    }
+    return retry_extraction.model_copy(
+        update={
+            "normalized_text": merged_text,
+            "spans": merged_spans,
+            "pages": merged_pages,
+            "layout_manifest": merged_layout,
+            "span_map": merged_span_map,
+            "warning_codes": warning_codes,
+            "metadata": metadata,
+            "status": "partial" if page_failed or warning_codes else "review_ready",
+            "error_code": None,
+            "page_count": base_generation.page_count,
+        }
+    )
+
+
+def worker_spans_from_previous_page(
+    *,
+    base_text: str,
+    spans: list[DocumentTextSpanRecord],
+) -> tuple[str, list[WorkerDocumentSpan]]:
+    text_parts: list[str] = []
+    worker_spans: list[WorkerDocumentSpan] = []
+    previous_key: tuple[int, int, int] | None = None
+    for span in sorted(spans, key=lambda item: item.reading_order):
+        value = base_text[span.span_start:span.span_end]
+        if not value.strip():
+            continue
+        key = (span.page_number, span.block_index, span.line_index)
+        if text_parts:
+            text_parts.append("\n" if key != previous_key else " ")
+        start = sum(len(part) for part in text_parts)
+        text_parts.append(value)
+        end = start + len(value)
+        worker_spans.append(
+            WorkerDocumentSpan(
+                span_start=start,
+                span_end=end,
+                page_number=span.page_number,
+                block_index=span.block_index,
+                line_index=span.line_index,
+                token_index=span.token_index,
+                block_id=span.block_id,
+                line_id=span.line_id,
+                token_id=span.token_id,
+                reading_order=span.reading_order,
+                bbox=span.bbox,
+                source_kind=span.source_kind,
+                confidence=span.confidence,
+                warning_codes=list(span.warning_codes),
+            )
+        )
+        previous_key = key
+    return "".join(text_parts).strip(), worker_spans
+
+
+def worker_page_from_previous(page: DocumentExtractionPageRecord, *, base_generation_id: str) -> WorkerDocumentPage:
+    metadata = dict(page.metadata)
+    metadata["copied_from_generation_id"] = base_generation_id
+    if page.rendered_artifact_id:
+        metadata["rendered_artifact_id"] = page.rendered_artifact_id
+    if page.preview_artifact_id:
+        metadata["preview_artifact_id"] = page.preview_artifact_id
+    return WorkerDocumentPage(
+        page_number=page.page_number,
+        extraction_method=page.extraction_method,
+        status=page.status,
+        native_text_quality=page.native_text_quality,
+        text_chars=page.text_chars,
+        span_count=page.span_count,
+        rendered_page_ref=None,
+        preview_page_ref=None,
+        retryable=page.retryable,
+        error_code=page.error_code,
+        warning_codes=list(page.warning_codes),
+        metadata=metadata,
+    )
+
+
+def span_map_from_worker_spans(spans: list[WorkerDocumentSpan], source_text: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "start_offset": span.span_start,
+            "end_offset": span.span_end,
+            "page_number": span.page_number,
+            "block_ids": [span.block_id],
+            "line_ids": [span.line_id],
+            "token_ids": [span.token_id] if span.token_id else [],
+            "bounding_boxes": [safe_document_bbox(span.bbox)],
+            "extraction_method": span.source_kind,
+            "text_digest": hashlib.sha256(source_text[span.span_start:span.span_end].encode("utf-8")).hexdigest(),
+        }
+        for span in sorted(spans, key=lambda item: item.reading_order)
+        if span.span_end <= len(source_text)
+    ]
 
 
 def validate_document_extracted_text(text: str) -> str:
@@ -2249,11 +2523,16 @@ def page_from_worker(
     sanitized_image_artifact_id: str | None,
 ) -> DocumentExtractionPageRecord:
     rendered_artifact = rendered_artifacts_by_ref.get(page.rendered_page_ref or "")
+    rendered_artifact_id = rendered_artifact.id if rendered_artifact else None
+    if rendered_artifact_id is None and isinstance(page.metadata.get("rendered_artifact_id"), str):
+        rendered_artifact_id = str(page.metadata["rendered_artifact_id"])
     if page.preview_page_ref == "sanitized-image":
         preview_artifact_id = sanitized_image_artifact_id
     else:
         preview_artifact_id = rendered_artifacts_by_ref.get(page.preview_page_ref or "")
         preview_artifact_id = preview_artifact_id.id if preview_artifact_id else None
+    if preview_artifact_id is None and isinstance(page.metadata.get("preview_artifact_id"), str):
+        preview_artifact_id = str(page.metadata["preview_artifact_id"])
     return DocumentExtractionPageRecord(
         id=generate_document_extraction_page_id(),
         generation_id=generation_id,
@@ -2263,7 +2542,7 @@ def page_from_worker(
         native_text_quality=page.native_text_quality,
         text_chars=page.text_chars,
         span_count=page.span_count,
-        rendered_artifact_id=rendered_artifact.id if rendered_artifact else None,
+        rendered_artifact_id=rendered_artifact_id,
         preview_artifact_id=preview_artifact_id,
         retryable=page.retryable,
         error_code=page.error_code,
@@ -2279,6 +2558,17 @@ def safe_document_page_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         value = metadata.get(key)
         if isinstance(value, (int, float, bool)) or value is None:
             safe[key] = value
+    for key in ("native_bbox_source", "copied_from_generation_id", "rendered_artifact_id", "preview_artifact_id"):
+        value = metadata.get(key)
+        if isinstance(value, str):
+            safe[key] = value[:160]
+    quality_components = metadata.get("native_text_quality_components")
+    if isinstance(quality_components, dict):
+        safe["native_text_quality_components"] = {
+            key: round(float(value), 4) if isinstance(value, (int, float)) else value
+            for key, value in quality_components.items()
+            if key in {"text_chars", "geometry_coverage", "line_coherence", "non_control_ratio", "density_score"}
+        }
     return safe
 
 
@@ -2303,14 +2593,16 @@ def safe_document_bbox(value: dict[str, Any]) -> dict[str, Any]:
 
 def safe_document_extraction_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     safe: dict[str, Any] = {}
-    for key in ("native_text_pages", "ocr_pages", "image_width", "image_height"):
+    for key in ("native_text_pages", "ocr_pages", "image_width", "image_height", "base_generation", "retry_page_number"):
         value = metadata.get(key)
         if isinstance(value, (int, float, bool)) or value is None:
             safe[key] = value
-    for key in ("layout_artifact_id", "span_map_artifact_id", "reading_order_algorithm", "coordinate_space"):
+    for key in ("layout_artifact_id", "span_map_artifact_id", "reading_order_algorithm", "coordinate_space", "base_generation_id", "retry_scope"):
         value = metadata.get(key)
         if isinstance(value, str):
             safe[key] = value[:160]
+    if isinstance(metadata.get("page_retry_merged_from_base"), bool):
+        safe["page_retry_merged_from_base"] = metadata["page_retry_merged_from_base"]
     page_failures = metadata.get("page_failures")
     if isinstance(page_failures, list):
         safe["page_failures"] = [
@@ -2353,6 +2645,42 @@ def safe_document_extraction_metadata(metadata: dict[str, Any]) -> dict[str, Any
             else [],
             "silent_fallback": bool(capabilities.get("silent_fallback")),
         }
+    render_budget = metadata.get("render_budget")
+    if isinstance(render_budget, dict):
+        safe["render_budget"] = {
+            key: int(value)
+            for key, value in render_budget.items()
+            if key in {"max_total_pixels", "used_pixels", "rejected_pages"} and isinstance(value, int)
+        }
+    extraction_identity = metadata.get("extraction_identity")
+    if isinstance(extraction_identity, dict):
+        safe_identity: dict[str, Any] = {}
+        for key in ("extractor_version", "schema_version", "policy_fingerprint"):
+            value = extraction_identity.get(key)
+            if isinstance(value, str):
+                safe_identity[key] = value[:160]
+        policy = extraction_identity.get("policy")
+        if isinstance(policy, dict):
+            safe_identity["policy"] = {
+                key: value
+                for key, value in policy.items()
+                if key
+                in {
+                    "max_pdf_pages",
+                    "ocr_command",
+                    "ocr_languages",
+                    "ocr_timeout_seconds",
+                    "enable_pdf_page_ocr",
+                    "pdf_render_scale",
+                    "pdf_render_max_pixels",
+                    "pdf_render_max_total_pixels",
+                    "pdf_render_max_bytes",
+                    "pdf_native_min_quality",
+                    "persist_pdf_page_previews",
+                }
+                and isinstance(value, (str, int, float, bool, type(None)))
+            }
+        safe["extraction_identity"] = safe_identity
     return safe
 
 
@@ -2769,6 +3097,20 @@ def mention_evidence_response(
     line_ids = sorted({span.line_id for span in overlapping})
     token_ids = [span.token_id for span in sorted(overlapping, key=lambda item: item.reading_order) if span.token_id]
     boxes = [span.bbox for span in sorted(overlapping, key=lambda item: item.reading_order) if span.bbox]
+    box_evidence = [
+        DocumentMentionBoxEvidenceResponse(
+            page_number=span.page_number,
+            span_id=span.id,
+            block_id=span.block_id,
+            line_id=span.line_id,
+            token_id=span.token_id,
+            bbox=span.bbox,
+            extraction_method=span.source_kind,
+            reading_order=span.reading_order,
+        )
+        for span in sorted(overlapping, key=lambda item: item.reading_order)
+        if span.bbox
+    ]
     methods = sorted({span.source_kind for span in overlapping})
     return DocumentMentionEvidenceResponse(
         mention_id=mention.id,
@@ -2780,6 +3122,7 @@ def mention_evidence_response(
         line_ids=line_ids,
         token_ids=token_ids,
         bounding_boxes=boxes,
+        box_evidence=box_evidence,
         extraction_methods=methods,
         geometry_available=bool(boxes),
     )

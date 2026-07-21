@@ -163,6 +163,18 @@ DOCUMENT_EXTRACTION_FIXTURES = [
         expected_places_min=2,
         expected_strategy="pdf_native_text",
     ),
+    DocumentExtractionFixture(
+        name="document_pdf_native_mojibake_fallback",
+        binary_fixture=BinaryImportFixture("document_pdf_mojibake_source", "pdf", "mojibake-guide.pdf", "application/pdf", "text_pdf", expect_status="artifact_ready"),
+        expected_places_min=2,
+        expected_strategy="pdf_native_text",
+    ),
+    DocumentExtractionFixture(
+        name="document_pdf_two_page_reading_order",
+        binary_fixture=BinaryImportFixture("document_pdf_two_page_source", "pdf", "two-page-guide.pdf", "application/pdf", "two_page_text_pdf", expect_status="artifact_ready"),
+        expected_places_min=2,
+        expected_strategy="pdf_native_text",
+    ),
 ]
 
 
@@ -283,6 +295,11 @@ INVARIANTS = [
     "DOCUMENT_PAGE_PREVIEW_ARTIFACT_TRACEABLE",
     "DOCUMENT_PAGE_PREVIEW_ENDPOINT_PRIVATE",
     "DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION",
+    "DOCUMENT_EXTRACTION_POLICY_IDENTITY_STABLE",
+    "DOCUMENT_PAGE_RETRY_HAS_BASE_GENERATION",
+    "DOCUMENT_RETRY_SCOPE_SINGLE_PAGE",
+    "DOCUMENT_RENDER_BUDGET_RECORDED",
+    "DOCUMENT_MENTION_BOX_EVIDENCE_LINKED",
 ]
 
 
@@ -375,6 +392,8 @@ def main() -> int:
             failures.append("import evaluation invariant count below CI contract")
         if payload["document_extraction_invariant_count"] < 22:
             failures.append("document extraction invariant count below CI contract")
+        if payload["document_extraction_fixture_count"] < 5:
+            failures.append("document extraction fixture count below CI contract")
         payload["passed"] = len(failures) == 0
         payload["failure_count"] = len(failures)
     if args.json:
@@ -775,6 +794,16 @@ def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtr
         passed.append("DOCUMENT_READING_ORDER_DETERMINISTIC")
     else:
         failed.append("DOCUMENT_READING_ORDER_DETERMINISTIC")
+    if body["generation"].get("metadata", {}).get("extraction_identity", {}).get("policy_fingerprint"):
+        passed.append("DOCUMENT_EXTRACTION_POLICY_IDENTITY_STABLE")
+    else:
+        failed.append("DOCUMENT_EXTRACTION_POLICY_IDENTITY_STABLE")
+    if body["generation"].get("metadata", {}).get("render_budget", {}).get("max_total_pixels"):
+        passed.append("DOCUMENT_RENDER_BUDGET_RECORDED")
+    elif fixture.binary_fixture.declared_kind == "image":
+        passed.append("DOCUMENT_RENDER_BUDGET_RECORDED")
+    else:
+        failed.append("DOCUMENT_RENDER_BUDGET_RECORDED")
     if body["generation"].get("metadata", {}).get("coordinate_space") == "normalized-top-left":
         passed.append("DOCUMENT_COORDINATE_SPACE_NORMALIZED")
     else:
@@ -851,6 +880,14 @@ def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtr
         passed.append("DOCUMENT_MENTION_EVIDENCE_TRACEABLE")
     else:
         failed.append("DOCUMENT_MENTION_EVIDENCE_TRACEABLE")
+    if any(
+        item.get("box_evidence")
+        and all(box.get("page_number") in item.get("page_numbers", []) for box in item.get("box_evidence", []))
+        for item in evidence_body.get("mention_evidence", [])
+    ):
+        passed.append("DOCUMENT_MENTION_BOX_EVIDENCE_LINKED")
+    else:
+        failed.append("DOCUMENT_MENTION_BOX_EVIDENCE_LINKED")
     evidence_boxes = [
         box
         for mention in evidence_body.get("mention_evidence", [])
@@ -880,12 +917,27 @@ def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtr
         )
         if retry.status_code == 201 and retry.json()["generation"]["generation"] == body["generation"]["generation"] + 1:
             passed.append("DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION")
+            retry_metadata = retry.json()["generation"].get("metadata", {})
+            if retry_metadata.get("base_generation_id") == body["generation"]["id"]:
+                passed.append("DOCUMENT_PAGE_RETRY_HAS_BASE_GENERATION")
+            else:
+                failed.append("DOCUMENT_PAGE_RETRY_HAS_BASE_GENERATION")
+            if retry_metadata.get("retry_scope") == "single_page" and retry_metadata.get("retry_page_number") == retryable_pages[0]["page_number"]:
+                passed.append("DOCUMENT_RETRY_SCOPE_SINGLE_PAGE")
+            else:
+                failed.append("DOCUMENT_RETRY_SCOPE_SINGLE_PAGE")
         else:
             failed.append("DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION")
+            failed.append("DOCUMENT_PAGE_RETRY_HAS_BASE_GENERATION")
+            failed.append("DOCUMENT_RETRY_SCOPE_SINGLE_PAGE")
     elif fixture.name != "document_pdf_partial_page_retry":
         passed.append("DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION")
+        passed.append("DOCUMENT_PAGE_RETRY_HAS_BASE_GENERATION")
+        passed.append("DOCUMENT_RETRY_SCOPE_SINGLE_PAGE")
     else:
         failed.append("DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION")
+        failed.append("DOCUMENT_PAGE_RETRY_HAS_BASE_GENERATION")
+        failed.append("DOCUMENT_RETRY_SCOPE_SINGLE_PAGE")
     revisions_after_extraction = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
     candidates_after_extraction = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
     if [item["id"] for item in revisions_before] == [item["id"] for item in revisions_after_extraction] and len(candidates_after_extraction) == len(candidates_before):
@@ -969,6 +1021,8 @@ def binary_content(kind: str) -> bytes:
         return text_pdf_bytes("景点：豫园、上海博物馆")
     if kind == "text_blank_pdf":
         return text_and_blank_pdf_bytes("景点：豫园、上海博物馆")
+    if kind == "two_page_text_pdf":
+        return two_page_text_pdf_bytes()
     if kind == "encrypted_pdf":
         return pdf_bytes(encrypted=True)
     if kind == "javascript_pdf":
@@ -1027,6 +1081,33 @@ def text_and_blank_pdf_bytes(text: str) -> bytes:
     buffer = io.BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
+
+
+def two_page_text_pdf_bytes() -> bytes:
+    writer = PdfWriter()
+    add_text_page(writer, "景点：豫园、上海博物馆")
+    add_text_page(writer, "第二页：外滩")
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def add_text_page(writer: PdfWriter, text: str) -> None:
+    page = writer.add_blank_page(width=420, height=300)
+    font = DictionaryObject()
+    font.update(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})})
+    stream = DecodedStreamObject()
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream.set_data(f"BT /F1 16 Tf 40 240 Td ({escaped}) Tj ET".encode("utf-8"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
 
 
 def image_bytes(fmt: str, *, size: tuple[int, int] = (32, 20), alpha: bool = False, comment: bool = False) -> bytes:

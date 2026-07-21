@@ -460,6 +460,17 @@ class DocumentExtractionCreateResponse(BaseModel):
     idempotent_replay: bool = False
 
 
+class DocumentMentionBoxEvidenceResponse(BaseModel):
+    page_number: int
+    span_id: str
+    block_id: str
+    line_id: str
+    token_id: str | None = None
+    bbox: dict[str, Any]
+    extraction_method: str
+    reading_order: int
+
+
 class DocumentMentionEvidenceResponse(BaseModel):
     mention_id: str
     mention_text: str
@@ -470,6 +481,7 @@ class DocumentMentionEvidenceResponse(BaseModel):
     line_ids: list[str] = Field(default_factory=list)
     token_ids: list[str] = Field(default_factory=list)
     bounding_boxes: list[dict[str, Any]] = Field(default_factory=list)
+    box_evidence: list[DocumentMentionBoxEvidenceResponse] = Field(default_factory=list)
     extraction_methods: list[str] = Field(default_factory=list)
     geometry_available: bool
 

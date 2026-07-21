@@ -98,6 +98,21 @@ export async function fetchDocumentPagePreviewBlob(tripId: string, importJobId: 
   return { ok: true as const, data: await response.blob() };
 }
 
+export async function retryDocumentPageExtraction(
+  tripId: string,
+  importJobId: string,
+  pageNumber: number,
+  idempotencyKey: string,
+) {
+  return postTripJson<DocumentExtractionCreateResponse>(
+    TRIP_API_ENDPOINTS.retryDocumentPageExtraction(tripId, importJobId, pageNumber),
+    {},
+    "重试文档页面抽取失败",
+    undefined,
+    { headers: { "X-Idempotency-Key": idempotencyKey } },
+  );
+}
+
 export async function fetchImportArtifact(tripId: string, importJobId: string) {
   const response = await fetch(TRIP_API_ENDPOINTS.getTextImportArtifact(tripId, importJobId), {
     credentials: "include",
