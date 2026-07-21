@@ -36,6 +36,13 @@ type ImportReviewWorkspaceProps = {
   onCandidatesChanged: (tripId: string) => void;
 };
 
+type IntentEvidenceFocus = {
+  tripId: string;
+  importJobId: string;
+  mentionId?: string | null;
+  pageNumber?: number | null;
+};
+
 export function ImportReviewWorkspace({
   tripPersistence,
   onCandidatesChanged,
@@ -77,6 +84,54 @@ export function ImportReviewWorkspace({
     }
     void hydrateBinaryInspection(savedTripId, stored.jobId, stored.declaredKind);
   }, [savedTripId]);
+
+  useEffect(() => {
+    if (!savedTripId || typeof window === "undefined") {
+      return;
+    }
+    const handleIntentEvidenceFocus = (event: Event) => {
+      const detail = (event as CustomEvent<IntentEvidenceFocus>).detail;
+      if (!detail || detail.tripId !== savedTripId) {
+        return;
+      }
+      void loadIntentEvidence(detail);
+    };
+    window.addEventListener("trip-import-evidence-focus", handleIntentEvidenceFocus);
+    return () => window.removeEventListener("trip-import-evidence-focus", handleIntentEvidenceFocus);
+  }, [savedTripId]);
+
+  async function loadIntentEvidence(detail: IntentEvidenceFocus) {
+    if (!savedTripId) {
+      return;
+    }
+    const review = await fetchImportReview(savedTripId, detail.importJobId);
+    if (!review.ok) {
+      dispatch({ type: "error", code: review.code ?? "intent_evidence_review_fetch_failed", message: review.message, recoverable: true });
+      return;
+    }
+    const artifact = await fetchImportArtifact(savedTripId, detail.importJobId);
+    dispatch({
+      type: "review",
+      artifact: review.data.artifact,
+      job: review.data.job,
+      mentions: review.data.mentions,
+      sourceText: artifact.ok ? artifact.data : "",
+      sourceFetch: review.data.source_fetch,
+      derivation: review.data.derivation,
+    });
+    if (detail.pageNumber) {
+      const evidence = await fetchDocumentExtractionEvidence(savedTripId, detail.importJobId);
+      if (evidence.ok) {
+        setMode("binary");
+        setDocumentExtraction({
+          status: "ready",
+          generation: evidence.data.generation,
+          spanCount: evidence.data.span_map.length,
+          evidence: evidence.data,
+        });
+      }
+    }
+  }
 
   async function handleSubmit() {
     if (!savedTripId) {

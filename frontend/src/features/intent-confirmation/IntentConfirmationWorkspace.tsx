@@ -27,6 +27,9 @@ type Props = {
 type IntentEditForm = {
   city: string;
   tripDays: string;
+  startDate: string;
+  endDate: string;
+  timezone: string;
   pace: "" | "relaxed" | "balanced" | "intensive";
   transportPreferences: string;
 };
@@ -38,9 +41,13 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
   const [status, setStatus] = useState<string | null>(null);
   const [clarificationAnswer, setClarificationAnswer] = useState("");
   const [selectedEvidenceNodeId, setSelectedEvidenceNodeId] = useState<string | null>(null);
+  const [staleEdit, setStaleEdit] = useState(false);
   const [editForm, setEditForm] = useState<IntentEditForm>({
     city: "",
     tripDays: "",
+    startDate: "",
+    endDate: "",
+    timezone: "",
     pace: "",
     transportPreferences: "",
   });
@@ -77,7 +84,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
 
   useEffect(() => {
     if (!envelope) {
-      setEditForm({ city: "", tripDays: "", pace: "", transportPreferences: "" });
+      setEditForm({ city: "", tripDays: "", startDate: "", endDate: "", timezone: "", pace: "", transportPreferences: "" });
       return;
     }
     setEditForm({
@@ -85,6 +92,9 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       tripDays: envelope.planner_ready_intent.trip_days
         ? String(envelope.planner_ready_intent.trip_days)
         : "",
+      startDate: envelope.formal_contract.date_policy.start_date ?? "",
+      endDate: envelope.formal_contract.date_policy.end_date ?? "",
+      timezone: (envelope.formal_contract.date_policy.timezone ?? "unknown") === "unknown" ? "" : envelope.formal_contract.date_policy.timezone ?? "",
       pace: isPace(envelope.planner_ready_intent.pace) ? envelope.planner_ready_intent.pace : "",
       transportPreferences: envelope.planner_ready_intent.transport_preferences.join(", "),
     });
@@ -132,6 +142,11 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       `intent-clarify:${envelope.id}:${questionId}:${saved.currentRevisionId}`,
     );
     if (!result.ok) {
+      if (result.code === "stale_intent_revision") {
+        await refreshHistory(saved.tripId);
+        setStatus("A newer intent revision exists. Load the latest contract before answering this clarification.");
+        return;
+      }
       setStatus(result.message);
       return;
     }
@@ -152,14 +167,16 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       return;
     }
     setEnvelope(result.data.envelope);
+    setStaleEdit(false);
     setStatus(`Loaded intent revision ${result.data.revision.revision_number}.`);
   }
 
-  async function handleEditIntent() {
+  async function handleEditIntent(reapplyToLatest = false) {
     if (!saved || !envelope) {
       return;
     }
-    if (!loadedLatest) {
+    const baseEnvelope = reapplyToLatest ? latestEnvelope : envelope;
+    if (!baseEnvelope || (!loadedLatest && !reapplyToLatest)) {
       setStatus("Load the latest intent revision before editing the contract.");
       return;
     }
@@ -174,25 +191,35 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       .filter(Boolean);
     const result = await editTripIntentEnvelope(
       saved.tripId,
-      envelope.id,
+      baseEnvelope.id,
       {
         base_revision_id: saved.currentRevisionId,
-        base_intent_revision_id: envelope.id,
+        base_intent_revision_id: baseEnvelope.id,
         field_updates: {
           city: editForm.city.trim() || null,
           trip_days: tripDays,
+          start_date: editForm.startDate || null,
+          end_date: editForm.endDate || null,
+          timezone: editForm.timezone.trim() || null,
           pace: editForm.pace || null,
           transport_preferences: transportPreferences,
         },
       },
-      `intent-edit:${envelope.id}:${saved.currentRevisionId}:${editForm.city}:${editForm.tripDays}:${editForm.pace}:${transportPreferences.join("|")}`,
+      `intent-edit:${baseEnvelope.id}:${saved.currentRevisionId}:${editForm.city}:${editForm.tripDays}:${editForm.startDate}:${editForm.endDate}:${editForm.timezone}:${editForm.pace}:${transportPreferences.join("|")}`,
     );
     if (!result.ok) {
+      if (result.code === "stale_intent_revision") {
+        await refreshHistory(saved.tripId);
+        setStaleEdit(true);
+        setStatus("A newer intent revision exists. Your draft is retained; reapply it explicitly to the latest revision.");
+        return;
+      }
       setStatus(result.message);
       return;
     }
     setEnvelope(result.data.envelope);
     setLatestEnvelope(result.data.envelope);
+    setStaleEdit(false);
     setStatus("Saved edit as a new intent revision.");
     await refreshHistory(saved.tripId);
   }
@@ -247,7 +274,8 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
             form={editForm}
             onChange={setEditForm}
             onSave={() => void handleEditIntent()}
-            disabled={!loadedLatest}
+            onReapply={staleEdit && latestEnvelope ? () => void handleEditIntent(true) : null}
+            disabled={!loadedLatest && !staleEdit}
           />
           <FieldList title="Selected fields" fields={summary.selectedFields} />
           <ProvenanceList
@@ -440,11 +468,13 @@ function IntentEditPanel({
   form,
   onChange,
   onSave,
+  onReapply,
   disabled,
 }: {
   form: IntentEditForm;
   onChange: (form: IntentEditForm) => void;
   onSave: () => void;
+  onReapply: (() => void) | null;
   disabled: boolean;
 }) {
   return (
@@ -458,6 +488,18 @@ function IntentEditPanel({
         <label>
           Trip days
           <input disabled={disabled} value={form.tripDays} onChange={(event) => onChange({ ...form, tripDays: event.target.value })} />
+        </label>
+        <label>
+          Start date
+          <input type="date" disabled={disabled} value={form.startDate} onChange={(event) => onChange({ ...form, startDate: event.target.value })} />
+        </label>
+        <label>
+          End date
+          <input type="date" disabled={disabled} value={form.endDate} onChange={(event) => onChange({ ...form, endDate: event.target.value })} />
+        </label>
+        <label>
+          Timezone
+          <input disabled={disabled} value={form.timezone} onChange={(event) => onChange({ ...form, timezone: event.target.value })} />
         </label>
         <label>
           Pace
@@ -484,6 +526,11 @@ function IntentEditPanel({
       <button type="button" onClick={onSave} disabled={disabled}>
         Save revision
       </button>
+      {onReapply ? (
+        <button type="button" onClick={onReapply}>
+          Reapply to latest
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -570,6 +617,22 @@ function ProvenanceList({
     return null;
   }
   const selectedNode = envelope.provenance_graph.nodes.find((node) => node.node_id === selectedNodeId);
+  function selectEvidenceNode(node: SourceLinkedTripIntentEnvelope["provenance_graph"]["nodes"][number]) {
+    onSelectNode(node.node_id);
+    if (typeof window === "undefined" || !node.import_job_id) {
+      return;
+    }
+    window.dispatchEvent(
+      new CustomEvent("trip-import-evidence-focus", {
+        detail: {
+          tripId: envelope.trip_id,
+          importJobId: node.import_job_id,
+          mentionId: node.mention_id,
+          pageNumber: node.page_number,
+        },
+      }),
+    );
+  }
   return (
     <div className="intent-confirmation-workspace__panel">
       <strong>Source evidence</strong>
@@ -584,7 +647,7 @@ function ProvenanceList({
           .filter((node) => node.node_type !== "field" && node.node_type !== "envelope_revision")
           .slice(0, 12)
           .map((node) => (
-            <button type="button" key={node.node_id} onClick={() => onSelectNode(node.node_id)}>
+            <button type="button" key={node.node_id} onClick={() => selectEvidenceNode(node)}>
               {node.node_type}
             </button>
           ))}

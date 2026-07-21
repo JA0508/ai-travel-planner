@@ -56,3 +56,11 @@ test("layout-aware document flow exposes page navigation zoom retry and linked b
   assert.match(source, /mentionEvidenceBoxesForPage/);
   assert.match(source, /box_evidence/);
 });
+
+test("intent evidence focus reuses the private import review workspace", () => {
+  const source = readFileSync(componentPath, "utf-8");
+  assert.match(source, /trip-import-evidence-focus/);
+  assert.match(source, /fetchImportReview\(savedTripId, detail\.importJobId\)/);
+  assert.match(source, /fetchDocumentExtractionEvidence\(savedTripId, detail\.importJobId\)/);
+  assert.equal(source.includes("dangerouslySetInnerHTML"), false);
+});

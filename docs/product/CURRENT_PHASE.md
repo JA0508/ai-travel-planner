@@ -2,7 +2,7 @@
 
 ## Current phase
 
-F-004a.3 Final Intent Contract Closure.
+F-004a Completion Integrity Repair — in review.
 
 ## Recently completed and merged
 
@@ -12,7 +12,6 @@ F-004a.3 Final Intent Contract Closure.
 - F-004a Source-Linked Intent Contract Foundation
 - F-004a.1 Typed Intent, Provenance and Concurrency Hardening
 - F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure
-- F-004a.3 Domain-Native Schema, Verified Provenance and Atomic Lineage
 
 The completed document extraction path now supports:
 
@@ -55,7 +54,6 @@ The completed document extraction path now supports:
 - F-004a Source-Linked Intent Contract Foundation
 - F-004a.1 Typed Intent, Provenance and Concurrency Hardening
 - F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure
-- F-004a.3 Final Intent Contract Closure
 
 ## Known technical debt
 
@@ -64,18 +62,18 @@ The completed document extraction path now supports:
 - Five-viewport layout-aware browser visual smoke coverage is incomplete.
 - Local OCR behavior is intentionally capability-reported and may vary by
   installed language packs and rendering dependencies.
-- Import Review can produce reviewed mentions and TripCandidates, and F-004a now
-  compiles them into immutable source-linked intent revisions with domain-native
-  values, explicit parser status, source authority, semantic and lineage digests,
-  provenance graph nodes, typed assumptions, clarification lifecycle, edit,
-  restore, and transaction-level latest-intent checks.
+- F-004a Completion Integrity Repair is in review. The repair persists verified
+  candidate-to-import lineage, fails closed for legacy-unverified candidates,
+  exercises real immutable revision and SQLite race scenarios, and hands
+  provenance nodes back to the existing private Import Review workspace. It is
+  not marked complete until branch CI and review accept these gates.
 - F-004a intentionally stops at planner-ready intent preview. It still does not
   create TripRevisions, execute itinerary mutations, call providers, run the
   scheduler, or auto-admit candidates into an itinerary.
-- Provenance graph navigation currently exposes source/candidate/artifact/mention
-  nodes from persisted evidence references. It is sufficient for F-004b handoff
-  but is not yet a full Planner Trace review workspace.
-- The intent compiler evaluation corpus now has 58 fixtures and CI gates fixture
+- Provenance graph navigation opens the existing private Import Review workspace
+  for an import job/page when structured evidence supplies that identity. It is
+  not yet a full Planner Trace review workspace.
+- The intent compiler evaluation corpus now has 62 fixtures and CI gates fixture
   counts plus deterministic invariants across semantic, provenance, parser,
   revision, concurrency, and clarification categories. It should still expand
   when F-004b introduces planner handoff behavior.

@@ -187,6 +187,15 @@ export type DatePolicyIntent = {
   start_date: string | null;
   end_date: string | null;
   metadata: IntentFieldMetadata | null;
+  timezone?: string;
+  reference_date?: string | null;
+  original_expressions?: string[];
+  normalization_rule_codes?: string[];
+};
+
+export type PaceIntent = {
+  metadata: IntentFieldMetadata;
+  value: "relaxed" | "balanced" | "intensive";
 };
 
 export type FormalTripIntentContract = {
@@ -206,7 +215,7 @@ export type FormalTripIntentContract = {
   must_places: Array<Record<string, unknown>>;
   optional_places: Array<Record<string, unknown>>;
   exclusions: Array<Record<string, unknown>>;
-  pace: Record<string, unknown> | null;
+  pace: PaceIntent | null;
   transport_preferences: Array<Record<string, unknown>>;
   meal_preferences: Array<Record<string, unknown>>;
   budget: Record<string, unknown> | null;
@@ -226,6 +235,7 @@ export type IntentProvenanceGraph = {
     source_type: string | null;
     source_id: string | null;
     artifact_id: string | null;
+    import_job_id: string | null;
     mention_id: string | null;
     review_decision_id: string | null;
     candidate_id: string | null;

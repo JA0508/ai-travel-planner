@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { IntentConfirmationWorkspace } from "./IntentConfirmationWorkspace";
+
+const componentPath = fileURLToPath(new URL("./IntentConfirmationWorkspace.tsx", import.meta.url));
 
 test("browser smoke renders intent confirmation workspace without planner controls", () => {
   const html = renderToStaticMarkup(
@@ -38,4 +42,12 @@ test("browser smoke does not expose direct candidate admission controls", () => 
   assert.match(html, /Intent contract/);
   assert.doesNotMatch(html, /Add to itinerary/);
   assert.doesNotMatch(html, /Auto admit/);
+});
+
+test("workspace preserves a stale edit for explicit latest-revision reapply", () => {
+  const source = readFileSync(componentPath, "utf-8");
+  assert.match(source, /stale_intent_revision/);
+  assert.match(source, /Your draft is retained/);
+  assert.match(source, /Reapply to latest/);
+  assert.match(source, /trip-import-evidence-focus/);
 });

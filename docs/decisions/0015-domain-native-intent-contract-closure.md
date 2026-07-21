@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted for F-004a.3 final closure.
+Superseded in part by ADR 0016. PR #20 established the foundation; its final
+closure claim was not accepted until the integrity repair gates were added.
 
 ## Date
 
@@ -24,7 +25,8 @@ creation, and itinerary mutation.
 
 ## Decision
 
-Close F-004a with a domain-native `SourceLinkedTripIntentEnvelope` contract:
+The original F-004a.3 closure proposal was a domain-native
+`SourceLinkedTripIntentEnvelope` contract with:
 
 - destination, trip days, pace, transport preference, must candidate, fixed
   event, general preference, budget, and traveler need values are represented by
