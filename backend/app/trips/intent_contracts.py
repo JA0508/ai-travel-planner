@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, time
 from enum import Enum
-import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.services.nl_parser import parse_trip_text_fallback
 from app.trips.access import generate_intent_revision_id
@@ -13,8 +13,11 @@ from app.trips.candidates import TripCandidateRecord
 from app.trips.digests import sha256_digest
 
 
-TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.3"
-TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v4"
+TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.4"
+TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v5"
+INTENT_PRECEDENCE_VERSION = "intent-precedence-v3"
+INTENT_READINESS_POLICY_VERSION = "intent-readiness-v3"
+INTENT_DATE_POLICY_VERSION = "intent-date-policy-v1"
 
 
 class IntentSourceType(str, Enum):
@@ -24,6 +27,12 @@ class IntentSourceType(str, Enum):
     TRIP_CANDIDATE = "trip_candidate"
     EXISTING_TRIP_STATE = "existing_trip_state"
     EXISTING_INTENT_REVISION = "existing_intent_revision"
+    TRIP_FORM = "trip_form"
+    SOURCE_ARTIFACT = "source_artifact"
+    IMPORT_MENTION = "import_mention"
+    IMPORT_REVIEW_DECISION = "import_review_decision"
+    RESOLUTION_CANDIDATE = "resolution_candidate"
+    SYSTEM_ASSUMPTION = "system_assumption"
 
 
 class IntentFieldKind(str, Enum):
@@ -42,14 +51,19 @@ class IntentPlannerReadyStatus(str, Enum):
     READY = "ready"
     NEEDS_CLARIFICATION = "needs_clarification"
     BLOCKED = "blocked"
+    READY_WITH_ASSUMPTIONS = "ready_with_assumptions"
+    READY_FOR_PLANNING = "ready_for_planning"
 
 
 class IntentAuthority(str, Enum):
     USER_CONFIRMED = "user_confirmed"
     REVIEWED_SOURCE = "reviewed_source"
+    REVIEW_CONFIRMED = "review_confirmed"
     SAVED_STATE = "saved_state"
+    DIRECT_USER_PROPOSAL = "direct_user_proposal"
     LLM_UNTRUSTED = "llm_untrusted"
     DETERMINISTIC_CONTEXT = "deterministic_context"
+    SYSTEM_ASSUMPTION = "system_assumption"
     LEGACY_UNKNOWN = "legacy_unknown"
 
 
@@ -76,6 +90,10 @@ class ProvenanceNodeType(str, Enum):
     TRIP_CANDIDATE = "trip_candidate"
     DOCUMENT_PAGE = "document_page"
     BOUNDING_BOX = "bounding_box"
+    IMPORT_JOB = "import_job"
+    RESOLUTION_CANDIDATE = "resolution_candidate"
+    DIRECT_USER_SPAN = "direct_user_span"
+    LLM_PROPOSAL = "llm_proposal"
     FIELD = "field"
     ASSUMPTION = "assumption"
 
@@ -84,6 +102,14 @@ class ProvenanceEdgeType(str, Enum):
     PRODUCED = "produced"
     SUPPORTS = "supports"
     DERIVED_FROM = "derived_from"
+    MENTIONED_IN = "mentioned_in"
+    REVIEWED_AS = "reviewed_as"
+    RESOLVED_TO = "resolved_to"
+    COMMITTED_AS = "committed_as"
+    COMPILED_INTO = "compiled_into"
+    ASSUMED_FROM = "assumed_from"
+    RESTORED_FROM = "restored_from"
+    SHADOWED_BY = "shadowed_by"
     EVIDENCES = "evidences"
     SELECTED_IN = "selected_in"
     SHADOWED_IN = "shadowed_in"
@@ -195,6 +221,272 @@ class IntentSourceRef(BaseModel):
     authority: IntentAuthority = IntentAuthority.LEGACY_UNKNOWN
     evidence_digest: str
     evidence_refs: list[str] = Field(default_factory=list)
+
+
+JsonScalar = str | int | float | bool
+
+
+class BoundingBox(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(..., ge=0)
+    y: float = Field(..., ge=0)
+    width: float = Field(..., gt=0)
+    height: float = Field(..., gt=0)
+    unit: Literal["normalized", "pixel"] = "normalized"
+
+
+class IntentSourceReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_ref_id: str
+    source_type: Literal[
+        "direct_user_language",
+        "structured_user_override",
+        "trip_form",
+        "source_artifact",
+        "import_mention",
+        "import_review_decision",
+        "resolution_candidate",
+        "trip_candidate",
+        "existing_intent_revision",
+        "llm_proposal",
+        "system_assumption",
+    ]
+    source_id: str
+    artifact_id: str | None = None
+    import_job_id: str | None = None
+    mention_id: str | None = None
+    review_decision_id: str | None = None
+    resolution_candidate_id: str | None = None
+    trip_candidate_id: str | None = None
+    intent_revision_id: str | None = None
+    text_span_start: int | None = Field(default=None, ge=0)
+    text_span_end: int | None = Field(default=None, ge=0)
+    page_number: int | None = Field(default=None, ge=1)
+    bounding_boxes: list[BoundingBox] = Field(default_factory=list)
+    extraction_method: str | None = None
+    geometry_source: str | None = None
+    source_digest: str
+    authority: Literal[
+        "user_confirmed",
+        "review_confirmed",
+        "saved_state",
+        "direct_user_proposal",
+        "llm_untrusted",
+        "system_assumption",
+    ]
+    confirmed: bool
+
+
+class IntentFieldMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field_id: str
+    field_path: str
+    kind: Literal["hard", "soft", "assumption"]
+    confirmation_state: Literal[
+        "user_confirmed",
+        "review_confirmed",
+        "proposed",
+        "assumed",
+        "conflicted",
+        "superseded",
+    ]
+    authority: Literal[
+        "user_confirmed",
+        "review_confirmed",
+        "saved_state",
+        "direct_user_proposal",
+        "llm_untrusted",
+        "system_assumption",
+    ]
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    source_refs: list[IntentSourceReference] = Field(default_factory=list)
+    compiler_rule_code: str
+    warning_codes: list[str] = Field(default_factory=list)
+
+
+class DestinationIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    city_name: str = Field(..., min_length=1, max_length=120)
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
+    timezone: str | None = Field(default=None, max_length=80)
+    order: int = Field(..., ge=0)
+
+
+class DatePolicyIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    start_date: date | None = None
+    end_date: date | None = None
+    trip_days: int | None = Field(default=None, ge=1, le=60)
+    timezone: str = "unknown"
+    original_expressions: list[str] = Field(default_factory=list)
+    reference_date: date | None = None
+    normalization_rule_codes: list[str] = Field(default_factory=list)
+
+
+class TravelBoundaryIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    boundary_type: Literal["arrival", "departure"]
+    local_datetime: datetime
+    timezone: str
+    flexibility_minutes: int = Field(default=0, ge=0, le=1440)
+    location_candidate_id: str | None = None
+    location_text: str | None = Field(default=None, max_length=240)
+
+
+class AvailabilityWindowIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    date: date
+    start_time: time
+    end_time: time
+    timezone: str
+    crosses_midnight: bool = False
+
+
+class FixedEventIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    event_id: str
+    title: str = Field(..., min_length=1, max_length=240)
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    timezone: str | None = None
+    fixed_day: int | None = Field(default=None, ge=1, le=60)
+    place_candidate_id: str | None = None
+    location_text: str | None = Field(default=None, max_length=240)
+    flexibility: Literal["fixed", "movable_with_confirmation"] = "fixed"
+
+
+class PlacePreferenceIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    trip_candidate_id: str
+    display_name: str | None = None
+    preference: Literal["must", "optional", "avoid"]
+    strength: int = Field(..., ge=1, le=100)
+
+
+class TransportPreferenceIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    mode: Literal[
+        "walk",
+        "metro",
+        "bus",
+        "taxi",
+        "ride_hailing",
+        "drive",
+        "bike",
+        "rail",
+        "flight",
+        "other",
+    ]
+    preference: Literal["prefer", "avoid", "require"] = "prefer"
+    custom_label: str | None = Field(default=None, max_length=80)
+
+
+class MealPreferenceIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    preference_text: str = Field(..., min_length=1, max_length=240)
+    preference: Literal["prefer", "avoid", "require"] = "prefer"
+
+
+class BudgetIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    amount_minor: int | None = Field(default=None, gt=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    scope: Literal["total", "per_person", "per_day"] | None = None
+    level: Literal["low", "medium", "high"] | None = None
+    flexibility_percent: int = Field(default=0, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_budget(self) -> "BudgetIntent":
+        if self.amount_minor is not None and (self.currency is None or self.scope is None):
+            raise ValueError("numeric budget requires currency and scope.")
+        return self
+
+
+class TravelerNeedIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    need_type: Literal["mobility", "wheelchair", "child", "elderly", "dietary", "medical", "sensory", "other"]
+    description: str = Field(..., min_length=1, max_length=240)
+    severity: Literal["required", "preferred"] = "preferred"
+
+
+class ExclusionIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    exclusion_text: str = Field(..., min_length=1, max_length=240)
+
+
+class PlanningAssumption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assumption_id: str
+    field_path: str
+    assumed_value: JsonScalar
+    value_type: Literal["integer", "string", "date", "datetime", "enum", "boolean"]
+    reason_code: str
+    impact: Literal["medium", "low"]
+    source_refs: list[IntentSourceReference] = Field(default_factory=list)
+    user_acknowledged: bool = False
+    supersedes_clarification_id: str | None = None
+
+
+class IntentReadiness(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["blocked", "needs_clarification", "ready_with_assumptions", "ready_for_planning"]
+    planner_contract_complete: bool
+    blocking_issue_codes: list[str] = Field(default_factory=list)
+    unresolved_required_field_paths: list[str] = Field(default_factory=list)
+    active_assumption_ids: list[str] = Field(default_factory=list)
+    warning_codes: list[str] = Field(default_factory=list)
+
+
+class FormalTripIntentContract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = "formal-trip-intent-v1"
+    destinations: list[DestinationIntent] = Field(default_factory=list)
+    date_policy: DatePolicyIntent | None = None
+    arrival_boundary: TravelBoundaryIntent | None = None
+    departure_boundary: TravelBoundaryIntent | None = None
+    availability_windows: list[AvailabilityWindowIntent] = Field(default_factory=list)
+    fixed_events: list[FixedEventIntent] = Field(default_factory=list)
+    must_visit_places: list[PlacePreferenceIntent] = Field(default_factory=list)
+    optional_places: list[PlacePreferenceIntent] = Field(default_factory=list)
+    avoid_places: list[PlacePreferenceIntent] = Field(default_factory=list)
+    pace: IntentFieldMetadata | None = None
+    transport_preferences: list[TransportPreferenceIntent] = Field(default_factory=list)
+    meal_preferences: list[MealPreferenceIntent] = Field(default_factory=list)
+    budget: BudgetIntent | None = None
+    traveler_needs: list[TravelerNeedIntent] = Field(default_factory=list)
+    exclusions: list[ExclusionIntent] = Field(default_factory=list)
+    assumptions: list[PlanningAssumption] = Field(default_factory=list)
+    clarifications: list[ClarificationQuestion] = Field(default_factory=list)
+    conflicts: list[IntentConflict] = Field(default_factory=list)
+    readiness: IntentReadiness
 
 
 class IntentField(BaseModel):
@@ -360,10 +652,22 @@ class IntentParserResult(BaseModel):
 
     parser_name: str
     parser_version: str
-    status: Literal["not_run", "parsed", "validated", "unavailable", "timeout", "invalid", "provider_error"]
+    status: Literal["success", "empty_input", "unavailable", "timeout", "invalid_output", "provider_error"]
     input_digests: list[str] = Field(default_factory=list)
     extracted_field_paths: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    model_name: str | None = None
+
+
+class IntentProposalParseResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["success", "empty_input", "unavailable", "timeout", "invalid_output", "provider_error"]
+    proposal: "UntrustedIntentProposal | None" = None
+    parser_name: str
+    parser_version: str
+    model_name: str | None = None
+    warning_codes: list[str] = Field(default_factory=list)
 
 
 class IntentProvenanceNode(BaseModel):
@@ -404,7 +708,7 @@ class IntentProvenanceGraph(BaseModel):
 class IntentReadinessPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    policy_version: str = "intent-readiness-v2"
+    policy_version: str = INTENT_READINESS_POLICY_VERSION
     status: IntentPlannerReadyStatus
     blocking_reason_codes: list[str] = Field(default_factory=list)
     allowed_assumption_ids: list[str] = Field(default_factory=list)
@@ -420,7 +724,7 @@ class PlannerReadyIntentPreview(BaseModel):
     must_place_names: list[str] = Field(default_factory=list)
     pace: str | None = None
     transport_preferences: list[str] = Field(default_factory=list)
-    fixed_events: list[dict[str, Any]] = Field(default_factory=list)
+    fixed_events: list[IntentFixedEventValue] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
 
 
@@ -442,8 +746,9 @@ class SourceLinkedTripIntentEnvelope(BaseModel):
     parser_result: IntentParserResult = Field(default_factory=lambda: IntentParserResult(
         parser_name="intent_contract_compiler",
         parser_version=TRIP_INTENT_COMPILER_VERSION,
-        status="not_run",
+        status="empty_input",
     ))
+    formal_contract: FormalTripIntentContract
     typed_intent: TypedTripIntent = Field(default_factory=TypedTripIntent)
     provenance_summary: list[IntentProvenanceSummary] = Field(default_factory=list)
     provenance_graph: IntentProvenanceGraph = Field(default_factory=IntentProvenanceGraph)
@@ -457,6 +762,46 @@ class SourceLinkedTripIntentEnvelope(BaseModel):
     content_digest: str
     created_at: str
 
+    @model_validator(mode="before")
+    @classmethod
+    def backfill_formal_contract(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "formal_contract" not in data:
+            legacy = dict(data)
+            fields = [IntentField.model_validate(item) for item in legacy.get("fields") or []]
+            conflicts = [IntentConflict.model_validate(item) for item in legacy.get("conflicts") or []]
+            clarifications = [
+                ClarificationQuestion.model_validate(item)
+                for item in legacy.get("clarification_queue") or []
+            ]
+            assumptions = [
+                IntentAssumption.model_validate(item)
+                for item in legacy.get("typed_assumptions") or []
+            ]
+            selected = [field for field in fields if field.status == IntentFieldStatus.SELECTED]
+            planner_status = IntentPlannerReadyStatus(
+                legacy.get("planner_ready_status") or IntentPlannerReadyStatus.NEEDS_CLARIFICATION.value
+            )
+            readiness = legacy.get("readiness_policy")
+            readiness_policy = (
+                IntentReadinessPolicy.model_validate(readiness)
+                if isinstance(readiness, dict)
+                else IntentReadinessPolicy(
+                    status=planner_status,
+                    blocking_reason_codes=[],
+                    allowed_assumption_ids=[],
+                )
+            )
+            legacy["formal_contract"] = _build_formal_contract(
+                selected=selected,
+                conflicts=conflicts,
+                clarifications=clarifications,
+                typed_assumptions=assumptions,
+                planner_ready_status=planner_status,
+                readiness_policy=readiness_policy,
+                verified_candidate_source_refs={},
+            ).model_dump(mode="json")
+        return data
+
 
 class IntentStructuredOverrides(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -466,7 +811,7 @@ class IntentStructuredOverrides(BaseModel):
     must_candidate_ids: list[str] = Field(default_factory=list, max_length=40)
     pace: Literal["relaxed", "balanced", "intensive"] | None = None
     transport_preferences: list[str] = Field(default_factory=list, max_length=20)
-    fixed_events: list[dict[str, Any]] = Field(default_factory=list, max_length=40)
+    fixed_events: list[IntentFixedEventValue] = Field(default_factory=list, max_length=40)
     budget: IntentBudgetValue | None = None
     traveler_needs: list[str] = Field(default_factory=list, max_length=20)
 
@@ -489,45 +834,77 @@ class UntrustedIntentProposal(BaseModel):
     must_candidate_ids: list[str] = Field(default_factory=list, max_length=40)
     pace: Literal["relaxed", "balanced", "intensive"] | None = None
     transport_preferences: list[str] = Field(default_factory=list, max_length=20)
-    fixed_events: list[dict[str, Any]] = Field(default_factory=list, max_length=40)
+    fixed_events: list[IntentFixedEventValue] = Field(default_factory=list, max_length=40)
     budget: IntentBudgetValue | None = None
     traveler_needs: list[str] = Field(default_factory=list, max_length=20)
     explanation: str | None = Field(default=None, max_length=1000)
 
 
 class CompileTripIntentRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    base_revision_id: str = Field(..., min_length=1)
-    base_intent_revision_id: str | None = Field(default=None, min_length=1)
+    base_trip_revision_id: str = Field(
+        ...,
+        min_length=1,
+        validation_alias=AliasChoices("base_trip_revision_id", "base_revision_id"),
+    )
+    base_intent_revision_id: str | None = Field(..., min_length=1)
     direct_user_text: str | None = Field(default=None, max_length=10000)
     candidate_ids: list[str] = Field(default_factory=list, max_length=80)
     structured_overrides: IntentStructuredOverrides | None = None
     llm_proposal: UntrustedIntentProposal | None = None
     use_llm_proposal_adapter: bool = False
-    parser_error_status: Literal["unavailable", "timeout", "invalid", "provider_error"] | None = None
-    parser_error_code: str | None = Field(default=None, max_length=120)
+
+    @property
+    def base_revision_id(self) -> str:
+        return self.base_trip_revision_id
 
 
 class EditTripIntentEnvelopeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    base_revision_id: str = Field(..., min_length=1)
+    base_trip_revision_id: str = Field(
+        ...,
+        min_length=1,
+        validation_alias=AliasChoices("base_trip_revision_id", "base_revision_id"),
+    )
+    base_intent_revision_id: str = Field(..., min_length=1)
     field_updates: IntentStructuredOverrides
+
+    @property
+    def base_revision_id(self) -> str:
+        return self.base_trip_revision_id
 
 
 class AnswerIntentClarificationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    base_revision_id: str = Field(..., min_length=1)
-    answer: Any
+    base_trip_revision_id: str = Field(
+        ...,
+        min_length=1,
+        validation_alias=AliasChoices("base_trip_revision_id", "base_revision_id"),
+    )
+    base_intent_revision_id: str = Field(..., min_length=1)
+    answer: str | int | bool | list[str] | IntentFixedEventValue | IntentBudgetValue
+
+    @property
+    def base_revision_id(self) -> str:
+        return self.base_trip_revision_id
 
 
 class RestoreTripIntentEnvelopeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    base_revision_id: str = Field(..., min_length=1)
-    base_intent_revision_id: str | None = Field(default=None, min_length=1)
+    base_trip_revision_id: str = Field(
+        ...,
+        min_length=1,
+        validation_alias=AliasChoices("base_trip_revision_id", "base_revision_id"),
+    )
+    base_intent_revision_id: str = Field(..., min_length=1)
+
+    @property
+    def base_revision_id(self) -> str:
+        return self.base_trip_revision_id
 
 
 class TripIntentRevisionMetadata(BaseModel):
@@ -581,6 +958,36 @@ class CreateIntentRevisionResult:
 
 
 @dataclass(slots=True)
+class IntentCompileRunDraft:
+    id: str
+    trip_id: str
+    operation: str
+    base_trip_revision_id: str
+    base_intent_revision_id: str | None
+    parser_status: str
+    parser_name: str
+    parser_version: str
+    model_name: str | None
+    compiler_version: str
+    precedence_version: str
+    readiness_policy_version: str
+    date_policy_version: str
+    input_digest: str
+    proposal_digest: str | None
+    status: str
+    warning_codes: list[str]
+    error_code: str | None
+    created_at: str
+
+
+@dataclass(slots=True)
+class IntentCompileRunRecord(IntentCompileRunDraft):
+    result_intent_revision_id: str = ""
+    semantic_digest: str = ""
+    lineage_digest: str = ""
+
+
+@dataclass(slots=True)
 class _CandidateField:
     field_path: str
     value: IntentFieldValue
@@ -600,10 +1007,12 @@ def compile_source_linked_intent(
     next_revision_number: int,
     created_at: str,
     request: CompileTripIntentRequest,
+    parser_result: IntentProposalParseResult,
     existing_trip_snapshot: dict[str, Any],
     parent_intent_snapshot: dict[str, Any] | None = None,
     candidates: list[TripCandidateRecord],
     candidate_workflow_states: dict[str, str],
+    verified_candidate_source_refs: dict[str, list[IntentSourceReference]] | None = None,
 ) -> SourceLinkedTripIntentEnvelope:
     field_candidates: list[_CandidateField] = []
     if parent_intent_snapshot is not None:
@@ -612,8 +1021,9 @@ def compile_source_linked_intent(
     if request.direct_user_text and request.direct_user_text.strip():
         field_candidates.extend(_fields_from_user_text(request.direct_user_text.strip()))
     field_candidates.extend(_fields_from_candidates(candidates, candidate_workflow_states))
-    if request.llm_proposal is not None:
-        field_candidates.extend(_fields_from_payload(request.llm_proposal.model_dump(mode="json"), IntentSourceType.LLM_PROPOSAL))
+    proposal = parser_result.proposal or request.llm_proposal
+    if proposal is not None:
+        field_candidates.extend(_fields_from_payload(proposal.model_dump(mode="json"), IntentSourceType.LLM_PROPOSAL))
     if request.structured_overrides is not None:
         field_candidates.extend(_fields_from_payload(request.structured_overrides.model_dump(mode="json"), IntentSourceType.STRUCTURED_USER_OVERRIDE))
 
@@ -629,13 +1039,7 @@ def compile_source_linked_intent(
             planner_ready.assumptions.append(assumption)
     typed_intent = _build_typed_intent(selected, clarifications, assumptions, typed_assumptions)
     provenance_summary = _build_provenance_summary(selected, shadowed)
-    parser_result = _build_parser_result(request, fields)
-    provenance_graph = _build_provenance_graph(
-        envelope_id=f"intent_revision:{trip_id}:{next_revision_number}",
-        parser_result=parser_result,
-        fields=fields,
-        assumptions=typed_assumptions,
-    )
+    envelope_parser_result = _build_parser_result(request, fields, parser_result)
     blocking_conflicts = [item for item in conflicts if item.severity == "blocking"]
     blocking_clarifications = [item for item in clarifications if item.blocking]
     blocking_assumptions = [
@@ -666,11 +1070,28 @@ def compile_source_linked_intent(
         ],
         requires_user_confirmation=bool(blocking_clarifications or blocking_assumptions),
     )
+    formal_contract = _build_formal_contract(
+        selected=selected,
+        conflicts=conflicts,
+        clarifications=clarifications,
+        typed_assumptions=typed_assumptions,
+        planner_ready_status=status,
+        readiness_policy=readiness_policy,
+        verified_candidate_source_refs=verified_candidate_source_refs or {},
+    )
+    provenance_graph = _build_provenance_graph(
+        envelope_id=f"intent_revision:{trip_id}:{next_revision_number}",
+        parser_result=envelope_parser_result,
+        formal_contract=formal_contract,
+    )
     validation_report = {
-        "schema_version": "1.3",
+        "schema_version": TRIP_INTENT_ENVELOPE_SCHEMA_VERSION,
         "compiler_version": TRIP_INTENT_COMPILER_VERSION,
-        "llm_proposal_validated": request.llm_proposal is not None,
-        "parser_status": parser_result.status,
+        "precedence_version": INTENT_PRECEDENCE_VERSION,
+        "readiness_policy_version": INTENT_READINESS_POLICY_VERSION,
+        "date_policy_version": INTENT_DATE_POLICY_VERSION,
+        "llm_proposal_validated": proposal is not None,
+        "parser_status": envelope_parser_result.status,
         "manual_override_priority_enforced": any(
             conflict.reason_code == "higher_priority_source_selected"
             and any(ref.source_type == IntentSourceType.STRUCTURED_USER_OVERRIDE for ref in conflict.source_refs)
@@ -681,6 +1102,8 @@ def compile_source_linked_intent(
         "blocking_clarification_count": len(blocking_clarifications),
         "blocking_unvalued_assumption_count": len(blocking_assumptions),
         "typed_intent_sections": _typed_section_names(typed_intent),
+        "formal_contract_authority": True,
+        "formal_contract_schema_version": formal_contract.schema_version,
         "provenance_summary_count": len(provenance_summary),
         "provenance_graph_node_count": len(provenance_graph.nodes),
         "planner_ready": status == IntentPlannerReadyStatus.READY,
@@ -693,6 +1116,7 @@ def compile_source_linked_intent(
     source_digest = sha256_digest(
         {
             "request": request.model_dump(mode="json"),
+            "parser": parser_result.model_dump(mode="json", exclude={"proposal"}),
             "candidate_ids": [candidate.id for candidate in candidates],
             "base_revision_id": base_revision_id,
         }
@@ -701,13 +1125,17 @@ def compile_source_linked_intent(
         selected=selected,
         conflicts=conflicts,
         assumptions=typed_assumptions,
-        planner_ready_status=status,
+        formal_contract=formal_contract,
     )
     lineage_digest_value = _build_intent_lineage_digest(
-        trip_id=trip_id,
         base_revision_id=base_revision_id,
         parent_intent_revision_id=parent_intent_revision_id,
-        revision_number=next_revision_number,
+        semantic_digest=semantic_digest,
+        formal_contract=formal_contract,
+        parser_result=envelope_parser_result,
+        operation="draft_compile",
+        parent_lineage_digest=None,
+        restore_source_revision_id=None,
     )
     envelope_without_digest = {
         "trip_id": trip_id,
@@ -719,7 +1147,8 @@ def compile_source_linked_intent(
         "assumptions": assumptions,
         "typed_assumptions": [assumption.model_dump(mode="json") for assumption in typed_assumptions],
         "clarification_queue": [item.model_dump(mode="json") for item in clarifications],
-        "parser_result": parser_result.model_dump(mode="json"),
+        "parser_result": envelope_parser_result.model_dump(mode="json"),
+        "formal_contract": formal_contract.model_dump(mode="json"),
         "typed_intent": typed_intent.model_dump(mode="json"),
         "provenance_summary": [item.model_dump(mode="json") for item in provenance_summary],
         "provenance_graph": provenance_graph.model_dump(mode="json"),
@@ -743,7 +1172,8 @@ def compile_source_linked_intent(
         assumptions=assumptions,
         typed_assumptions=typed_assumptions,
         clarification_queue=clarifications,
-        parser_result=parser_result,
+        parser_result=envelope_parser_result,
+        formal_contract=formal_contract,
         typed_intent=typed_intent,
         provenance_summary=provenance_summary,
         provenance_graph=provenance_graph,
@@ -1379,9 +1809,8 @@ def _build_planner_ready(fields: list[IntentField]) -> PlannerReadyIntentPreview
             if value not in preview.transport_preferences:
                 preview.transport_preferences.append(value)
         elif field.field_path == "time.fixed_events":
-            fixed_event = _domain_raw_value(field.value)
-            if isinstance(fixed_event, dict):
-                preview.fixed_events.append(fixed_event)
+            if isinstance(field.value, IntentFixedEventValue):
+                preview.fixed_events.append(field.value)
     return preview
 
 
@@ -1576,37 +2005,21 @@ def _build_typed_assumptions(fields: list[IntentField], preview: PlannerReadyInt
     return list(by_id.values())
 
 
-def _build_parser_result(request: CompileTripIntentRequest, fields: list[IntentField]) -> IntentParserResult:
+def _build_parser_result(
+    request: CompileTripIntentRequest,
+    fields: list[IntentField],
+    parse_result: IntentProposalParseResult,
+) -> IntentParserResult:
     input_digests: list[str] = []
-    warnings: list[str] = []
-    parser_name = "intent_contract_compiler"
-    status: Literal["not_run", "parsed", "validated", "unavailable", "timeout", "invalid", "provider_error"] = "not_run"
-    if request.parser_error_status is not None:
-        if request.direct_user_text and request.direct_user_text.strip():
-            input_digests.append(f"direct_user_text:{sha256_digest(request.direct_user_text.strip())[:16]}")
-        if request.parser_error_code:
-            warnings.append(request.parser_error_code)
-        return IntentParserResult(
-            parser_name="llm_intent_proposal_adapter",
-            parser_version=TRIP_INTENT_COMPILER_VERSION,
-            status=request.parser_error_status,
-            input_digests=input_digests,
-            extracted_field_paths=[],
-            warnings=warnings,
-        )
     if request.direct_user_text and request.direct_user_text.strip():
         input_digests.append(f"direct_user_text:{sha256_digest(request.direct_user_text.strip())[:16]}")
-        parser_name = "deterministic_text_fallback"
-        status = "parsed"
-    if request.llm_proposal is not None:
-        input_digests.append(f"llm_proposal:{sha256_digest(request.llm_proposal.model_dump(mode='json'))[:16]}")
-        status = "validated"
-    if request.use_llm_proposal_adapter:
-        warnings.append("LLM proposal adapter output was treated as untrusted input and deterministically recompiled.")
+    proposal = parse_result.proposal or request.llm_proposal
+    if proposal is not None:
+        input_digests.append(f"llm_proposal:{sha256_digest(proposal.model_dump(mode='json'))[:16]}")
     return IntentParserResult(
-        parser_name=parser_name,
-        parser_version=TRIP_INTENT_COMPILER_VERSION,
-        status=status,
+        parser_name=parse_result.parser_name,
+        parser_version=parse_result.parser_version,
+        status=parse_result.status,
         input_digests=input_digests,
         extracted_field_paths=sorted(
             {
@@ -1618,16 +2031,350 @@ def _build_parser_result(request: CompileTripIntentRequest, fields: list[IntentF
                 )
             }
         ),
-        warnings=warnings,
+        warnings=unique_texts(parse_result.warning_codes),
+        model_name=parse_result.model_name,
     )
+
+
+def _build_formal_contract(
+    *,
+    selected: list[IntentField],
+    conflicts: list[IntentConflict],
+    clarifications: list[ClarificationQuestion],
+    typed_assumptions: list[IntentAssumption],
+    planner_ready_status: IntentPlannerReadyStatus,
+    readiness_policy: IntentReadinessPolicy,
+    verified_candidate_source_refs: dict[str, list[IntentSourceReference]],
+) -> FormalTripIntentContract:
+    destinations: list[DestinationIntent] = []
+    fixed_events: list[FixedEventIntent] = []
+    must_places: list[PlacePreferenceIntent] = []
+    transport_preferences: list[TransportPreferenceIntent] = []
+    traveler_needs: list[TravelerNeedIntent] = []
+    date_policy: DatePolicyIntent | None = None
+    budget: BudgetIntent | None = None
+    pace: IntentFieldMetadata | None = None
+
+    for field in selected:
+        metadata = _formal_metadata_for_field(field, verified_candidate_source_refs)
+        if field.field_path == "trip.city" and isinstance(field.value, IntentDestinationValue):
+            destinations.append(
+                DestinationIntent(
+                    metadata=metadata,
+                    city_name=field.value.city,
+                    country_code=None,
+                    timezone=None,
+                    order=len(destinations),
+                )
+            )
+        elif field.field_path == "trip.trip_days" and isinstance(field.value, IntentTripDaysValue):
+            date_policy = DatePolicyIntent(
+                metadata=metadata,
+                trip_days=field.value.days,
+                timezone="unknown",
+                normalization_rule_codes=[INTENT_DATE_POLICY_VERSION, "duration_known_calendar_unanchored"],
+            )
+        elif field.field_path == "time.fixed_events" and isinstance(field.value, IntentFixedEventValue):
+            fixed_events.append(
+                FixedEventIntent(
+                    metadata=metadata,
+                    event_id=field.field_id,
+                    title=field.value.name,
+                    fixed_day=field.value.fixed_day,
+                    location_text=field.value.source_label,
+                    flexibility="fixed",
+                )
+            )
+        elif field.field_path == "poi.must_candidates" and isinstance(field.value, IntentMustCandidateValue):
+            must_places.append(
+                PlacePreferenceIntent(
+                    metadata=metadata,
+                    trip_candidate_id=field.value.candidate_id,
+                    display_name=field.value.display_name,
+                    preference="must",
+                    strength=100,
+                )
+            )
+        elif field.field_path == "trip.pace":
+            pace = metadata
+        elif field.field_path == "preferences.transport" and isinstance(field.value, IntentTransportPreferenceValue):
+            mode, custom_label = _normalize_transport_mode(field.value.mode)
+            transport_preferences.append(
+                TransportPreferenceIntent(
+                    metadata=metadata,
+                    mode=mode,
+                    preference="prefer",
+                    custom_label=custom_label,
+                )
+            )
+        elif field.field_path == "budget" and isinstance(field.value, IntentBudgetValue):
+            amount_minor = int(field.value.amount * 100) if field.value.amount is not None else None
+            budget = BudgetIntent(
+                metadata=metadata,
+                amount_minor=amount_minor if amount_minor and amount_minor > 0 else None,
+                currency=field.value.currency.upper() if field.value.currency else None,
+                scope="total" if amount_minor else None,
+                level=field.value.budget_level,
+                flexibility_percent=0,
+            )
+        elif field.field_path == "travelers.needs" and isinstance(field.value, IntentTravelerNeedValue):
+            need_type = _classify_traveler_need(field.value.need)
+            traveler_needs.append(
+                TravelerNeedIntent(
+                    metadata=metadata,
+                    need_type=need_type,
+                    description=field.value.need,
+                    severity="required" if field.kind == IntentFieldKind.HARD else "preferred",
+                )
+            )
+
+    formal_assumptions = [
+        _formal_assumption(item, verified_candidate_source_refs)
+        for item in typed_assumptions
+        if item.has_assumed_value and item.value not in (None, [])
+    ]
+    active_assumption_ids = [item.assumption_id for item in formal_assumptions]
+    unresolved_required_paths = unique_texts(
+        [
+            *[path for question in clarifications if question.blocking for path in question.field_paths],
+            *[
+                assumption.field_path
+                for assumption in typed_assumptions
+                if assumption.blocks_planner_ready and not assumption.has_assumed_value
+            ],
+        ]
+    )
+    blocking_codes = unique_texts(
+        [
+            *readiness_policy.blocking_reason_codes,
+            *[conflict.reason_code for conflict in conflicts if conflict.severity == "blocking"],
+        ]
+    )
+    readiness_status: Literal["blocked", "needs_clarification", "ready_with_assumptions", "ready_for_planning"]
+    if any(conflict.severity == "blocking" for conflict in conflicts):
+        readiness_status = "blocked"
+    elif unresolved_required_paths:
+        readiness_status = "needs_clarification"
+    elif active_assumption_ids:
+        readiness_status = "ready_with_assumptions"
+    elif planner_ready_status in {IntentPlannerReadyStatus.READY, IntentPlannerReadyStatus.READY_FOR_PLANNING}:
+        readiness_status = "ready_for_planning"
+    else:
+        readiness_status = "needs_clarification"
+
+    return FormalTripIntentContract(
+        destinations=destinations,
+        date_policy=date_policy,
+        fixed_events=fixed_events,
+        must_visit_places=must_places,
+        pace=pace,
+        transport_preferences=transport_preferences,
+        budget=budget,
+        traveler_needs=traveler_needs,
+        assumptions=formal_assumptions,
+        clarifications=clarifications,
+        conflicts=conflicts,
+        readiness=IntentReadiness(
+            status=readiness_status,
+            planner_contract_complete=(
+                readiness_status in {"ready_with_assumptions", "ready_for_planning"}
+                and bool(destinations)
+                and date_policy is not None
+                and date_policy.trip_days is not None
+            ),
+            blocking_issue_codes=blocking_codes,
+            unresolved_required_field_paths=unresolved_required_paths,
+            active_assumption_ids=active_assumption_ids,
+            warning_codes=unique_texts(readiness_policy.blocking_reason_codes),
+        ),
+    )
+
+
+def _formal_metadata_for_field(
+    field: IntentField,
+    verified_candidate_source_refs: dict[str, list[IntentSourceReference]],
+) -> IntentFieldMetadata:
+    source_refs: list[IntentSourceReference] = []
+    for ref in field.source_refs:
+        if ref.source_type == IntentSourceType.TRIP_CANDIDATE and ref.source_id in verified_candidate_source_refs:
+            source_refs.extend(verified_candidate_source_refs[ref.source_id])
+        else:
+            source_refs.append(_structured_source_ref_from_legacy(ref))
+    authority = _formal_authority(_strongest_authority(field.source_refs))
+    confirmation_state: Literal[
+        "user_confirmed",
+        "review_confirmed",
+        "proposed",
+        "assumed",
+        "conflicted",
+        "superseded",
+    ]
+    if field.status == IntentFieldStatus.SHADOWED:
+        confirmation_state = "superseded"
+    elif field.kind == IntentFieldKind.ASSUMPTION:
+        confirmation_state = "assumed"
+    elif authority == "review_confirmed":
+        confirmation_state = "review_confirmed"
+    elif authority == "user_confirmed":
+        confirmation_state = "user_confirmed"
+    elif authority == "llm_untrusted":
+        confirmation_state = "proposed"
+    else:
+        confirmation_state = "proposed"
+    return IntentFieldMetadata(
+        field_id=field.field_id,
+        field_path=field.field_path,
+        kind=field.kind.value,
+        confirmation_state=confirmation_state,
+        authority=authority,
+        confidence=field.confidence,
+        source_refs=source_refs,
+        compiler_rule_code="deterministic_precedence_selected"
+        if field.status == IntentFieldStatus.SELECTED
+        else "deterministic_precedence_shadowed",
+        warning_codes=list(field.validation_codes),
+    )
+
+
+def _structured_source_ref_from_legacy(ref: IntentSourceRef) -> IntentSourceReference:
+    source_id = ref.source_id or ref.ref_id
+    source_type = _formal_source_type(ref.source_type)
+    return IntentSourceReference(
+        source_ref_id=ref.ref_id,
+        source_type=source_type,
+        source_id=source_id,
+        trip_candidate_id=source_id if source_type == "trip_candidate" else None,
+        intent_revision_id=source_id if source_type == "existing_intent_revision" else None,
+        source_digest=ref.evidence_digest,
+        authority=_formal_authority(ref.authority),
+        confirmed=ref.confirmed,
+    )
+
+
+def _formal_source_type(source_type: IntentSourceType) -> Literal[
+    "direct_user_language",
+    "structured_user_override",
+    "trip_form",
+    "source_artifact",
+    "import_mention",
+    "import_review_decision",
+    "resolution_candidate",
+    "trip_candidate",
+    "existing_intent_revision",
+    "llm_proposal",
+    "system_assumption",
+]:
+    if source_type == IntentSourceType.EXISTING_TRIP_STATE:
+        return "trip_form"
+    if source_type == IntentSourceType.EXISTING_INTENT_REVISION:
+        return "existing_intent_revision"
+    if source_type == IntentSourceType.TRIP_CANDIDATE:
+        return "trip_candidate"
+    if source_type == IntentSourceType.STRUCTURED_USER_OVERRIDE:
+        return "structured_user_override"
+    if source_type == IntentSourceType.LLM_PROPOSAL:
+        return "llm_proposal"
+    if source_type == IntentSourceType.DIRECT_USER_LANGUAGE:
+        return "direct_user_language"
+    return "system_assumption"
+
+
+def _formal_authority(authority: IntentAuthority) -> Literal[
+    "user_confirmed",
+    "review_confirmed",
+    "saved_state",
+    "direct_user_proposal",
+    "llm_untrusted",
+    "system_assumption",
+]:
+    if authority in {IntentAuthority.USER_CONFIRMED, IntentAuthority.DIRECT_USER_PROPOSAL}:
+        return "user_confirmed"
+    if authority in {IntentAuthority.REVIEWED_SOURCE, IntentAuthority.REVIEW_CONFIRMED}:
+        return "review_confirmed"
+    if authority == IntentAuthority.SAVED_STATE:
+        return "saved_state"
+    if authority == IntentAuthority.LLM_UNTRUSTED:
+        return "llm_untrusted"
+    return "system_assumption"
+
+
+def _formal_assumption(
+    assumption: IntentAssumption,
+    verified_candidate_source_refs: dict[str, list[IntentSourceReference]],
+) -> PlanningAssumption:
+    value = assumption.value[0] if isinstance(assumption.value, list) and assumption.value else assumption.value
+    raw = _domain_raw_value(value) if isinstance(value, BaseModel) else value
+    if isinstance(raw, bool):
+        value_type: Literal["integer", "string", "date", "datetime", "enum", "boolean"] = "boolean"
+    elif isinstance(raw, int):
+        value_type = "integer"
+    else:
+        value_type = "string"
+    refs = [
+        _structured_source_ref_from_legacy(ref)
+        for ref in assumption.source_refs
+    ]
+    return PlanningAssumption(
+        assumption_id=assumption.assumption_id,
+        field_path=assumption.field_path,
+        assumed_value=raw if isinstance(raw, (str, int, float, bool)) else str(raw),
+        value_type=value_type,
+        reason_code=assumption.reason_code,
+        impact="low" if not assumption.blocks_planner_ready else "medium",
+        source_refs=refs,
+        user_acknowledged=False,
+        supersedes_clarification_id=None,
+    )
+
+
+def _normalize_transport_mode(
+    value: str,
+) -> tuple[Literal["walk", "metro", "bus", "taxi", "ride_hailing", "drive", "bike", "rail", "flight", "other"], str | None]:
+    normalized = value.strip().casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "walking": "walk",
+        "subway": "metro",
+        "underground": "metro",
+        "cab": "taxi",
+        "rideshare": "ride_hailing",
+        "car": "drive",
+        "bicycle": "bike",
+        "train": "rail",
+        "plane": "flight",
+    }
+    mode = aliases.get(normalized, normalized)
+    allowed = {"walk", "metro", "bus", "taxi", "ride_hailing", "drive", "bike", "rail", "flight"}
+    if mode in allowed:
+        return mode, None  # type: ignore[return-value]
+    return "other", value.strip()[:80] or None
+
+
+def _classify_traveler_need(
+    value: str,
+) -> Literal["mobility", "wheelchair", "child", "elderly", "dietary", "medical", "sensory", "other"]:
+    lowered = value.casefold()
+    if "wheelchair" in lowered or "轮椅" in value:
+        return "wheelchair"
+    if "child" in lowered or "儿童" in value or "孩子" in value:
+        return "child"
+    if "elder" in lowered or "老人" in value:
+        return "elderly"
+    if "diet" in lowered or "素食" in value or "过敏" in value:
+        return "dietary"
+    if "medical" in lowered or "药" in value:
+        return "medical"
+    if "sensory" in lowered:
+        return "sensory"
+    if "mobility" in lowered or "行动" in value:
+        return "mobility"
+    return "other"
 
 
 def _build_provenance_graph(
     *,
     envelope_id: str,
     parser_result: IntentParserResult,
-    fields: list[IntentField],
-    assumptions: list[IntentAssumption],
+    formal_contract: FormalTripIntentContract,
 ) -> IntentProvenanceGraph:
     nodes: dict[str, IntentProvenanceNode] = {
         envelope_id: IntentProvenanceNode(
@@ -1645,7 +2392,7 @@ def _build_provenance_graph(
         node_type=ProvenanceNodeType.PARSER_RESULT,
         label=parser_result.parser_name,
         authority=IntentAuthority.DETERMINISTIC_CONTEXT,
-        confirmed=parser_result.status in {"parsed", "validated"},
+        confirmed=parser_result.status == "success",
         digest=sha256_digest(parser_result.model_dump(mode="json")),
     )
     edges.append(
@@ -1655,46 +2402,20 @@ def _build_provenance_graph(
             relation=ProvenanceEdgeType.PRODUCED,
         )
     )
-    for field in fields:
-        field_node_id = f"field:{field.field_id}"
-        nodes[field_node_id] = IntentProvenanceNode(
-            node_id=field_node_id,
-            node_type=ProvenanceNodeType.FIELD,
-            label=field.field_path,
-            field_path=field.field_path,
-            authority=_strongest_authority(field.source_refs),
-            confirmed=field.confirmed_by_user,
-            digest=sha256_digest(
-                {
-                    "field_path": field.field_path,
-                    "semantic_type": field.semantic_type.value,
-                    "semantic_value": _domain_value_dump(field.semantic_value),
-                    "kind": field.kind.value,
-                }
-            ),
-        )
+    for metadata, semantic_payload in _formal_metadata_items(formal_contract):
+        field_node_id = f"field:{metadata.field_id}"
+        nodes[field_node_id] = _provenance_node_for_metadata(metadata, semantic_payload)
         edges.append(
             IntentProvenanceEdge(
                 from_node_id=field_node_id,
                 to_node_id=envelope_id,
-                relation=ProvenanceEdgeType.SELECTED_IN
-                if field.status == IntentFieldStatus.SELECTED
-                else ProvenanceEdgeType.SHADOWED_IN,
+                relation=ProvenanceEdgeType.COMPILED_INTO,
             )
         )
-        for ref in field.source_refs:
-            source_node_id = f"source:{ref.ref_id}"
-            nodes[source_node_id] = IntentProvenanceNode(
-                node_id=source_node_id,
-                node_type=ProvenanceNodeType.SOURCE,
-                label=ref.label,
-                field_path=ref.field_path,
-                source_type=ref.source_type,
-                source_id=ref.source_id,
-                authority=ref.authority,
-                confirmed=ref.confirmed,
-                digest=ref.evidence_digest,
-            )
+        for ref in metadata.source_refs:
+            source_node_id = _source_node_id(ref)
+            for node in _provenance_nodes_for_source_ref(ref):
+                nodes[node.node_id] = node
             edges.append(
                 IntentProvenanceEdge(
                     from_node_id=source_node_id,
@@ -1702,16 +2423,8 @@ def _build_provenance_graph(
                     relation=ProvenanceEdgeType.SUPPORTS,
                 )
             )
-            for evidence_node_id, evidence_node, relation in _nodes_from_evidence_ref(ref):
-                nodes[evidence_node_id] = evidence_node
-                edges.append(
-                    IntentProvenanceEdge(
-                        from_node_id=evidence_node_id,
-                        to_node_id=source_node_id,
-                        relation=relation,
-                    )
-                )
-    for assumption in assumptions:
+            edges.extend(_provenance_edges_for_source_ref(ref))
+    for assumption in formal_contract.assumptions:
         assumption_node_id = f"assumption:{assumption.assumption_id}"
         nodes[assumption_node_id] = IntentProvenanceNode(
             node_id=assumption_node_id,
@@ -1726,7 +2439,7 @@ def _build_provenance_graph(
             IntentProvenanceEdge(
                 from_node_id=assumption_node_id,
                 to_node_id=envelope_id,
-                relation=ProvenanceEdgeType.CREATED_ASSUMPTION,
+                relation=ProvenanceEdgeType.ASSUMED_FROM,
             )
         )
     return IntentProvenanceGraph(
@@ -1735,186 +2448,210 @@ def _build_provenance_graph(
     )
 
 
-def _nodes_from_evidence_ref(
-    ref: IntentSourceRef,
-) -> list[tuple[str, IntentProvenanceNode, ProvenanceEdgeType]]:
-    nodes: list[tuple[str, IntentProvenanceNode, ProvenanceEdgeType]] = []
-    if ref.source_type == IntentSourceType.TRIP_CANDIDATE and ref.source_id:
-        candidate_node_id = f"trip_candidate:{ref.source_id}"
+def _formal_metadata_items(
+    contract: FormalTripIntentContract,
+) -> list[tuple[IntentFieldMetadata, dict[str, str | int | bool | None]]]:
+    items: list[tuple[IntentFieldMetadata, dict[str, str | int | bool | None]]] = []
+    for destination in contract.destinations:
+        items.append((destination.metadata, {"city_name": destination.city_name, "order": destination.order}))
+    if contract.date_policy is not None:
+        items.append((contract.date_policy.metadata, {"trip_days": contract.date_policy.trip_days}))
+    for event in contract.fixed_events:
+        items.append((event.metadata, {"title": event.title, "fixed_day": event.fixed_day}))
+    for place in [*contract.must_visit_places, *contract.optional_places, *contract.avoid_places]:
+        items.append((place.metadata, {"trip_candidate_id": place.trip_candidate_id, "preference": place.preference}))
+    if contract.pace is not None:
+        items.append((contract.pace, {"pace": "selected"}))
+    for transport in contract.transport_preferences:
+        items.append((transport.metadata, {"mode": transport.mode, "preference": transport.preference}))
+    if contract.budget is not None:
+        items.append((contract.budget.metadata, {"amount_minor": contract.budget.amount_minor, "level": contract.budget.level}))
+    for need in contract.traveler_needs:
+        items.append((need.metadata, {"need_type": need.need_type, "severity": need.severity}))
+    return items
+
+
+def _provenance_node_for_metadata(
+    metadata: IntentFieldMetadata,
+    semantic_payload: dict[str, str | int | bool | None],
+) -> IntentProvenanceNode:
+    return IntentProvenanceNode(
+        node_id=f"field:{metadata.field_id}",
+        node_type=ProvenanceNodeType.FIELD,
+        label=metadata.field_path,
+        field_path=metadata.field_path,
+        authority=_legacy_authority(metadata.authority),
+        confirmed=metadata.confirmation_state in {"user_confirmed", "review_confirmed"},
+        digest=sha256_digest(
+            {
+                "field_path": metadata.field_path,
+                "kind": metadata.kind,
+                "confirmation_state": metadata.confirmation_state,
+                "authority": metadata.authority,
+                "semantic_payload": semantic_payload,
+            }
+        ),
+    )
+
+
+def _provenance_nodes_for_source_ref(ref: IntentSourceReference) -> list[IntentProvenanceNode]:
+    source_node = IntentProvenanceNode(
+        node_id=_source_node_id(ref),
+        node_type=_node_type_for_source_ref(ref),
+        label=_display_safe_source_label(ref),
+        source_type=IntentSourceType(ref.source_type)
+        if ref.source_type in {item.value for item in IntentSourceType}
+        else IntentSourceType.SYSTEM_ASSUMPTION,
+        source_id=ref.source_id,
+        artifact_id=ref.artifact_id,
+        mention_id=ref.mention_id,
+        review_decision_id=ref.review_decision_id,
+        candidate_id=ref.trip_candidate_id,
+        page_number=ref.page_number,
+        authority=_legacy_authority(ref.authority),
+        confirmed=ref.confirmed,
+        digest=ref.source_digest,
+    )
+    nodes = [source_node]
+    if ref.artifact_id and _source_node_id(ref) != f"source_artifact:{ref.artifact_id}":
         nodes.append(
-            (
-                candidate_node_id,
-                IntentProvenanceNode(
-                    node_id=candidate_node_id,
-                    node_type=ProvenanceNodeType.TRIP_CANDIDATE,
-                    label=ref.label,
-                    field_path=ref.field_path,
-                    source_type=ref.source_type,
-                    source_id=ref.source_id,
-                    candidate_id=ref.source_id,
-                    authority=IntentAuthority.REVIEWED_SOURCE,
-                    confirmed=ref.confirmed,
-                    digest=ref.evidence_digest,
-                ),
-                ProvenanceEdgeType.DERIVED_FROM,
+            IntentProvenanceNode(
+                node_id=f"source_artifact:{ref.artifact_id}",
+                node_type=ProvenanceNodeType.SOURCE_ARTIFACT,
+                label=f"SourceArtifact {ref.artifact_id}",
+                source_id=ref.artifact_id,
+                artifact_id=ref.artifact_id,
+                authority=_legacy_authority(ref.authority),
+                confirmed=ref.confirmed,
+                digest=sha256_digest({"artifact_id": ref.artifact_id, "source_digest": ref.source_digest}),
             )
         )
-    for evidence in ref.evidence_refs:
-        parsed = _parse_evidence_ref(evidence)
-        if parsed.get("artifact_id"):
-            artifact_id = str(parsed["artifact_id"])
-            artifact_node_id = f"source_artifact:{artifact_id}"
-            nodes.append(
-                (
-                    artifact_node_id,
-                    IntentProvenanceNode(
-                        node_id=artifact_node_id,
-                        node_type=ProvenanceNodeType.SOURCE_ARTIFACT,
-                        label=f"SourceArtifact {artifact_id}",
-                        source_id=artifact_id,
-                        artifact_id=artifact_id,
-                        authority=ref.authority,
-                        confirmed=ref.confirmed,
-                        digest=sha256_digest({"artifact_id": artifact_id}),
-                    ),
-                    ProvenanceEdgeType.EVIDENCES,
-                )
+    if ref.import_job_id:
+        nodes.append(
+            IntentProvenanceNode(
+                node_id=f"import_job:{ref.import_job_id}",
+                node_type=ProvenanceNodeType.IMPORT_JOB,
+                label=f"ImportJob {ref.import_job_id}",
+                source_id=ref.import_job_id,
+                artifact_id=ref.artifact_id,
+                authority=_legacy_authority(ref.authority),
+                confirmed=ref.confirmed,
+                digest=sha256_digest({"import_job_id": ref.import_job_id, "source_digest": ref.source_digest}),
             )
-        if parsed.get("mention_id"):
-            mention_id = str(parsed["mention_id"])
-            mention_node_id = f"extracted_mention:{mention_id}"
-            nodes.append(
-                (
-                    mention_node_id,
-                    IntentProvenanceNode(
-                        node_id=mention_node_id,
-                        node_type=ProvenanceNodeType.EXTRACTED_MENTION,
-                        label=f"ExtractedMention {mention_id}",
-                        source_id=mention_id,
-                        artifact_id=str(parsed["artifact_id"]) if parsed.get("artifact_id") else None,
-                        mention_id=mention_id,
-                        authority=ref.authority,
-                        confirmed=ref.confirmed,
-                        digest=sha256_digest(parsed),
-                    ),
-                    ProvenanceEdgeType.EVIDENCES,
-                )
+        )
+    if ref.page_number is not None:
+        nodes.append(
+            IntentProvenanceNode(
+                node_id=f"document_page:{ref.artifact_id or ref.source_id}:{ref.page_number}",
+                node_type=ProvenanceNodeType.DOCUMENT_PAGE,
+                label=f"Document page {ref.page_number}",
+                source_id=ref.source_id,
+                artifact_id=ref.artifact_id,
+                page_number=ref.page_number,
+                authority=_legacy_authority(ref.authority),
+                confirmed=ref.confirmed,
+                digest=sha256_digest({"page_number": ref.page_number, "source_digest": ref.source_digest}),
             )
-        if parsed.get("review_decision_id"):
-            decision_id = str(parsed["review_decision_id"])
-            decision_node_id = f"review_decision:{decision_id}"
-            nodes.append(
-                (
-                    decision_node_id,
-                    IntentProvenanceNode(
-                        node_id=decision_node_id,
-                        node_type=ProvenanceNodeType.REVIEW_DECISION,
-                        label=f"ReviewDecision {decision_id}",
-                        source_id=decision_id,
-                        review_decision_id=decision_id,
-                        authority=IntentAuthority.REVIEWED_SOURCE,
-                        confirmed=True,
-                        digest=sha256_digest(parsed),
-                    ),
-                    ProvenanceEdgeType.EVIDENCES,
-                )
+        )
+    for index, box in enumerate(ref.bounding_boxes):
+        nodes.append(
+            IntentProvenanceNode(
+                node_id=f"bbox:{ref.source_ref_id}:{index}",
+                node_type=ProvenanceNodeType.BOUNDING_BOX,
+                label="Bounding box evidence",
+                source_id=ref.source_id,
+                artifact_id=ref.artifact_id,
+                mention_id=ref.mention_id,
+                page_number=ref.page_number,
+                bbox=box.model_dump(mode="json"),
+                authority=_legacy_authority(ref.authority),
+                confirmed=ref.confirmed,
+                digest=sha256_digest({"bbox": box.model_dump(mode="json"), "source_digest": ref.source_digest}),
             )
-        if parsed.get("page_number"):
-            page_number = int(parsed["page_number"])
-            page_node_id = f"document_page:{parsed.get('artifact_id') or 'unknown'}:{page_number}"
-            nodes.append(
-                (
-                    page_node_id,
-                    IntentProvenanceNode(
-                        node_id=page_node_id,
-                        node_type=ProvenanceNodeType.DOCUMENT_PAGE,
-                        label=f"Document page {page_number}",
-                        artifact_id=str(parsed["artifact_id"]) if parsed.get("artifact_id") else None,
-                        page_number=page_number,
-                        authority=ref.authority,
-                        confirmed=ref.confirmed,
-                        digest=sha256_digest(parsed),
-                    ),
-                    ProvenanceEdgeType.EVIDENCES,
-                )
-            )
-        if parsed.get("bbox"):
-            bbox_node_id = f"bbox:{sha256_digest(parsed)[:16]}"
-            nodes.append(
-                (
-                    bbox_node_id,
-                    IntentProvenanceNode(
-                        node_id=bbox_node_id,
-                        node_type=ProvenanceNodeType.BOUNDING_BOX,
-                        label="Bounding box evidence",
-                        artifact_id=str(parsed["artifact_id"]) if parsed.get("artifact_id") else None,
-                        mention_id=str(parsed["mention_id"]) if parsed.get("mention_id") else None,
-                        page_number=int(parsed["page_number"]) if parsed.get("page_number") else None,
-                        bbox=parsed["bbox"],
-                        authority=ref.authority,
-                        confirmed=ref.confirmed,
-                        digest=sha256_digest(parsed),
-                    ),
-                    ProvenanceEdgeType.EVIDENCES,
-                )
-            )
-        if not parsed:
-            evidence_node_id = f"source:{sha256_digest(evidence)[:16]}"
-            nodes.append(
-                (
-                    evidence_node_id,
-                    IntentProvenanceNode(
-                        node_id=evidence_node_id,
-                        node_type=ProvenanceNodeType.SOURCE,
-                        label=evidence,
-                        source_id=evidence,
-                        authority=ref.authority,
-                        confirmed=ref.confirmed,
-                        digest=sha256_digest(evidence),
-                    ),
-                    ProvenanceEdgeType.EVIDENCES,
-                )
-            )
+        )
     return nodes
 
 
-def _parse_evidence_ref(evidence: str) -> dict[str, Any]:
-    if not evidence:
-        return {}
-    artifact_match = re.search(r"artifact:([^#|]+)", evidence)
-    mention_match = re.search(r"mention:([^#|]+)", evidence)
-    decision_match = re.search(r"(?:review_decision|decision):([^#|]+)", evidence)
-    page_match = re.search(r"page:(\d+)", evidence)
-    bbox_match = re.search(
-        r"bbox:([0-9.]+),([0-9.]+),([0-9.]+),([0-9.]+)",
-        evidence,
-    )
-    parsed: dict[str, Any] = {}
-    if artifact_match:
-        parsed["artifact_id"] = artifact_match.group(1)
-    if mention_match:
-        parsed["mention_id"] = mention_match.group(1)
-    if decision_match:
-        parsed["review_decision_id"] = decision_match.group(1)
-    if page_match:
-        parsed["page_number"] = int(page_match.group(1))
-    if bbox_match:
-        parsed["bbox"] = {
-            "x": float(bbox_match.group(1)),
-            "y": float(bbox_match.group(2)),
-            "width": float(bbox_match.group(3)),
-            "height": float(bbox_match.group(4)),
-            "unit": "normalized",
-        }
-    return parsed
+def _provenance_edges_for_source_ref(ref: IntentSourceReference) -> list[IntentProvenanceEdge]:
+    edges: list[IntentProvenanceEdge] = []
+    source_node_id = _source_node_id(ref)
+    if ref.trip_candidate_id and source_node_id != f"trip_candidate:{ref.trip_candidate_id}":
+        edges.append(IntentProvenanceEdge(from_node_id=source_node_id, to_node_id=f"trip_candidate:{ref.trip_candidate_id}", relation=ProvenanceEdgeType.COMMITTED_AS))
+    if ref.resolution_candidate_id:
+        edges.append(IntentProvenanceEdge(from_node_id=f"resolution_candidate:{ref.resolution_candidate_id}", to_node_id=source_node_id, relation=ProvenanceEdgeType.RESOLVED_TO))
+    if ref.review_decision_id:
+        edges.append(IntentProvenanceEdge(from_node_id=f"review_decision:{ref.review_decision_id}", to_node_id=source_node_id, relation=ProvenanceEdgeType.REVIEWED_AS))
+    if ref.mention_id:
+        target = f"review_decision:{ref.review_decision_id}" if ref.review_decision_id else source_node_id
+        edges.append(IntentProvenanceEdge(from_node_id=f"extracted_mention:{ref.mention_id}", to_node_id=target, relation=ProvenanceEdgeType.MENTIONED_IN))
+    if ref.import_job_id:
+        edges.append(IntentProvenanceEdge(from_node_id=f"import_job:{ref.import_job_id}", to_node_id=f"extracted_mention:{ref.mention_id}" if ref.mention_id else source_node_id, relation=ProvenanceEdgeType.DERIVED_FROM))
+    if ref.artifact_id:
+        edges.append(IntentProvenanceEdge(from_node_id=f"source_artifact:{ref.artifact_id}", to_node_id=f"import_job:{ref.import_job_id}" if ref.import_job_id else source_node_id, relation=ProvenanceEdgeType.DERIVED_FROM))
+    if ref.page_number is not None:
+        edges.append(IntentProvenanceEdge(from_node_id=f"document_page:{ref.artifact_id or ref.source_id}:{ref.page_number}", to_node_id=f"extracted_mention:{ref.mention_id}" if ref.mention_id else source_node_id, relation=ProvenanceEdgeType.EVIDENCES))
+    for index, _box in enumerate(ref.bounding_boxes):
+        edges.append(IntentProvenanceEdge(from_node_id=f"bbox:{ref.source_ref_id}:{index}", to_node_id=f"document_page:{ref.artifact_id or ref.source_id}:{ref.page_number}" if ref.page_number is not None else source_node_id, relation=ProvenanceEdgeType.EVIDENCES))
+    return edges
+
+
+def _source_node_id(ref: IntentSourceReference) -> str:
+    if ref.source_type == "trip_candidate" and ref.trip_candidate_id:
+        return f"trip_candidate:{ref.trip_candidate_id}"
+    if ref.source_type == "import_review_decision" and ref.review_decision_id:
+        return f"review_decision:{ref.review_decision_id}"
+    if ref.source_type == "import_mention" and ref.mention_id:
+        return f"extracted_mention:{ref.mention_id}"
+    if ref.source_type == "source_artifact" and ref.artifact_id:
+        return f"source_artifact:{ref.artifact_id}"
+    if ref.source_type == "resolution_candidate" and ref.resolution_candidate_id:
+        return f"resolution_candidate:{ref.resolution_candidate_id}"
+    if ref.source_type == "direct_user_language":
+        return f"direct_user_span:{ref.source_ref_id}"
+    if ref.source_type == "llm_proposal":
+        return f"llm_proposal:{ref.source_ref_id}"
+    return f"source:{ref.source_ref_id}"
+
+
+def _node_type_for_source_ref(ref: IntentSourceReference) -> ProvenanceNodeType:
+    return {
+        "trip_candidate": ProvenanceNodeType.TRIP_CANDIDATE,
+        "import_review_decision": ProvenanceNodeType.REVIEW_DECISION,
+        "import_mention": ProvenanceNodeType.EXTRACTED_MENTION,
+        "source_artifact": ProvenanceNodeType.SOURCE_ARTIFACT,
+        "resolution_candidate": ProvenanceNodeType.RESOLUTION_CANDIDATE,
+        "direct_user_language": ProvenanceNodeType.DIRECT_USER_SPAN,
+        "llm_proposal": ProvenanceNodeType.LLM_PROPOSAL,
+    }.get(ref.source_type, ProvenanceNodeType.SOURCE)
+
+
+def _display_safe_source_label(ref: IntentSourceReference) -> str:
+    return f"{ref.source_type}:{ref.source_id}"
+
+
+def _legacy_authority(
+    authority: str,
+) -> IntentAuthority:
+    mapping = {
+        "user_confirmed": IntentAuthority.USER_CONFIRMED,
+        "review_confirmed": IntentAuthority.REVIEW_CONFIRMED,
+        "saved_state": IntentAuthority.SAVED_STATE,
+        "direct_user_proposal": IntentAuthority.DIRECT_USER_PROPOSAL,
+        "llm_untrusted": IntentAuthority.LLM_UNTRUSTED,
+        "system_assumption": IntentAuthority.SYSTEM_ASSUMPTION,
+    }
+    return mapping.get(authority, IntentAuthority.LEGACY_UNKNOWN)
 
 
 def _strongest_authority(refs: list[IntentSourceRef]) -> IntentAuthority:
     rank = {
         IntentAuthority.USER_CONFIRMED: 5,
         IntentAuthority.REVIEWED_SOURCE: 4,
+        IntentAuthority.REVIEW_CONFIRMED: 4,
         IntentAuthority.SAVED_STATE: 3,
         IntentAuthority.DETERMINISTIC_CONTEXT: 2,
+        IntentAuthority.DIRECT_USER_PROPOSAL: 2,
+        IntentAuthority.SYSTEM_ASSUMPTION: 2,
         IntentAuthority.LLM_UNTRUSTED: 1,
         IntentAuthority.LEGACY_UNKNOWN: 0,
     }
@@ -1926,12 +2663,12 @@ def _build_semantic_digest(
     selected: list[IntentField],
     conflicts: list[IntentConflict],
     assumptions: list[IntentAssumption],
-    planner_ready_status: IntentPlannerReadyStatus,
+    formal_contract: FormalTripIntentContract,
 ) -> str:
     return sha256_digest(
         {
-            "semantic_digest_schema": "intent-semantic-v1",
-            "planner_ready_status": planner_ready_status.value,
+            "semantic_digest_schema": "intent-semantic-v2",
+            "readiness_status": formal_contract.readiness.status,
             "selected_fields": sorted(
                 [
                     {
@@ -1978,25 +2715,168 @@ def _build_semantic_digest(
                 ],
                 key=lambda item: (str(item["field_path"]), str(item["reason_code"])),
             ),
+            "formal_contract": _semantic_formal_contract_payload(formal_contract),
         }
     )
 
 
 def _build_intent_lineage_digest(
     *,
-    trip_id: str,
     base_revision_id: str,
     parent_intent_revision_id: str | None,
-    revision_number: int,
+    semantic_digest: str,
+    formal_contract: FormalTripIntentContract,
+    parser_result: IntentParserResult,
+    operation: str,
+    parent_lineage_digest: str | None,
+    restore_source_revision_id: str | None,
 ) -> str:
     return sha256_digest(
         {
-            "lineage_digest_schema": "intent-lineage-v1",
-            "trip_id": trip_id,
+            "lineage_digest_schema": "intent-lineage-v2",
+            "semantic_digest": semantic_digest,
             "base_trip_revision_id": base_revision_id,
             "parent_intent_revision_id": parent_intent_revision_id,
-            "revision_number": revision_number,
+            "parent_lineage_digest": parent_lineage_digest,
+            "structured_source_refs": _formal_source_digest_payload(formal_contract),
+            "parser": parser_result.model_dump(mode="json"),
+            "compiler_version": TRIP_INTENT_COMPILER_VERSION,
+            "precedence_version": INTENT_PRECEDENCE_VERSION,
+            "readiness_policy_version": INTENT_READINESS_POLICY_VERSION,
+            "date_policy_version": INTENT_DATE_POLICY_VERSION,
+            "operation": operation,
+            "restore_source_revision_id": restore_source_revision_id,
         }
+    )
+
+
+def finalize_intent_envelope_for_revision(
+    envelope: SourceLinkedTripIntentEnvelope,
+    *,
+    revision_id: str,
+    revision_number: int,
+    base_trip_revision_id: str,
+    parent_intent_revision_id: str | None,
+    parent_lineage_digest: str | None,
+    operation: str,
+    restore_source_revision_id: str | None,
+    created_at: str,
+) -> SourceLinkedTripIntentEnvelope:
+    semantic_digest = _build_semantic_digest(
+        selected=[field for field in envelope.fields if field.status == IntentFieldStatus.SELECTED],
+        conflicts=envelope.conflicts,
+        assumptions=envelope.typed_assumptions,
+        formal_contract=envelope.formal_contract,
+    )
+    lineage_digest_value = _build_intent_lineage_digest(
+        base_revision_id=base_trip_revision_id,
+        parent_intent_revision_id=parent_intent_revision_id,
+        semantic_digest=semantic_digest,
+        formal_contract=envelope.formal_contract,
+        parser_result=envelope.parser_result,
+        operation=operation,
+        parent_lineage_digest=parent_lineage_digest,
+        restore_source_revision_id=restore_source_revision_id,
+    )
+    finalized = envelope.model_copy(
+        update={
+            "id": revision_id,
+            "revision_number": revision_number,
+            "base_trip_revision_id": base_trip_revision_id,
+            "parent_intent_revision_id": parent_intent_revision_id,
+            "semantic_digest": semantic_digest,
+            "lineage_digest": lineage_digest_value,
+            "created_at": created_at,
+        },
+        deep=True,
+    )
+    finalized.provenance_graph = _build_provenance_graph(
+        envelope_id=f"intent_revision:{revision_id}",
+        parser_result=finalized.parser_result,
+        formal_contract=finalized.formal_contract,
+    )
+    finalized.validation_report.update(
+        {
+            "semantic_digest_schema": "intent-semantic-v2",
+            "lineage_digest_schema": "intent-lineage-v2",
+            "transaction_owned_revision_number": True,
+            "idempotency_replay_precedes_stale_check": True,
+        }
+    )
+    finalized.content_digest = sha256_digest(
+        finalized.model_dump(mode="json", exclude={"content_digest"})
+    )
+    return finalized
+
+
+def _semantic_formal_contract_payload(contract: FormalTripIntentContract) -> dict[str, Any]:
+    return {
+        "destinations": [
+            {"city_name": item.city_name, "order": item.order, "kind": item.metadata.kind, "confirmation_state": item.metadata.confirmation_state}
+            for item in contract.destinations
+        ],
+        "date_policy": contract.date_policy.model_dump(
+            mode="json",
+            exclude={"metadata": {"source_refs"}},
+            exclude_none=True,
+        )
+        if contract.date_policy
+        else None,
+        "fixed_events": [
+            item.model_dump(mode="json", exclude={"metadata": {"source_refs"}}, exclude_none=True)
+            for item in contract.fixed_events
+        ],
+        "must_visit_places": [
+            item.model_dump(mode="json", exclude={"metadata": {"source_refs"}}, exclude_none=True)
+            for item in contract.must_visit_places
+        ],
+        "transport_preferences": [
+            item.model_dump(mode="json", exclude={"metadata": {"source_refs"}}, exclude_none=True)
+            for item in contract.transport_preferences
+        ],
+        "budget": contract.budget.model_dump(mode="json", exclude={"metadata": {"source_refs"}}, exclude_none=True)
+        if contract.budget
+        else None,
+        "traveler_needs": [
+            item.model_dump(mode="json", exclude={"metadata": {"source_refs"}}, exclude_none=True)
+            for item in contract.traveler_needs
+        ],
+        "assumptions": [item.model_dump(mode="json", exclude={"source_refs"}) for item in contract.assumptions],
+        "clarifications": [
+            {"question_id": item.question_id, "reason_code": item.reason_code, "field_paths": item.field_paths, "blocking": item.blocking}
+            for item in contract.clarifications
+        ],
+        "conflicts": [
+            {"field_path": item.field_path, "severity": item.severity, "reason_code": item.reason_code}
+            for item in contract.conflicts
+        ],
+        "readiness": contract.readiness.model_dump(mode="json"),
+    }
+
+
+def _formal_source_digest_payload(contract: FormalTripIntentContract) -> list[dict[str, Any]]:
+    refs: list[IntentSourceReference] = []
+    for metadata, _semantic_payload in _formal_metadata_items(contract):
+        refs.extend(metadata.source_refs)
+    for assumption in contract.assumptions:
+        refs.extend(assumption.source_refs)
+    return sorted(
+        [
+            {
+                "source_type": ref.source_type,
+                "source_id": ref.source_id,
+                "source_digest": ref.source_digest,
+                "authority": ref.authority,
+                "confirmed": ref.confirmed,
+            }
+            for ref in refs
+        ],
+        key=lambda item: (
+            str(item["source_type"]),
+            str(item["source_id"]),
+            str(item["source_digest"]),
+            str(item["authority"]),
+        ),
     )
 
 

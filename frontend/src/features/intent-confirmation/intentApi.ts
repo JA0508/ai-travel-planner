@@ -2,6 +2,7 @@ import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import type {
   CompileTripIntentResponse,
+  IntentDomainValue,
   TripIntentRevisionDetailResponse,
   TripIntentRevisionListResponse,
 } from "./intentTypes";
@@ -10,7 +11,7 @@ export function compileTripIntentEnvelope(
   tripId: string,
   payload: {
     base_revision_id: string;
-    base_intent_revision_id?: string | null;
+    base_intent_revision_id: string | null;
     direct_user_text?: string | null;
     use_llm_proposal_adapter?: boolean;
   },
@@ -44,6 +45,7 @@ export function editTripIntentEnvelope(
   intentRevisionId: string,
   payload: {
     base_revision_id: string;
+    base_intent_revision_id: string;
     field_updates: {
       city?: string | null;
       trip_days?: number | null;
@@ -65,7 +67,7 @@ export function editTripIntentEnvelope(
 export function restoreTripIntentEnvelope(
   tripId: string,
   intentRevisionId: string,
-  payload: { base_revision_id: string; base_intent_revision_id?: string | null },
+  payload: { base_revision_id: string; base_intent_revision_id: string },
   idempotencyKey: string,
 ) {
   return postTripJson<CompileTripIntentResponse>(
@@ -81,7 +83,7 @@ export function answerIntentClarification(
   tripId: string,
   intentRevisionId: string,
   questionId: string,
-  payload: { base_revision_id: string; answer: string },
+  payload: { base_revision_id: string; base_intent_revision_id: string; answer: string | number | boolean | string[] | IntentDomainValue },
   idempotencyKey: string,
 ) {
   return postTripJson<CompileTripIntentResponse>(

@@ -1,4 +1,9 @@
-export type IntentPlannerReadyStatus = "ready" | "needs_clarification" | "blocked";
+export type IntentPlannerReadyStatus =
+  | "ready"
+  | "ready_with_assumptions"
+  | "ready_for_planning"
+  | "needs_clarification"
+  | "blocked";
 
 export type IntentSourceRef = {
   ref_id: string;
@@ -130,10 +135,86 @@ export type IntentClarification = {
 export type IntentParserResult = {
   parser_name: string;
   parser_version: string;
-  status: "not_run" | "parsed" | "validated" | "unavailable" | "timeout" | "invalid" | "provider_error";
+  model_name?: string | null;
+  status: "success" | "empty_input" | "unavailable" | "timeout" | "invalid_output" | "provider_error";
   input_digests: string[];
   extracted_field_paths: string[];
   warnings: string[];
+};
+
+export type IntentSourceReference = {
+  source_type: string;
+  source_id: string | null;
+  artifact_id: string | null;
+  import_job_id: string | null;
+  mention_id: string | null;
+  review_decision_id: string | null;
+  candidate_id: string | null;
+  page_number: number | null;
+  bbox: Record<string, number | string> | null;
+  field_path: string;
+  label: string;
+  authority: string;
+  confirmed: boolean;
+  confidence: number;
+  observed_at: string | null;
+  evidence_digest: string;
+  evidence_refs: string[];
+};
+
+export type IntentFieldMetadata = {
+  field_path: string;
+  semantic_type: string;
+  kind: "hard" | "soft" | "assumption";
+  authority: string;
+  confidence: number;
+  confirmed_by_user: boolean;
+  status: "selected" | "shadowed" | "needs_clarification";
+  source_refs: IntentSourceReference[];
+  validation_codes: string[];
+  revision_id: string;
+  revision_number: number;
+};
+
+export type DestinationIntent = {
+  city: string;
+  canonical_place_id: string | null;
+  metadata: IntentFieldMetadata;
+};
+
+export type DatePolicyIntent = {
+  trip_days: number | null;
+  start_date: string | null;
+  end_date: string | null;
+  metadata: IntentFieldMetadata | null;
+};
+
+export type FormalTripIntentContract = {
+  schema_version: string;
+  compiler_version: string;
+  revision_id: string;
+  revision_number: number;
+  trip_id: string;
+  base_trip_revision_id: string;
+  parent_intent_revision_id: string | null;
+  destinations: DestinationIntent[];
+  date_policy: DatePolicyIntent;
+  arrival: Record<string, unknown> | null;
+  departure: Record<string, unknown> | null;
+  availability_windows: Array<Record<string, unknown>>;
+  fixed_events: Array<Record<string, unknown>>;
+  must_places: Array<Record<string, unknown>>;
+  optional_places: Array<Record<string, unknown>>;
+  exclusions: Array<Record<string, unknown>>;
+  pace: Record<string, unknown> | null;
+  transport_preferences: Array<Record<string, unknown>>;
+  meal_preferences: Array<Record<string, unknown>>;
+  budget: Record<string, unknown> | null;
+  traveler_needs: Array<Record<string, unknown>>;
+  assumptions: IntentAssumption[];
+  readiness: IntentReadinessPolicy;
+  semantic_digest: string | null;
+  lineage_digest: string | null;
 };
 
 export type IntentProvenanceGraph = {
@@ -181,6 +262,7 @@ export type SourceLinkedTripIntentEnvelope = {
   typed_assumptions: IntentAssumption[];
   clarification_queue: IntentClarification[];
   parser_result: IntentParserResult;
+  formal_contract: FormalTripIntentContract;
   typed_intent: TypedTripIntent;
   provenance_summary: IntentProvenanceSummary[];
   provenance_graph: IntentProvenanceGraph;

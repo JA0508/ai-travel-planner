@@ -7,8 +7,14 @@ from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
-from app.trips.access import generate_operation_id, generate_revision_id, generate_trip_id
-from app.trips.intent_contracts import CreateIntentRevisionResult, TripIntentRevisionRecord
+from app.trips.access import generate_intent_revision_id, generate_operation_id, generate_revision_id, generate_trip_id
+from app.trips.intent_contracts import (
+    CreateIntentRevisionResult,
+    IntentCompileRunDraft,
+    SourceLinkedTripIntentEnvelope,
+    TripIntentRevisionRecord,
+    finalize_intent_envelope_for_revision,
+)
 from app.trips.digests import (
     TRIP_SNAPSHOT_SCHEMA_VERSION,
     canonical_json,
@@ -197,6 +203,9 @@ class SQLiteTripRepository:
         self,
         *,
         revision: TripIntentRevisionRecord,
+        compile_run: IntentCompileRunDraft | None = None,
+        operation: str = "compile_trip_intent_envelope",
+        restore_source_revision_id: str | None = None,
         request_digest: str,
         idempotency_key_hash: str,
         expected_parent_intent_revision_id: str | None = None,
@@ -204,25 +213,6 @@ class SQLiteTripRepository:
         expected_base_revision_id: str | None = None,
     ) -> CreateIntentRevisionResult:
         with self._transaction() as connection:
-            trip_row = connection.execute(
-                "SELECT current_revision_id FROM trips WHERE id = ?",
-                (revision.trip_id,),
-            ).fetchone()
-            if trip_row is None:
-                raise TripNotFoundError(revision.trip_id)
-            if expected_base_revision_id is not None and trip_row["current_revision_id"] != expected_base_revision_id:
-                raise StaleBaseRevisionError(
-                    trip_id=revision.trip_id,
-                    provided_base_revision_id=expected_base_revision_id,
-                    current_revision_id=trip_row["current_revision_id"],
-                )
-            base_row = connection.execute(
-                "SELECT 1 FROM trip_revisions WHERE id = ? AND trip_id = ?",
-                (revision.base_trip_revision_id, revision.trip_id),
-            ).fetchone()
-            if base_row is None:
-                raise RevisionNotFoundError(revision.base_trip_revision_id)
-
             idempotency_row = connection.execute(
                 """
                 SELECT * FROM trip_intent_idempotency_records
@@ -243,32 +233,77 @@ class SQLiteTripRepository:
                     idempotent_replay=True,
                 )
 
+            trip_row = connection.execute(
+                "SELECT current_revision_id FROM trips WHERE id = ?",
+                (revision.trip_id,),
+            ).fetchone()
+            if trip_row is None:
+                raise TripNotFoundError(revision.trip_id)
+            if expected_base_revision_id is not None and trip_row["current_revision_id"] != expected_base_revision_id:
+                raise StaleBaseRevisionError(
+                    trip_id=revision.trip_id,
+                    provided_base_revision_id=expected_base_revision_id,
+                    current_revision_id=trip_row["current_revision_id"],
+                )
+            base_row = connection.execute(
+                "SELECT 1 FROM trip_revisions WHERE id = ? AND trip_id = ?",
+                (revision.base_trip_revision_id, revision.trip_id),
+            ).fetchone()
+            if base_row is None:
+                raise RevisionNotFoundError(revision.base_trip_revision_id)
+
+            latest_row = connection.execute(
+                """
+                SELECT * FROM trip_intent_revisions
+                WHERE trip_id = ?
+                ORDER BY revision_number DESC, created_at DESC
+                LIMIT 1
+                """,
+                (revision.trip_id,),
+            ).fetchone()
+            latest = row_to_intent_revision(latest_row) if latest_row is not None else None
             if require_latest_parent:
-                latest_row = connection.execute(
-                    """
-                    SELECT id, revision_number FROM trip_intent_revisions
-                    WHERE trip_id = ?
-                    ORDER BY revision_number DESC, created_at DESC
-                    LIMIT 1
-                    """,
-                    (revision.trip_id,),
-                ).fetchone()
-                latest_id = latest_row["id"] if latest_row is not None else None
+                latest_id = latest.id if latest is not None else None
                 if latest_id != expected_parent_intent_revision_id:
                     raise StaleIntentRevisionError(
                         trip_id=revision.trip_id,
                         provided_intent_revision_id=expected_parent_intent_revision_id or "",
                         current_intent_revision_id=latest_id or "",
                     )
-                expected_revision_number = 1 if latest_row is None else int(latest_row["revision_number"]) + 1
-                if revision.revision_number != expected_revision_number:
-                    raise StaleIntentRevisionError(
-                        trip_id=revision.trip_id,
-                        provided_intent_revision_id=expected_parent_intent_revision_id or "",
-                        current_intent_revision_id=latest_id or "",
-                    )
 
-            self._insert_intent_revision(connection, revision)
+            final_revision_number = 1 if latest is None else latest.revision_number + 1
+            final_revision_id = generate_intent_revision_id()
+            parent_lineage_digest = None
+            if latest is not None:
+                parent_lineage_digest = latest.envelope.get("lineage_digest") if isinstance(latest.envelope, dict) else None
+            finalized_envelope = finalize_intent_envelope_for_revision(
+                SourceLinkedTripIntentEnvelope.model_validate(revision.envelope),
+                revision_id=final_revision_id,
+                revision_number=final_revision_number,
+                base_trip_revision_id=revision.base_trip_revision_id,
+                parent_intent_revision_id=expected_parent_intent_revision_id,
+                parent_lineage_digest=parent_lineage_digest if isinstance(parent_lineage_digest, str) else None,
+                operation=operation,
+                restore_source_revision_id=restore_source_revision_id,
+                created_at=revision.created_at,
+            )
+            final_revision = TripIntentRevisionRecord(
+                id=final_revision_id,
+                trip_id=revision.trip_id,
+                revision_number=final_revision_number,
+                parent_intent_revision_id=expected_parent_intent_revision_id,
+                base_trip_revision_id=revision.base_trip_revision_id,
+                envelope_schema_version=revision.envelope_schema_version,
+                envelope=finalized_envelope.model_dump(mode="json"),
+                content_digest=finalized_envelope.content_digest,
+                compiler_version=revision.compiler_version,
+                source_digest=revision.source_digest,
+                validation_report=finalized_envelope.validation_report,
+                created_at=revision.created_at,
+            )
+            self._insert_intent_revision(connection, final_revision)
+            if compile_run is not None:
+                self._insert_intent_compile_run(connection, compile_run, final_revision)
             connection.execute(
                 """
                 INSERT INTO trip_intent_idempotency_records(
@@ -281,11 +316,11 @@ class SQLiteTripRepository:
                     revision.trip_id,
                     idempotency_key_hash,
                     request_digest,
-                    revision.id,
+                    final_revision.id,
                     revision.created_at,
                 ),
             )
-            return CreateIntentRevisionResult(revision=revision)
+            return CreateIntentRevisionResult(revision=final_revision)
 
     def get_intent_revision_by_idempotency(
         self,
@@ -1063,6 +1098,50 @@ class SQLiteTripRepository:
                 revision.source_digest,
                 canonical_json(revision.validation_report),
                 revision.created_at,
+            ),
+        )
+
+    def _insert_intent_compile_run(
+        self,
+        connection: sqlite3.Connection,
+        draft: IntentCompileRunDraft,
+        revision: TripIntentRevisionRecord,
+    ) -> None:
+        envelope = SourceLinkedTripIntentEnvelope.model_validate(revision.envelope)
+        connection.execute(
+            """
+            INSERT INTO intent_compile_runs(
+              id, trip_id, operation, base_trip_revision_id, base_intent_revision_id,
+              result_intent_revision_id, parser_status, parser_name, parser_version,
+              model_name, compiler_version, precedence_version, readiness_policy_version,
+              date_policy_version, input_digest, proposal_digest, semantic_digest,
+              lineage_digest, status, warning_codes_json, error_code, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                draft.id,
+                draft.trip_id,
+                draft.operation,
+                draft.base_trip_revision_id,
+                draft.base_intent_revision_id,
+                revision.id,
+                draft.parser_status,
+                draft.parser_name,
+                draft.parser_version,
+                draft.model_name,
+                draft.compiler_version,
+                draft.precedence_version,
+                draft.readiness_policy_version,
+                draft.date_policy_version,
+                draft.input_digest,
+                draft.proposal_digest,
+                envelope.semantic_digest or "",
+                envelope.lineage_digest or "",
+                draft.status,
+                canonical_json(draft.warning_codes),
+                draft.error_code,
+                draft.created_at,
             ),
         )
 

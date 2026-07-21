@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for F-004a.3 draft delivery.
+Accepted for F-004a.3 final closure.
 
 ## Date
 
@@ -31,17 +31,25 @@ Close F-004a with a domain-native `SourceLinkedTripIntentEnvelope` contract:
   explicit domain value models;
 - selected fields and `typed_intent` carry the same domain value shape instead of
   raw primitives or untyped dictionaries;
-- `parser_result.status` records `unavailable`, `timeout`, `invalid`, and
-  `provider_error` in addition to normal parse states;
-- provenance graph construction lifts existing evidence refs into structured
-  candidate, artifact, mention, review decision, page, and bounding-box nodes
-  where those references are present;
-- compile and restore requests can carry `base_intent_revision_id` so stale
-  clients cannot append against an unseen intent revision;
+- `parser_result.status` is produced server-side and records `success`,
+  `empty_input`, `unavailable`, `timeout`, `invalid_output`, and
+  `provider_error`;
+- provenance graph construction uses structured source references for candidate,
+  artifact, import job, mention, review decision, resolution candidate, direct
+  user span, LLM proposal, field, and envelope revision nodes, preserving page
+  and bounding-box data when upstream evidence contains it;
+- compile, edit, clarification, and restore writes must carry explicit base
+  TripRevision and base IntentRevision identity, except the first compile may
+  use a null base intent revision;
 - intent append transactions verify both the current TripRevision and latest
-  parent intent revision before insert, and reject revision-number mismatches;
+  parent intent revision before insert, allocate revision numbers inside the
+  transaction, and record idempotency after the final revision is created;
+- privacy-safe intent compile run metadata is persisted for replay/evaluation
+  without storing raw prompts, raw LLM responses, private source text, or planner
+  traces;
 - `semantic_digest` is separated from `lineage_digest` so equivalent intent
-  content can be compared independently from revision ownership.
+  content can be compared independently from revision ownership and operation
+  lineage.
 
 The existing flat `planner_ready_intent` preview remains for compatibility and
 for safe UI display, but it is derived from the domain-native fields.
@@ -58,15 +66,18 @@ for safe UI display, but it is derived from the domain-native fields.
   protection before planner handoff.
 - The Intent Confirmation Workspace can show semantic/lineage digests and
   navigate evidence nodes without implying that planning has executed.
-- Intent compiler evaluation now gates a broader 15-fixture corpus.
+- Intent compiler evaluation now gates a broader 58-fixture corpus with
+  semantic, provenance, parser, revision, concurrency, and clarification
+  categories.
 
 ### Negative / trade-offs
 
 - Envelope JSON is larger because values and evidence nodes are structured.
 - The provenance graph is still an intent evidence graph, not a full Planner
   Trace. It should not be treated as route or scheduler reasoning.
-- Some source refs are still parsed from compact evidence strings when older
-  import records do not expose richer foreign-key metadata directly.
+- Some source references remain limited by upstream Import Review evidence
+  completeness; page and bounding-box navigation is only as precise as the
+  reviewed evidence that reached the candidate boundary.
 
 ## Explicit non-goals
 

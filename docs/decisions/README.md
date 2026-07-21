@@ -97,3 +97,4 @@ Routine implementation details should remain in code, tests, issues, or pull req
 - ADR-0012: Source-Linked Intent Contract
 - ADR-0013: Typed Intent Contract Hardening
 - ADR-0014: Semantic Intent Contract and Atomic Append
+- ADR-0015: Domain-Native Intent Contract Closure

@@ -13,6 +13,7 @@ import {
 } from "./intentApi";
 import {
   buildIntentCompileIdempotencyKey,
+  compareIntentContracts,
   formatIntentDomainValue,
   summarizeIntentEnvelope,
 } from "./intentConfirmationModel";
@@ -32,6 +33,7 @@ type IntentEditForm = {
 
 export function IntentConfirmationWorkspace({ tripPersistence, directUserText }: Props) {
   const [envelope, setEnvelope] = useState<SourceLinkedTripIntentEnvelope | null>(null);
+  const [latestEnvelope, setLatestEnvelope] = useState<SourceLinkedTripIntentEnvelope | null>(null);
   const [history, setHistory] = useState<TripIntentRevisionMetadata[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [clarificationAnswer, setClarificationAnswer] = useState("");
@@ -44,11 +46,14 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
   });
   const summary = useMemo(() => summarizeIntentEnvelope(envelope), [envelope]);
   const saved = tripPersistence.status === "saved" ? tripPersistence : null;
+  const latestIntentRevisionId = history[0]?.id ?? latestEnvelope?.id ?? null;
+  const loadedLatest = !envelope || !latestIntentRevisionId || envelope.id === latestIntentRevisionId;
 
   useEffect(() => {
     if (!saved) {
       setHistory([]);
       setEnvelope(null);
+      setLatestEnvelope(null);
       return;
     }
     void refreshHistory(saved.tripId);
@@ -58,6 +63,15 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     const result = await listTripIntentEnvelopes(tripId);
     if (result.ok) {
       setHistory(result.data.revisions);
+      const latestRevisionId = result.data.revisions[0]?.id;
+      if (latestRevisionId) {
+        const latest = await getTripIntentEnvelope(tripId, latestRevisionId);
+        if (latest.ok) {
+          setLatestEnvelope(latest.data.envelope);
+        }
+      } else {
+        setLatestEnvelope(null);
+      }
     }
   }
 
@@ -97,6 +111,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       return;
     }
     setEnvelope(result.data.envelope);
+    setLatestEnvelope(result.data.envelope);
     setStatus(result.data.idempotent_replay ? "Loaded existing compiled contract." : "Compiled immutable intent contract.");
     await refreshHistory(saved.tripId);
   }
@@ -105,11 +120,15 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     if (!saved || !envelope || !clarificationAnswer.trim()) {
       return;
     }
+    if (!loadedLatest) {
+      setStatus("Load the latest intent revision before answering a clarification.");
+      return;
+    }
     const result = await answerIntentClarification(
       saved.tripId,
       envelope.id,
       questionId,
-      { base_revision_id: saved.currentRevisionId, answer: clarificationAnswer.trim() },
+      { base_revision_id: saved.currentRevisionId, base_intent_revision_id: envelope.id, answer: clarificationAnswer.trim() },
       `intent-clarify:${envelope.id}:${questionId}:${saved.currentRevisionId}`,
     );
     if (!result.ok) {
@@ -117,6 +136,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       return;
     }
     setEnvelope(result.data.envelope);
+    setLatestEnvelope(result.data.envelope);
     setClarificationAnswer("");
     setStatus("Saved clarification as a new intent revision.");
     await refreshHistory(saved.tripId);
@@ -139,6 +159,10 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     if (!saved || !envelope) {
       return;
     }
+    if (!loadedLatest) {
+      setStatus("Load the latest intent revision before editing the contract.");
+      return;
+    }
     const tripDays = editForm.tripDays.trim() ? Number(editForm.tripDays.trim()) : null;
     if (tripDays !== null && (!Number.isInteger(tripDays) || tripDays < 1)) {
       setStatus("Trip days must be a positive whole number.");
@@ -153,6 +177,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       envelope.id,
       {
         base_revision_id: saved.currentRevisionId,
+        base_intent_revision_id: envelope.id,
         field_updates: {
           city: editForm.city.trim() || null,
           trip_days: tripDays,
@@ -167,6 +192,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       return;
     }
     setEnvelope(result.data.envelope);
+    setLatestEnvelope(result.data.envelope);
     setStatus("Saved edit as a new intent revision.");
     await refreshHistory(saved.tripId);
   }
@@ -175,10 +201,14 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     if (!saved) {
       return;
     }
+    if (!latestIntentRevisionId) {
+      setStatus("Compile an intent contract before restoring a prior revision.");
+      return;
+    }
     const result = await restoreTripIntentEnvelope(
       saved.tripId,
       intentRevisionId,
-      { base_revision_id: saved.currentRevisionId, base_intent_revision_id: history[0]?.id ?? null },
+      { base_revision_id: saved.currentRevisionId, base_intent_revision_id: latestIntentRevisionId },
       `intent-restore:${intentRevisionId}:${saved.currentRevisionId}`,
     );
     if (!result.ok) {
@@ -186,6 +216,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       return;
     }
     setEnvelope(result.data.envelope);
+    setLatestEnvelope(result.data.envelope);
     setStatus(`Restored intent revision as revision ${result.data.revision.revision_number}.`);
     await refreshHistory(saved.tripId);
   }
@@ -211,11 +242,12 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       {envelope ? (
         <div className="intent-confirmation-workspace__body">
           <TypedIntentPreview envelope={envelope} />
-          <ReadinessEvidence envelope={envelope} latestRevision={history[0] ?? null} />
+          <ReadinessEvidence envelope={envelope} latestRevision={history[0] ?? null} latestEnvelope={latestEnvelope} />
           <IntentEditPanel
             form={editForm}
             onChange={setEditForm}
             onSave={() => void handleEditIntent()}
+            disabled={!loadedLatest}
           />
           <FieldList title="Selected fields" fields={summary.selectedFields} />
           <ProvenanceList
@@ -245,7 +277,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
                   onChange={(event) => setClarificationAnswer(event.target.value)}
                   placeholder="Answer clarification"
                 />
-                <button type="button" onClick={() => void handleAnswerClarification(question.question_id)}>
+                <button type="button" onClick={() => void handleAnswerClarification(question.question_id)} disabled={!loadedLatest}>
                   Save answer
                 </button>
               </div>
@@ -408,10 +440,12 @@ function IntentEditPanel({
   form,
   onChange,
   onSave,
+  disabled,
 }: {
   form: IntentEditForm;
   onChange: (form: IntentEditForm) => void;
   onSave: () => void;
+  disabled: boolean;
 }) {
   return (
     <div className="intent-confirmation-workspace__panel">
@@ -419,16 +453,17 @@ function IntentEditPanel({
       <div className="intent-confirmation-workspace__edit-grid">
         <label>
           City
-          <input value={form.city} onChange={(event) => onChange({ ...form, city: event.target.value })} />
+          <input disabled={disabled} value={form.city} onChange={(event) => onChange({ ...form, city: event.target.value })} />
         </label>
         <label>
           Trip days
-          <input value={form.tripDays} onChange={(event) => onChange({ ...form, tripDays: event.target.value })} />
+          <input disabled={disabled} value={form.tripDays} onChange={(event) => onChange({ ...form, tripDays: event.target.value })} />
         </label>
         <label>
           Pace
           <select
             value={form.pace}
+            disabled={disabled}
             onChange={(event) => onChange({ ...form, pace: event.target.value as IntentEditForm["pace"] })}
           >
             <option value="">Unset</option>
@@ -441,11 +476,12 @@ function IntentEditPanel({
           Transport
           <input
             value={form.transportPreferences}
+            disabled={disabled}
             onChange={(event) => onChange({ ...form, transportPreferences: event.target.value })}
           />
         </label>
       </div>
-      <button type="button" onClick={onSave}>
+      <button type="button" onClick={onSave} disabled={disabled}>
         Save revision
       </button>
     </div>
@@ -488,17 +524,24 @@ function TypedIntentPreview({ envelope }: { envelope: SourceLinkedTripIntentEnve
 function ReadinessEvidence({
   envelope,
   latestRevision,
+  latestEnvelope,
 }: {
   envelope: SourceLinkedTripIntentEnvelope;
   latestRevision: TripIntentRevisionMetadata | null;
+  latestEnvelope: SourceLinkedTripIntentEnvelope | null;
 }) {
   const loadedLatest = !latestRevision || latestRevision.id === envelope.id;
+  const semanticCompare = compareIntentContracts(latestEnvelope, envelope);
+  const semanticCompareLabel = semanticCompare.identical
+    ? "semantic fields match latest"
+    : `${semanticCompare.changed.length} changed · ${semanticCompare.added.length} added · ${semanticCompare.removed.length} removed`;
   return (
     <div className="intent-confirmation-workspace__panel">
       <strong>Contract evidence</strong>
       <p>Semantic digest: {envelope.semantic_digest?.slice(0, 16) ?? "missing"}</p>
       <p>Lineage digest: {envelope.lineage_digest?.slice(0, 16) ?? "missing"}</p>
-      <p>Semantic compare: {loadedLatest ? "loaded revision is latest" : "loaded revision differs from latest lineage"}</p>
+      <p>Base state: {loadedLatest ? "loaded revision is latest" : "historical revision loaded"}</p>
+      <p>Semantic compare: {semanticCompareLabel}</p>
       <p>
         Parser: {envelope.parser_result.parser_name} · {envelope.parser_result.status} ·{" "}
         {envelope.parser_result.extracted_field_paths.length} fields

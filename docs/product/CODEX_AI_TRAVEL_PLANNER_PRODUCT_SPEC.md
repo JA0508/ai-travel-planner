@@ -918,18 +918,42 @@ LLM 输出必须通过 Pydantic/schema validation；冲突检测、日期计算�
 
 - 复用现有 parseTripIntent、parsePlanningState、tripFormSync、tripIntentPayload；把 page.tsx 中状态搬到 feature store/hook。
 
-#### 当前实现状态（F-004a.2）
+#### 当前实现状态（F-004a.3）
 
-- 已建立 `SourceLinkedTripIntentEnvelope` 的语义字段类型、标准化
-  semantic value、source authority、parser result、typed assumptions、
-  readiness policy、provenance graph 和 semantic digest。
+- 已建立 `SourceLinkedTripIntentEnvelope` 的 domain-native formal contract：
+  destination、date policy、fixed event、place preference、pace、transport、
+  meal、budget、traveler need、exclusion 和 typed assumption 均带 metadata、
+  authority、confirmation、validation codes、source refs 与 revision ownership。
+- 已分离 `semantic_digest` 与 `lineage_digest`。相同语义内容可以跨 revision
+  比较，lineage 仍包含 base TripRevision、parent IntentRevision、policy
+  version、operation 与 restore 来源。
+- parser 结果为 server-only 结果，不接受客户端伪造 parser error；显式记录
+  `success`、`empty_input`、`unavailable`、`timeout`、`invalid_output` 和
+  `provider_error`。
+- provenance graph 由结构化 source refs 构建，覆盖 TripCandidate、source
+  artifact、import job、mention、review decision、resolution candidate、direct
+  user span、LLM proposal、field 和 envelope revision 节点；page/bbox 信息在
+  上游 evidence 存在时保留。
 - intent compile / edit / clarification / restore 均创建不可变
-  IntentRevision；edit/clarification/restore 使用事务级
-  compare-and-append 防止 stale parent 产生 sibling revisions。
+  IntentRevision；每次写入都显式携带 base TripRevision 与 base
+  IntentRevision（首次 compile 可为 null），并在事务内完成 latest parent
+  compare-and-append、revision number 分配和 idempotency 记录。
+- 持久化 privacy-safe intent compile run metadata，用于回放/evaluation，而不
+  保存 raw prompt、raw LLM response 或私有 source text。
 - 缺失且没有实际 assumed value 的 `trip.trip_days` 不再标记为
   planner-ready，必须进入 clarification/readiness blocker。
+- Intent Confirmation Workspace 可加载 history/detail、编辑 latest revision、
+  restore 历史 revision、显示 semantic/lineage digest、semantic compare 和
+  provenance evidence nodes；历史 revision 不能直接编辑，只能 restore 成新
+  revision。
+- Intent compiler evaluation 现有 58 个 fixtures，按 semantic、provenance、
+  parser、revision、concurrency、clarification 分类，并在 CI 下 gate fixture
+  数量与 deterministic invariants。
 - 当前仍不调用 planner、scheduler、provider lookup，不创建 TripRevision，
   不修改 itinerary。
+- 已知限制：provenance graph 不是完整 Planner Trace；部分 page/bbox 证据受
+  上游 Import Review evidence 完整度限制；F-004b 才会消费 confirmed
+  contract 进入 planner handoff。
 
 ### F-005 Explainable Plan Compiler v2
 

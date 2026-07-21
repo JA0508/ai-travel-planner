@@ -75,9 +75,14 @@ The completed document extraction path now supports:
 - Provenance graph navigation currently exposes source/candidate/artifact/mention
   nodes from persisted evidence references. It is sufficient for F-004b handoff
   but is not yet a full Planner Trace review workspace.
-- The intent compiler evaluation corpus now has 15 fixtures; it is broader than
-  the original foundation but still should expand when F-004b introduces planner
-  handoff behavior.
+- The intent compiler evaluation corpus now has 58 fixtures and CI gates fixture
+  counts plus deterministic invariants across semantic, provenance, parser,
+  revision, concurrency, and clarification categories. It should still expand
+  when F-004b introduces planner handoff behavior.
+- F-004a.3 records privacy-safe compile run metadata for parser/compiler policy,
+  readiness policy, semantic digest, lineage digest, and idempotency lineage. It
+  intentionally does not persist raw prompts, raw LLM responses, private source
+  text, or planner traces.
 
 ## Current next product objective
 
