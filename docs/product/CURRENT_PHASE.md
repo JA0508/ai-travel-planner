@@ -2,12 +2,13 @@
 
 ## Current phase
 
-Product Direction and Roadmap Reconciliation after F-002d / F-002d.1.
+F-004a Source-Linked Intent Contract Foundation draft delivery.
 
 ## Recently completed and merged
 
 - F-002d Layout-Aware OCR and Document Text Extraction
 - F-002d.1 Page-Level Extraction, Reading Order and Visual Evidence Hardening
+- Product Direction and Roadmap Reconciliation
 
 The completed document extraction path now supports:
 
@@ -56,19 +57,26 @@ The completed document extraction path now supports:
 - Local OCR behavior is intentionally capability-reported and may vary by
   installed language packs and rendering dependencies.
 - Import Review can produce reviewed mentions and TripCandidates, but reviewed
-  source facts are not yet compiled into a planner-ready TripIntentEnvelope.
+  source facts are only now entering F-004a draft intent-contract review; this is
+  not yet planner integration.
+- F-004a currently stops at intent contract preview, revision history,
+  clarification, and confirmation. It does not create TripRevisions or execute
+  itinerary mutations.
 
 ## Current next product objective
 
-1. F-004 Intent Compiler
+1. F-004a Source-Linked Intent Contract Foundation
 
-The next product step is to compile reviewed source facts into:
+The current product step is to compile reviewed source facts into:
 
 - hard constraints
 - soft preferences
 - assumptions
 - unresolved questions
 - planner-ready intent
+
+This phase must remain a confirmation and contract boundary until the draft PR is
+merged. Planner execution belongs to a later explicitly scoped phase.
 
 ## Supporting follow-up
 

@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "typecheck": "tsc --noEmit --incremental false",
-    "test:workspace": "node --import tsx --test src/features/trip-workspace/*.test.ts src/features/imports/*.test.ts",
+    "test:workspace": "node --import tsx --test src/features/trip-workspace/*.test.ts src/features/imports/*.test.ts src/features/intent-confirmation/*.test.ts",
+    "test:browser-smoke": "node --import tsx --test src/features/intent-confirmation/*.smoke.test.tsx",
     "start": "next start"
   },
   "dependencies": {

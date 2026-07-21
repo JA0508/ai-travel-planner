@@ -32,6 +32,14 @@ from app.trips.candidates import (
     TripCandidateListResponse,
     TripCandidateRegistrationResponse,
 )
+from app.trips.intent_contracts import (
+    AnswerIntentClarificationRequest,
+    CompileTripIntentRequest,
+    CompileTripIntentResponse,
+    EditTripIntentEnvelopeRequest,
+    TripIntentRevisionDetailResponse,
+    TripIntentRevisionListResponse,
+)
 from app.trips.schemas import (
     ApplyPersistedMutationProposalRequest,
     ApplyPersistedReplanProposalRequest,
@@ -147,6 +155,120 @@ def list_trip_candidates(
             trip_id=trip_id,
             capability=get_trip_capability_from_request(request, trip_id),
             state=state,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/intent-envelope/compile",
+    response_model=CompileTripIntentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def compile_trip_intent_envelope(
+    trip_id: str,
+    payload: CompileTripIntentRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> CompileTripIntentResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().compile_intent_envelope(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get("/{trip_id}/intent-envelope", response_model=TripIntentRevisionListResponse)
+def list_trip_intent_envelopes(
+    trip_id: str,
+    request: Request,
+) -> TripIntentRevisionListResponse | JSONResponse:
+    try:
+        return get_trip_persistence_service().list_intent_envelopes(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get(
+    "/{trip_id}/intent-envelope/{intent_revision_id}",
+    response_model=TripIntentRevisionDetailResponse,
+)
+def get_trip_intent_envelope(
+    trip_id: str,
+    intent_revision_id: str,
+    request: Request,
+) -> TripIntentRevisionDetailResponse | JSONResponse:
+    try:
+        return get_trip_persistence_service().get_intent_envelope_detail(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            revision_id=intent_revision_id,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/intent-envelope/{intent_revision_id}/edit",
+    response_model=CompileTripIntentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def edit_trip_intent_envelope(
+    trip_id: str,
+    intent_revision_id: str,
+    payload: EditTripIntentEnvelopeRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> CompileTripIntentResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().edit_intent_envelope(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            revision_id=intent_revision_id,
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/intent-envelope/{intent_revision_id}/clarifications/{question_id}/answer",
+    response_model=CompileTripIntentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def answer_trip_intent_clarification(
+    trip_id: str,
+    intent_revision_id: str,
+    question_id: str,
+    payload: AnswerIntentClarificationRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> CompileTripIntentResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().answer_intent_clarification(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            revision_id=intent_revision_id,
+            question_id=question_id,
+            idempotency_key=x_idempotency_key,
+            payload=payload,
         )
     except TripError as exc:
         return trip_error_response(exc)

@@ -11,6 +11,7 @@ from app.trips.digests import (
     lineage_digest,
     mutation_proposal_digest,
 )
+from app.trips.intent_contracts import CreateIntentRevisionResult, TripIntentRevisionRecord
 from app.trips.errors import (
     CandidateNotFoundError,
     IdempotencyConflictError,
@@ -54,6 +55,8 @@ class MemoryTripRepository:
         self.candidates: dict[str, TripCandidateRecord] = {}
         self.candidate_decisions: dict[str, TripCandidateDecisionRecord] = {}
         self.candidate_idempotency_records: dict[tuple[str, str], tuple[str, str, str | None]] = {}
+        self.intent_revisions: dict[str, TripIntentRevisionRecord] = {}
+        self.intent_idempotency_records: dict[tuple[str, str], tuple[str, str]] = {}
 
     def health_check(self) -> dict[str, Any]:
         return {
@@ -160,6 +163,49 @@ class MemoryTripRepository:
             key=lambda revision: revision.revision_number,
             reverse=True,
         )
+
+    def create_intent_revision(
+        self,
+        *,
+        revision: TripIntentRevisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CreateIntentRevisionResult:
+        self.get_revision(revision.trip_id, revision.base_trip_revision_id)
+        key = (revision.trip_id, idempotency_key_hash)
+        existing = self.intent_idempotency_records.get(key)
+        if existing is not None:
+            stored_digest, revision_id = existing
+            if stored_digest != request_digest:
+                raise IdempotencyConflictError()
+            return CreateIntentRevisionResult(
+                revision=copy.deepcopy(self.intent_revisions[revision_id]),
+                idempotent_replay=True,
+            )
+        self.intent_revisions[revision.id] = copy.deepcopy(revision)
+        self.intent_idempotency_records[key] = (request_digest, revision.id)
+        return CreateIntentRevisionResult(revision=copy.deepcopy(revision))
+
+    def list_intent_revisions(self, *, trip_id: str) -> list[TripIntentRevisionRecord]:
+        return sorted(
+            [
+                copy.deepcopy(revision)
+                for revision in self.intent_revisions.values()
+                if revision.trip_id == trip_id
+            ],
+            key=lambda revision: revision.revision_number,
+            reverse=True,
+        )
+
+    def get_latest_intent_revision(self, *, trip_id: str) -> TripIntentRevisionRecord | None:
+        revisions = self.list_intent_revisions(trip_id=trip_id)
+        return revisions[0] if revisions else None
+
+    def get_intent_revision(self, *, trip_id: str, revision_id: str) -> TripIntentRevisionRecord:
+        revision = self.intent_revisions.get(revision_id)
+        if revision is None or revision.trip_id != trip_id:
+            raise RevisionNotFoundError(revision_id)
+        return copy.deepcopy(revision)
 
     def create_candidate(
         self,
