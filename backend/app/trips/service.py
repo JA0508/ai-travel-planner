@@ -676,7 +676,7 @@ class TripPersistenceService:
         require_latest_parent: bool = False,
         validation_report_updates: dict[str, Any] | None = None,
     ) -> CompileTripIntentResponse:
-        candidates, candidate_workflow_states = self._intent_candidate_context(trip_id, payload)
+        candidates, candidate_workflow_states, candidate_preferences = self._intent_candidate_context(trip_id, payload)
         verified_source_refs, candidate_verification_states = self._verified_candidate_source_refs(trip_id, candidates)
         now = format_utc(self.clock())
         req_digest = request_digest(
@@ -709,6 +709,7 @@ class TripPersistenceService:
             parent_intent_snapshot=parent_intent_snapshot,
             candidates=candidates,
             candidate_workflow_states=candidate_workflow_states,
+            candidate_preferences=candidate_preferences,
             verified_candidate_source_refs=verified_source_refs,
             candidate_verification_states=candidate_verification_states,
         )
@@ -1535,12 +1536,31 @@ class TripPersistenceService:
         self,
         trip_id: str,
         payload: CompileTripIntentRequest,
-    ) -> tuple[list[TripCandidateRecord], dict[str, str]]:
-        candidate_ids = list(payload.candidate_ids)
-        if payload.structured_overrides is not None:
-            candidate_ids.extend(payload.structured_overrides.must_candidate_ids)
+    ) -> tuple[list[TripCandidateRecord], dict[str, str], dict[str, str]]:
+        candidate_ids: list[str] = []
+        candidate_preferences: dict[str, tuple[str, int]] = {}
+
+        def collect(ids: list[str], field_path: str, authority_rank: int) -> None:
+            for candidate_id in ids:
+                normalized = str(candidate_id).strip()
+                if not normalized:
+                    continue
+                candidate_ids.append(normalized)
+                current = candidate_preferences.get(normalized)
+                if current is None or authority_rank >= current[1]:
+                    candidate_preferences[normalized] = (field_path, authority_rank)
+
+        # A selected TripCandidate defaults to must-visit. Explicit user overrides
+        # outrank an untrusted proposal, which outranks that default.
+        collect(list(payload.candidate_ids), "poi.must_candidates", 10)
         if payload.llm_proposal is not None:
-            candidate_ids.extend(payload.llm_proposal.must_candidate_ids)
+            collect(payload.llm_proposal.must_candidate_ids, "poi.must_candidates", 20)
+            collect(payload.llm_proposal.optional_candidate_ids, "poi.optional_candidates", 20)
+            collect(payload.llm_proposal.avoid_candidate_ids, "poi.avoid_candidates", 20)
+        if payload.structured_overrides is not None:
+            collect(payload.structured_overrides.must_candidate_ids, "poi.must_candidates", 30)
+            collect(payload.structured_overrides.optional_candidate_ids, "poi.optional_candidates", 30)
+            collect(payload.structured_overrides.avoid_candidate_ids, "poi.avoid_candidates", 30)
 
         ordered_ids: list[str] = []
         seen: set[str] = set()
@@ -1551,7 +1571,7 @@ class TripPersistenceService:
                 ordered_ids.append(normalized)
 
         if not ordered_ids:
-            return [], {}
+            return [], {}, {}
 
         decisions_by_candidate: dict[str, list[TripCandidateDecisionRecord]] = {}
         for decision in self.repository.list_candidate_decisions(trip_id=trip_id):
@@ -1564,7 +1584,7 @@ class TripPersistenceService:
             workflow_state, _latest_id = infer_workflow_state(decisions_by_candidate.get(candidate_id, []))
             candidates.append(candidate)
             states[candidate_id] = workflow_state
-        return candidates, states
+        return candidates, states, {candidate_id: preference[0] for candidate_id, preference in candidate_preferences.items()}
 
     def _candidate_context_for_envelope(
         self,

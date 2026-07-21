@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -1122,6 +1122,7 @@ def compile_source_linked_intent(
     parent_intent_snapshot: dict[str, Any] | None = None,
     candidates: list[TripCandidateRecord],
     candidate_workflow_states: dict[str, str],
+    candidate_preferences: dict[str, str],
     verified_candidate_source_refs: dict[str, list[IntentSourceReference]] | None = None,
     candidate_verification_states: dict[str, str] | None = None,
 ) -> SourceLinkedTripIntentEnvelope:
@@ -1131,12 +1132,25 @@ def compile_source_linked_intent(
     field_candidates.extend(_fields_from_existing_trip(existing_trip_snapshot))
     if request.direct_user_text and request.direct_user_text.strip():
         field_candidates.extend(_fields_from_user_text(request.direct_user_text.strip()))
-    field_candidates.extend(_fields_from_candidates(candidates, candidate_workflow_states))
+    candidate_display_names = {candidate.id: candidate.display_name for candidate in candidates}
+    field_candidates.extend(_fields_from_candidates(candidates, candidate_workflow_states, candidate_preferences))
     proposal = parser_result.proposal or request.llm_proposal
     if proposal is not None:
-        field_candidates.extend(_fields_from_payload(proposal.model_dump(mode="json"), IntentSourceType.LLM_PROPOSAL))
+        field_candidates.extend(
+            _fields_from_payload(
+                proposal.model_dump(mode="json"),
+                IntentSourceType.LLM_PROPOSAL,
+                candidate_display_names,
+            )
+        )
     if request.structured_overrides is not None:
-        field_candidates.extend(_fields_from_payload(request.structured_overrides.model_dump(mode="json"), IntentSourceType.STRUCTURED_USER_OVERRIDE))
+        field_candidates.extend(
+            _fields_from_payload(
+                request.structured_overrides.model_dump(mode="json"),
+                IntentSourceType.STRUCTURED_USER_OVERRIDE,
+                candidate_display_names,
+            )
+        )
 
     selected, shadowed, conflicts, clarifications = _select_fields(field_candidates)
     legacy_candidate_ids = [
@@ -1146,14 +1160,19 @@ def compile_source_linked_intent(
     ]
     for candidate_id in legacy_candidate_ids:
         selected_candidate = next(
-            (field for field in selected if field.field_path == "poi.must_candidates" and isinstance(field.value, IntentMustCandidateValue) and field.value.candidate_id == candidate_id),
+            (
+                field
+                for field in selected
+                if field.field_path in {"poi.must_candidates", "poi.optional_candidates", "poi.avoid_candidates"}
+                and getattr(field.value, "candidate_id", None) == candidate_id
+            ),
             None,
         )
         if selected_candidate is not None:
             clarifications.append(
                 ClarificationQuestion(
                     question_id=f"clarify:legacy_candidate_evidence_not_verified:{candidate_id}",
-                    field_paths=["poi.must_candidates"],
+                    field_paths=[selected_candidate.field_path],
                     answer_field_path=None,
                     answer_value_type="string",
                     question="This imported place has legacy evidence that cannot be verified. Confirm or replace it before planning.",
@@ -1215,6 +1234,7 @@ def compile_source_linked_intent(
         planner_ready_status=status,
         readiness_policy=readiness_policy,
         verified_candidate_source_refs=verified_candidate_source_refs or {},
+        candidate_verification_states=candidate_verification_states or {},
     )
     provenance_graph = _build_provenance_graph(
         envelope_id=f"intent_revision:{trip_id}:{next_revision_number}",
@@ -1241,6 +1261,8 @@ def compile_source_linked_intent(
         "typed_intent_sections": _typed_section_names(typed_intent),
         "formal_contract_authority": True,
         "FORMAL_CONTRACT_IS_AUTHORITY": True,
+        "FORMAL_CONTRACT_HAS_NO_ANY": _formal_contract_has_no_any_annotations(),
+        "FORMAL_CONTRACT_HAS_NO_UNKNOWN_VALUE": _formal_contract_has_no_unknown_value(formal_contract),
         "LEGACY_FIELDS_ARE_DERIVED_ONLY": True,
         "formal_contract_schema_version": formal_contract.schema_version,
         "provenance_summary_count": len(provenance_summary),
@@ -1586,7 +1608,11 @@ def _semantic_value_for_field(field_path: str, value: Any) -> dict[str, Any]:
     return {"value": value}
 
 
-def _fields_from_payload(payload: dict[str, Any], source_type: IntentSourceType) -> list[_CandidateField]:
+def _fields_from_payload(
+    payload: dict[str, Any],
+    source_type: IntentSourceType,
+    candidate_display_names: dict[str, str] | None = None,
+) -> list[_CandidateField]:
     priority = 100 if source_type == IntentSourceType.STRUCTURED_USER_OVERRIDE else 30
     confirmed = source_type == IntentSourceType.STRUCTURED_USER_OVERRIDE
     label = "User override" if confirmed else "LLM proposal"
@@ -1703,12 +1729,13 @@ def _fields_from_payload(payload: dict[str, Any], source_type: IntentSourceType)
                 explanation=f"{label} supplied a transport preference.",
             )
         )
+    display_names = candidate_display_names or {}
     for candidate_id in payload.get("must_candidate_ids") or []:
         field_path = "poi.must_candidates"
         fields.append(
             _candidate(
                 field_path,
-                candidate_id,
+                {"candidate_id": candidate_id, "display_name": display_names.get(str(candidate_id))},
                 kind=IntentFieldKind.HARD if confirmed else IntentFieldKind.ASSUMPTION,
                 confidence=1.0 if confirmed else 0.45,
                 source_ref=_source_ref(
@@ -1731,7 +1758,7 @@ def _fields_from_payload(payload: dict[str, Any], source_type: IntentSourceType)
             fields.append(
                 _candidate(
                     field_path,
-                    candidate_id,
+                    {"candidate_id": candidate_id, "display_name": display_names.get(str(candidate_id))},
                     kind=IntentFieldKind.SOFT,
                     confidence=1.0 if confirmed else 0.45,
                     source_ref=_source_ref(
@@ -1850,15 +1877,21 @@ def _text_field(field_path: str, value: Any, kind: IntentFieldKind, text: str) -
     )
 
 
-def _fields_from_candidates(candidates: list[TripCandidateRecord], states: dict[str, str]) -> list[_CandidateField]:
+def _fields_from_candidates(
+    candidates: list[TripCandidateRecord],
+    states: dict[str, str],
+    preferences: dict[str, str],
+) -> list[_CandidateField]:
     fields: list[_CandidateField] = []
     for candidate in candidates:
         state = states.get(candidate.id, "pending")
         if state in {"rejected", "deferred"}:
             continue
+        field_path = preferences.get(candidate.id, "poi.must_candidates")
+        kind = IntentFieldKind.HARD if field_path == "poi.must_candidates" else IntentFieldKind.SOFT
         ref = _source_ref(
             IntentSourceType.TRIP_CANDIDATE,
-            field_path="poi.must_candidates",
+            field_path=field_path,
             label=candidate.display_name,
             source_id=candidate.id,
             priority=70,
@@ -1868,12 +1901,12 @@ def _fields_from_candidates(candidates: list[TripCandidateRecord], states: dict[
         )
         fields.append(
             _candidate(
-                "poi.must_candidates",
+                field_path,
                 {"candidate_id": candidate.id, "display_name": candidate.display_name},
-                kind=IntentFieldKind.HARD,
+                kind=kind,
                 confidence=0.9 if candidate.confidence in {"high", "medium"} else 0.7,
                 source_ref=ref,
-                explanation="Included from reviewed TripCandidate evidence.",
+                explanation="Included from reviewed TripCandidate evidence with an explicit preference policy.",
             )
         )
     return fields
@@ -2356,6 +2389,7 @@ def _build_formal_contract(
     planner_ready_status: IntentPlannerReadyStatus,
     readiness_policy: IntentReadinessPolicy,
     verified_candidate_source_refs: dict[str, list[IntentSourceReference]],
+    candidate_verification_states: dict[str, str],
 ) -> FormalTripIntentContract:
     destinations: list[DestinationIntent] = []
     fixed_events: list[FixedEventIntent] = []
@@ -2374,7 +2408,11 @@ def _build_formal_contract(
     date_policy_metadata: IntentFieldMetadata | None = None
 
     for field in selected:
-        metadata = _formal_metadata_for_field(field, verified_candidate_source_refs)
+        metadata = _formal_metadata_for_field(
+            field,
+            verified_candidate_source_refs,
+            candidate_verification_states,
+        )
         if field.field_path == "trip.city" and isinstance(field.value, IntentDestinationValue):
             destinations.append(
                 DestinationIntent(
@@ -2593,13 +2631,33 @@ def _build_formal_contract(
 def _formal_metadata_for_field(
     field: IntentField,
     verified_candidate_source_refs: dict[str, list[IntentSourceReference]],
+    candidate_verification_states: dict[str, str],
 ) -> IntentFieldMetadata:
     source_refs: list[IntentSourceReference] = []
     for ref in field.source_refs:
-        if ref.source_type == IntentSourceType.TRIP_CANDIDATE:
-            source_refs.extend(verified_candidate_source_refs.get(ref.source_id or "", []))
-        else:
+        verified_refs = verified_candidate_source_refs.get(ref.source_id or "", [])
+        if verified_refs:
+            source_refs.extend(verified_refs)
+        if ref.source_type != IntentSourceType.TRIP_CANDIDATE or not verified_refs:
             source_refs.append(_structured_source_ref_from_legacy(ref))
+    candidate_id = getattr(field.value, "candidate_id", None)
+    if (
+        candidate_id
+        and candidate_verification_states.get(candidate_id) != "legacy_unverified"
+        and not any(source.trip_candidate_id == candidate_id for source in source_refs)
+    ):
+        source_refs.append(
+            IntentSourceReference(
+                source_ref_id=f"trip_candidate:{candidate_id}",
+                source_type="trip_candidate",
+                source_id=candidate_id,
+                trip_candidate_id=candidate_id,
+                source_digest=sha256_digest({"trip_candidate_id": candidate_id}),
+                authority="review_confirmed",
+                confirmed=True,
+                provenance_verification_state="verified",
+            )
+        )
     authority = _formal_authority(_strongest_authority(field.source_refs))
     confirmation_state: Literal[
         "user_confirmed",
@@ -3275,6 +3333,56 @@ def _semantic_model_payload(model: BaseModel | None) -> dict[str, Any] | None:
     if model is None:
         return None
     return model.model_dump(mode="json", exclude={"metadata"}, exclude_none=True)
+
+
+def _formal_contract_has_no_any_annotations() -> bool:
+    """Make the formal planner handoff boundary reject untyped model fields."""
+    formal_models = (
+        FormalTripIntentContract,
+        DestinationIntent,
+        DatePolicyIntent,
+        TravelBoundaryIntent,
+        AvailabilityWindowIntent,
+        FixedEventIntent,
+        PlacePreferenceIntent,
+        PaceIntent,
+        TransportPreferenceIntent,
+        MealPreferenceIntent,
+        BudgetIntent,
+        TravelerNeedIntent,
+        ExclusionIntent,
+        PlanningAssumption,
+        IntentReadiness,
+        IntentFieldMetadata,
+        IntentSourceReference,
+        BoundingBox,
+    )
+    return all(
+        not _annotation_contains_any(field.annotation)
+        for model in formal_models
+        for field in model.model_fields.values()
+    )
+
+
+def _annotation_contains_any(annotation: Any) -> bool:
+    if annotation is Any:
+        return True
+    return any(_annotation_contains_any(item) for item in get_args(annotation))
+
+
+def _formal_contract_has_no_unknown_value(contract: FormalTripIntentContract) -> bool:
+    def visit(value: Any) -> bool:
+        if isinstance(value, IntentUnknownValue):
+            return False
+        if isinstance(value, BaseModel):
+            return all(visit(getattr(value, name)) for name in type(value).model_fields)
+        if isinstance(value, (list, tuple)):
+            return all(visit(item) for item in value)
+        if isinstance(value, dict):
+            return False
+        return True
+
+    return visit(contract)
 
 
 def _formal_source_digest_payload(contract: FormalTripIntentContract) -> list[dict[str, Any]]:

@@ -38,6 +38,9 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
   const [envelope, setEnvelope] = useState<SourceLinkedTripIntentEnvelope | null>(null);
   const [latestEnvelope, setLatestEnvelope] = useState<SourceLinkedTripIntentEnvelope | null>(null);
   const [history, setHistory] = useState<TripIntentRevisionMetadata[]>([]);
+  const [latestIntentRevision, setLatestIntentRevision] = useState<TripIntentRevisionMetadata | null>(null);
+  const [loadedIntentRevision, setLoadedIntentRevision] = useState<TripIntentRevisionMetadata | null>(null);
+  const [editingBaseIntentRevision, setEditingBaseIntentRevision] = useState<TripIntentRevisionMetadata | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [clarificationAnswer, setClarificationAnswer] = useState("");
   const [selectedEvidenceNodeId, setSelectedEvidenceNodeId] = useState<string | null>(null);
@@ -53,14 +56,17 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
   });
   const summary = useMemo(() => summarizeIntentEnvelope(envelope), [envelope]);
   const saved = tripPersistence.status === "saved" ? tripPersistence : null;
-  const latestIntentRevisionId = history[0]?.id ?? latestEnvelope?.id ?? null;
-  const loadedLatest = !envelope || !latestIntentRevisionId || envelope.id === latestIntentRevisionId;
+  const latestIntentRevisionId = latestIntentRevision?.id ?? latestEnvelope?.id ?? null;
+  const loadedLatest = !envelope || !latestIntentRevisionId || loadedIntentRevision?.id === latestIntentRevisionId;
 
   useEffect(() => {
     if (!saved) {
       setHistory([]);
       setEnvelope(null);
       setLatestEnvelope(null);
+      setLatestIntentRevision(null);
+      setLoadedIntentRevision(null);
+      setEditingBaseIntentRevision(null);
       return;
     }
     void refreshHistory(saved.tripId);
@@ -70,7 +76,9 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     const result = await listTripIntentEnvelopes(tripId);
     if (result.ok) {
       setHistory(result.data.revisions);
-      const latestRevisionId = result.data.revisions[0]?.id;
+      const latest = result.data.revisions[0] ?? null;
+      setLatestIntentRevision(latest);
+      const latestRevisionId = latest?.id;
       if (latestRevisionId) {
         const latest = await getTripIntentEnvelope(tripId, latestRevisionId);
         if (latest.ok) {
@@ -110,7 +118,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       saved.tripId,
       {
         base_revision_id: saved.currentRevisionId,
-        base_intent_revision_id: history[0]?.id ?? null,
+        base_intent_revision_id: latestIntentRevisionId,
         direct_user_text: directUserText,
         use_llm_proposal_adapter: true,
       },
@@ -122,6 +130,9 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     }
     setEnvelope(result.data.envelope);
     setLatestEnvelope(result.data.envelope);
+    setLatestIntentRevision(result.data.revision);
+    setLoadedIntentRevision(result.data.revision);
+    setEditingBaseIntentRevision(result.data.revision);
     setStatus(result.data.idempotent_replay ? "Loaded existing compiled contract." : "Compiled immutable intent contract.");
     await refreshHistory(saved.tripId);
   }
@@ -152,6 +163,9 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     }
     setEnvelope(result.data.envelope);
     setLatestEnvelope(result.data.envelope);
+    setLatestIntentRevision(result.data.revision);
+    setLoadedIntentRevision(result.data.revision);
+    setEditingBaseIntentRevision(result.data.revision);
     setClarificationAnswer("");
     setStatus("Saved clarification as a new intent revision.");
     await refreshHistory(saved.tripId);
@@ -167,6 +181,8 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       return;
     }
     setEnvelope(result.data.envelope);
+    setLoadedIntentRevision(result.data.revision);
+    setEditingBaseIntentRevision(result.data.revision);
     setStaleEdit(false);
     setStatus(`Loaded intent revision ${result.data.revision.revision_number}.`);
   }
@@ -194,7 +210,9 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       baseEnvelope.id,
       {
         base_revision_id: saved.currentRevisionId,
-        base_intent_revision_id: baseEnvelope.id,
+        base_intent_revision_id: reapplyToLatest
+          ? latestIntentRevisionId ?? baseEnvelope.id
+          : editingBaseIntentRevision?.id ?? baseEnvelope.id,
         field_updates: {
           city: editForm.city.trim() || null,
           trip_days: tripDays,
@@ -219,6 +237,9 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     }
     setEnvelope(result.data.envelope);
     setLatestEnvelope(result.data.envelope);
+    setLatestIntentRevision(result.data.revision);
+    setLoadedIntentRevision(result.data.revision);
+    setEditingBaseIntentRevision(result.data.revision);
     setStaleEdit(false);
     setStatus("Saved edit as a new intent revision.");
     await refreshHistory(saved.tripId);
@@ -244,6 +265,9 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     }
     setEnvelope(result.data.envelope);
     setLatestEnvelope(result.data.envelope);
+    setLatestIntentRevision(result.data.revision);
+    setLoadedIntentRevision(result.data.revision);
+    setEditingBaseIntentRevision(result.data.revision);
     setStatus(`Restored intent revision as revision ${result.data.revision.revision_number}.`);
     await refreshHistory(saved.tripId);
   }
@@ -269,7 +293,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       {envelope ? (
         <div className="intent-confirmation-workspace__body">
           <TypedIntentPreview envelope={envelope} />
-          <ReadinessEvidence envelope={envelope} latestRevision={history[0] ?? null} latestEnvelope={latestEnvelope} />
+          <ReadinessEvidence envelope={envelope} latestRevision={latestIntentRevision} latestEnvelope={latestEnvelope} />
           <IntentEditPanel
             form={editForm}
             onChange={setEditForm}

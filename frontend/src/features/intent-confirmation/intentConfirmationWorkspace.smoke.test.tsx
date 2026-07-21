@@ -50,4 +50,8 @@ test("workspace preserves a stale edit for explicit latest-revision reapply", ()
   assert.match(source, /Your draft is retained/);
   assert.match(source, /Reapply to latest/);
   assert.match(source, /trip-import-evidence-focus/);
+  assert.match(source, /latestIntentRevision/);
+  assert.match(source, /loadedIntentRevision/);
+  assert.match(source, /editingBaseIntentRevision/);
+  assert.equal(source.includes("history[0]"), false);
 });

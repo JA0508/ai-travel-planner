@@ -131,6 +131,8 @@ class TripIntentContractTests(unittest.TestCase):
             {"source_artifact", "import_mention", "import_review_decision", "resolution_candidate", "trip_candidate"},
         )
         self.assertEqual(envelope["formal_contract"]["pace"]["value"], "relaxed")
+        self.assertTrue(envelope["validation_report"]["FORMAL_CONTRACT_HAS_NO_ANY"])
+        self.assertTrue(envelope["validation_report"]["FORMAL_CONTRACT_HAS_NO_UNKNOWN_VALUE"])
         self.assertEqual(envelope["parser_result"]["status"], "success")
         self.assertTrue(envelope["semantic_digest"])
         self.assertTrue(envelope["lineage_digest"])
@@ -750,6 +752,30 @@ class TripIntentContractTests(unittest.TestCase):
 
     def test_formal_contract_preserves_domain_native_event_budget_and_place_preferences(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()
+        optional = client.post(
+            f"/trips/{trip_id}/candidates",
+            json={
+                "candidate_type": "place",
+                "display_name": "Optional museum",
+                "category": "museum",
+                "source_kind": "manual_entry",
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "optional-intent-candidate"},
+        )
+        avoid = client.post(
+            f"/trips/{trip_id}/candidates",
+            json={
+                "candidate_type": "place",
+                "display_name": "Avoid queue",
+                "category": "scenic",
+                "source_kind": "manual_entry",
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "avoid-intent-candidate"},
+        )
+        self.assertEqual(optional.status_code, 201, optional.text)
+        self.assertEqual(avoid.status_code, 201, avoid.text)
+        optional_id = optional.json()["candidate"]["id"]
+        avoid_id = avoid.json()["candidate"]["id"]
         response = client.post(
             f"/trips/{trip_id}/intent-envelope/compile",
             json={
@@ -758,8 +784,8 @@ class TripIntentContractTests(unittest.TestCase):
                 "structured_overrides": {
                     "city": "上海",
                     "trip_days": 3,
-                    "optional_candidate_ids": ["candidate-optional"],
-                    "avoid_candidate_ids": ["candidate-avoid"],
+                    "optional_candidate_ids": [optional_id],
+                    "avoid_candidate_ids": [avoid_id],
                     "fixed_events": [{
                         "event_id": "booking-1",
                         "name": "Museum booking",
@@ -786,8 +812,14 @@ class TripIntentContractTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 201, response.text)
         contract = response.json()["envelope"]["formal_contract"]
-        self.assertEqual(contract["optional_places"][0]["trip_candidate_id"], "candidate-optional")
-        self.assertEqual(contract["avoid_places"][0]["trip_candidate_id"], "candidate-avoid")
+        self.assertEqual(contract["optional_places"][0]["trip_candidate_id"], optional_id)
+        self.assertEqual(contract["avoid_places"][0]["trip_candidate_id"], avoid_id)
+        self.assertEqual(contract["optional_places"][0]["display_name"], "Optional museum")
+        self.assertEqual(contract["avoid_places"][0]["display_name"], "Avoid queue")
+        self.assertIn(
+            "trip_candidate",
+            [ref["source_type"] for ref in contract["optional_places"][0]["metadata"]["source_refs"]],
+        )
         self.assertEqual(contract["fixed_events"][0]["event_id"], "booking-1")
         self.assertEqual(contract["fixed_events"][0]["start_at"], "2026-08-02T14:00:00")
         self.assertEqual(contract["budget"]["amount_minor"], 150000)

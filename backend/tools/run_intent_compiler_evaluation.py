@@ -18,11 +18,15 @@ from app.trips.dependencies import reset_trip_repository_cache_for_tests
 from app.trips.dependencies import get_trip_persistence_service, get_trip_repository
 from app.trips.errors import StaleIntentRevisionError
 from app.trips.intent_contracts import (
+    AnswerIntentClarificationRequest,
     CompileTripIntentRequest,
     EditTripIntentEnvelopeRequest,
     RestoreTripIntentEnvelopeRequest,
     UntrustedIntentProposal,
 )
+from app.persistence.database import SQLiteConnectionFactory, get_trip_store_busy_timeout_seconds, get_trip_store_path
+from app.persistence.sqlite_trip_repository import SQLiteTripRepository
+from app.trips.service import TripPersistenceService
 from tests.test_trip_persistence_api import simple_itinerary
 
 
@@ -340,12 +344,27 @@ def run_evaluation() -> list[dict]:
 
 
 def execute_concurrency_scenario(client: TestClient, fixture: IntentCompilerFixture, index: int, started: float) -> dict:
-    """Run an actual two-writer SQLite race against one immutable intent base."""
+    """Run named two-writer operations through independent SQLite repositories."""
     trip_id, base_revision_id = create_trip(client)
     capability = client.cookies.get(f"trip_capability_{trip_id}")
     service = get_trip_persistence_service()
     initial = None
-    if fixture.name != "concurrency_compile_compile_gate":
+    race_parent = None
+    question_id = None
+    if fixture.name == "concurrency_edit_clarification_gate":
+        initial = service.compile_intent_envelope(
+            trip_id=trip_id,
+            capability=capability,
+            idempotency_key=f"intent-race-seed-{index}",
+            payload=CompileTripIntentRequest(
+                base_trip_revision_id=base_revision_id,
+                base_intent_revision_id=None,
+                structured_overrides={"city": "上海"},
+            ),
+        )
+        question_id = next(item.question_id for item in initial.envelope.clarification_queue if item.reason_code == "missing_trip_length")
+        race_parent = initial
+    elif fixture.name == "concurrency_restore_edit_gate":
         initial = service.compile_intent_envelope(
             trip_id=trip_id,
             capability=capability,
@@ -356,37 +375,96 @@ def execute_concurrency_scenario(client: TestClient, fixture: IntentCompilerFixt
                 structured_overrides={"city": "上海", "trip_days": 2},
             ),
         )
+        race_parent = service.edit_intent_envelope(
+            trip_id=trip_id,
+            capability=capability,
+            revision_id=initial.revision.id,
+            idempotency_key=f"intent-race-prelude-{index}",
+            payload=EditTripIntentEnvelopeRequest(
+                base_trip_revision_id=base_revision_id,
+                base_intent_revision_id=initial.revision.id,
+                field_updates={"city": "杭州"},
+            ),
+        )
+    elif fixture.name != "concurrency_compile_compile_gate":
+        initial = service.compile_intent_envelope(
+            trip_id=trip_id,
+            capability=capability,
+            idempotency_key=f"intent-race-seed-{index}",
+            payload=CompileTripIntentRequest(
+                base_trip_revision_id=base_revision_id,
+                base_intent_revision_id=None,
+                structured_overrides={"city": "上海", "trip_days": 2},
+            ),
+        )
+        race_parent = initial
     base_intent_id = initial.revision.id if initial is not None else None
     barrier = threading.Barrier(2)
 
-    def writer(city: str):
+    def independent_service() -> TripPersistenceService:
+        factory = SQLiteConnectionFactory(get_trip_store_path(), busy_timeout_seconds=get_trip_store_busy_timeout_seconds())
+        return TripPersistenceService(SQLiteTripRepository(factory.connect))
+
+    def writer(action: str):
         barrier.wait(timeout=5)
+        writer_service = independent_service()
         if fixture.name == "concurrency_compile_compile_gate":
-            return service.compile_intent_envelope(
+            return writer_service.compile_intent_envelope(
                 trip_id=trip_id,
                 capability=capability,
-                idempotency_key=f"intent-race-{index}-{city}",
+                idempotency_key=f"intent-race-{index}-{action}",
                 payload=CompileTripIntentRequest(
                     base_trip_revision_id=base_revision_id,
                     base_intent_revision_id=None,
-                    structured_overrides={"city": city, "trip_days": 2},
+                    structured_overrides={"city": "杭州" if action == "left" else "苏州", "trip_days": 2},
                 ),
             )
-        return service.edit_intent_envelope(
+        if fixture.name == "concurrency_edit_clarification_gate" and action == "clarify":
+            return writer_service.answer_intent_clarification(
+                trip_id=trip_id,
+                capability=capability,
+                revision_id=base_intent_id,
+                question_id=question_id or "",
+                idempotency_key=f"intent-race-{index}-clarify",
+                payload=AnswerIntentClarificationRequest(
+                    base_trip_revision_id=base_revision_id,
+                    base_intent_revision_id=base_intent_id or "",
+                    answer=2,
+                ),
+            )
+        if fixture.name == "concurrency_restore_edit_gate" and action == "restore":
+            return writer_service.restore_intent_envelope(
+                trip_id=trip_id,
+                capability=capability,
+                revision_id=initial.revision.id if initial is not None else "",
+                idempotency_key=f"intent-race-{index}-restore",
+                payload=RestoreTripIntentEnvelopeRequest(
+                    base_trip_revision_id=base_revision_id,
+                    base_intent_revision_id=race_parent.revision.id if race_parent is not None else "",
+                ),
+            )
+        return writer_service.edit_intent_envelope(
             trip_id=trip_id,
             capability=capability,
-            revision_id=base_intent_id,
-            idempotency_key=f"intent-race-{index}-{city}",
+            revision_id=race_parent.revision.id if race_parent is not None else base_intent_id or "",
+            idempotency_key=f"intent-race-{index}-{action}",
             payload=EditTripIntentEnvelopeRequest(
                 base_trip_revision_id=base_revision_id,
-                base_intent_revision_id=base_intent_id,
-                field_updates={"city": city},
+                base_intent_revision_id=race_parent.revision.id if race_parent is not None else base_intent_id or "",
+                field_updates={"city": "杭州" if action == "left" else "苏州", "trip_days": 3 if fixture.name == "concurrency_edit_clarification_gate" else None},
             ),
         )
 
     outcomes: list[str] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(writer, "杭州"), executor.submit(writer, "苏州")]
+        actions = (
+            ("left", "right")
+            if fixture.name not in {"concurrency_edit_clarification_gate", "concurrency_restore_edit_gate"}
+            else ("left", "clarify")
+            if fixture.name == "concurrency_edit_clarification_gate"
+            else ("restore", "right")
+        )
+        futures = [executor.submit(writer, action) for action in actions]
         for future in futures:
             try:
                 future.result(timeout=10)
@@ -400,9 +478,9 @@ def execute_concurrency_scenario(client: TestClient, fixture: IntentCompilerFixt
     invariants = [
         {"code": "race_success_count", "passed": outcomes.count("success") == 1},
         {"code": "race_stale_count", "passed": outcomes.count("stale") == 1},
-        {"code": "race_revision_delta", "passed": len(revisions) == (1 if initial is None else 2)},
+        {"code": "race_revision_delta", "passed": len(revisions) == (1 if initial is None else 2 if race_parent is initial else 3)},
         {"code": "race_no_duplicate_revision_number", "passed": len(revision_numbers) == len(set(revision_numbers))},
-        {"code": "race_no_sibling_revision", "passed": len([item for item in revisions if item.parent_intent_revision_id == base_intent_id]) == 1 if base_intent_id else len(revisions) == 1},
+        {"code": "race_no_sibling_revision", "passed": len([item for item in revisions if item.parent_intent_revision_id == (race_parent.revision.id if race_parent is not None else base_intent_id)]) == 1 if (race_parent is not None or base_intent_id) else len(revisions) == 1},
     ]
     passed = all(item["passed"] for item in invariants)
     return {
@@ -411,6 +489,7 @@ def execute_concurrency_scenario(client: TestClient, fixture: IntentCompilerFixt
         "passed": passed,
         "status": "race_complete",
         "outcomes": outcomes,
+        "evidence": {"scenario": fixture.name, "operations": list(actions), "base_intent_revision_id": base_intent_id},
         "revision_numbers": revision_numbers,
         "runtime_seconds": time.perf_counter() - started,
         "invariants": invariants,
