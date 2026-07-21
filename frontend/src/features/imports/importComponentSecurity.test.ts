@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const componentPath = fileURLToPath(new URL("./ImportReviewWorkspace.tsx", import.meta.url));
+const importApiPath = fileURLToPath(new URL("./importApi.ts", import.meta.url));
 const binaryResultPath = fileURLToPath(new URL("./BinaryInspectionResult.tsx", import.meta.url));
 const binaryStatePath = fileURLToPath(new URL("./binaryImportState.ts", import.meta.url));
 
@@ -31,4 +32,27 @@ test("binary import persistence avoids bytes base64 metadata payloads and filena
   assert.equal(stateSource.includes("base64"), false);
   assert.equal(stateSource.includes("content_checksum"), false);
   assert.equal(stateSource.includes("metadata"), false);
+});
+
+test("document evidence panel renders private page preview behind bbox overlay", () => {
+  const source = readFileSync(componentPath, "utf-8");
+  const apiSource = readFileSync(importApiPath, "utf-8");
+  assert.match(source, /fetchDocumentPagePreviewBlob/);
+  assert.match(apiSource, /getDocumentPagePreview/);
+  assert.match(source, /<img\s+[\s\S]*src=\{preview\.url\}/);
+  assert.match(source, /data-document-evidence-box/);
+  assert.match(source, /fitPreviewSurface/);
+  assert.equal(source.includes("DOCUMENT_EVIDENCE_SURFACE = { width: 180, height: 240 }"), false);
+});
+
+test("layout-aware document flow exposes page navigation zoom retry and linked box evidence", () => {
+  const source = readFileSync(componentPath, "utf-8");
+  const apiSource = readFileSync(importApiPath, "utf-8");
+  assert.match(apiSource, /retryDocumentPageExtraction/);
+  assert.match(apiSource, /retryDocumentPageExtraction\(tripId, importJobId, pageNumber\)/);
+  assert.match(source, /data-document-page-controls/);
+  assert.match(source, /data-document-page-retry/);
+  assert.match(source, /setZoom/);
+  assert.match(source, /mentionEvidenceBoxesForPage/);
+  assert.match(source, /box_evidence/);
 });

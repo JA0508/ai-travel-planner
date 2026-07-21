@@ -13,6 +13,7 @@ from app.imports.domain import (
     ArtifactInspectionFindingRecord,
     ArtifactInspectionRecord,
     DocumentExtractionGenerationRecord,
+    DocumentExtractionPageRecord,
     DocumentTextSpanRecord,
     ExtractedMentionRecord,
     ImportCommitRecord,
@@ -106,11 +107,15 @@ class ImportRepository(Protocol):
     def list_document_text_spans(self, *, generation_id: str) -> list[DocumentTextSpanRecord]:
         ...
 
+    def list_document_extraction_pages(self, *, generation_id: str) -> list[DocumentExtractionPageRecord]:
+        ...
+
     def create_document_extraction_result(
         self,
         *,
         generation: DocumentExtractionGenerationRecord,
         spans: list[DocumentTextSpanRecord],
+        pages: list[DocumentExtractionPageRecord],
         child_artifact: SourceArtifactRecord,
         derivation: ArtifactDerivationRecord,
         derived_job: ImportJobRecord,
@@ -289,7 +294,7 @@ class SQLiteImportRepository:
         with self._transaction() as connection:
             connection.execute(
                 """
-                INSERT INTO source_artifacts(
+                INSERT OR IGNORE INTO source_artifacts(
                   id, trip_id, artifact_type, mime_type, content_checksum,
                   byte_size, charset, privacy_level, storage_key, original_label, created_at
                 )
@@ -449,7 +454,7 @@ class SQLiteImportRepository:
             if child_artifact is not None:
                 connection.execute(
                     """
-                    INSERT INTO source_artifacts(
+                    INSERT OR IGNORE INTO source_artifacts(
                       id, trip_id, artifact_type, mime_type, content_checksum,
                       byte_size, charset, privacy_level, storage_key, original_label, created_at
                     )
@@ -640,11 +645,24 @@ class SQLiteImportRepository:
             ).fetchall()
         return [row_to_document_text_span(row) for row in rows]
 
+    def list_document_extraction_pages(self, *, generation_id: str) -> list[DocumentExtractionPageRecord]:
+        with closing(self.connection_factory()) as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM document_extraction_pages
+                WHERE generation_id = ?
+                ORDER BY page_number ASC, id ASC
+                """,
+                (generation_id,),
+            ).fetchall()
+        return [row_to_document_extraction_page(row) for row in rows]
+
     def create_document_extraction_result(
         self,
         *,
         generation: DocumentExtractionGenerationRecord,
         spans: list[DocumentTextSpanRecord],
+        pages: list[DocumentExtractionPageRecord],
         child_artifact: SourceArtifactRecord,
         derivation: ArtifactDerivationRecord,
         derived_job: ImportJobRecord,
@@ -660,7 +678,7 @@ class SQLiteImportRepository:
                 raise TripError("import_not_found", "Source import job was not found.", 404)
             connection.execute(
                 """
-                INSERT INTO source_artifacts(
+                INSERT OR IGNORE INTO source_artifacts(
                   id, trip_id, artifact_type, mime_type, content_checksum,
                   byte_size, charset, privacy_level, storage_key, original_label, created_at
                 )
@@ -683,7 +701,7 @@ class SQLiteImportRepository:
             for related_artifact in related_artifacts or []:
                 connection.execute(
                     """
-                    INSERT INTO source_artifacts(
+                    INSERT OR IGNORE INTO source_artifacts(
                       id, trip_id, artifact_type, mime_type, content_checksum,
                       byte_size, charset, privacy_level, storage_key, original_label, created_at
                     )
@@ -733,7 +751,7 @@ class SQLiteImportRepository:
             )
             connection.execute(
                 """
-                INSERT INTO artifact_derivations(
+                INSERT OR IGNORE INTO artifact_derivations(
                   id, parent_artifact_id, child_artifact_id, derivation_type,
                   transformer_version, input_checksum, output_checksum,
                   metadata_json, created_at
@@ -755,7 +773,7 @@ class SQLiteImportRepository:
             for related_derivation in related_derivations or []:
                 connection.execute(
                     """
-                    INSERT INTO artifact_derivations(
+                    INSERT OR IGNORE INTO artifact_derivations(
                       id, parent_artifact_id, child_artifact_id, derivation_type,
                       transformer_version, input_checksum, output_checksum,
                       metadata_json, created_at
@@ -838,6 +856,35 @@ class SQLiteImportRepository:
                         span.text_digest,
                         json_dumps(span.warning_codes),
                         span.created_at,
+                    ),
+                )
+            for page in pages:
+                connection.execute(
+                    """
+                    INSERT INTO document_extraction_pages(
+                      id, generation_id, page_number, extraction_method, status,
+                      native_text_quality, text_chars, span_count,
+                      rendered_artifact_id, preview_artifact_id, retryable,
+                      error_code, warning_codes_json, metadata_json, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        page.id,
+                        page.generation_id,
+                        page.page_number,
+                        page.extraction_method,
+                        page.status,
+                        page.native_text_quality,
+                        page.text_chars,
+                        page.span_count,
+                        page.rendered_artifact_id,
+                        page.preview_artifact_id,
+                        1 if page.retryable else 0,
+                        page.error_code,
+                        json_dumps(page.warning_codes),
+                        json_dumps(page.metadata),
+                        page.created_at,
                     ),
                 )
         return generation
@@ -1393,6 +1440,7 @@ class MemoryImportRepository:
         self.artifact_inspections: dict[str, ArtifactInspectionRecord] = {}
         self.artifact_inspection_findings: dict[str, ArtifactInspectionFindingRecord] = {}
         self.document_extractions: dict[str, DocumentExtractionGenerationRecord] = {}
+        self.document_extraction_pages: dict[str, DocumentExtractionPageRecord] = {}
         self.document_text_spans: dict[str, DocumentTextSpanRecord] = {}
 
     def get_artifact(self, *, trip_id: str, artifact_id: str) -> SourceArtifactRecord:
@@ -1522,11 +1570,18 @@ class MemoryImportRepository:
             key=lambda item: (item.page_number, item.block_index, item.line_index, item.token_index or -1, item.span_start, item.id),
         )
 
+    def list_document_extraction_pages(self, *, generation_id: str) -> list[DocumentExtractionPageRecord]:
+        return sorted(
+            [copy.deepcopy(item) for item in self.document_extraction_pages.values() if item.generation_id == generation_id],
+            key=lambda item: (item.page_number, item.id),
+        )
+
     def create_document_extraction_result(
         self,
         *,
         generation: DocumentExtractionGenerationRecord,
         spans: list[DocumentTextSpanRecord],
+        pages: list[DocumentExtractionPageRecord],
         child_artifact: SourceArtifactRecord,
         derivation: ArtifactDerivationRecord,
         derived_job: ImportJobRecord,
@@ -1544,6 +1599,8 @@ class MemoryImportRepository:
         self.document_extractions[generation.id] = copy.deepcopy(generation)
         for span in spans:
             self.document_text_spans[span.id] = copy.deepcopy(span)
+        for page in pages:
+            self.document_extraction_pages[page.id] = copy.deepcopy(page)
         return copy.deepcopy(generation)
 
     def create_job(self, job: ImportJobRecord) -> ImportJobRecord:
@@ -1840,6 +1897,26 @@ def row_to_document_text_span(row) -> DocumentTextSpanRecord:
         confidence=row["confidence"],
         text_digest=row["text_digest"],
         warning_codes=list(json_loads(row["warning_codes_json"], [])),
+        created_at=row["created_at"],
+    )
+
+
+def row_to_document_extraction_page(row) -> DocumentExtractionPageRecord:
+    return DocumentExtractionPageRecord(
+        id=row["id"],
+        generation_id=row["generation_id"],
+        page_number=row["page_number"],
+        extraction_method=row["extraction_method"],
+        status=row["status"],
+        native_text_quality=row["native_text_quality"],
+        text_chars=row["text_chars"],
+        span_count=row["span_count"],
+        rendered_artifact_id=row["rendered_artifact_id"],
+        preview_artifact_id=row["preview_artifact_id"],
+        retryable=bool(row["retryable"]),
+        error_code=row["error_code"],
+        warning_codes=list(json_loads(row["warning_codes_json"], [])),
+        metadata=dict(json_loads(row["metadata_json"], {})),
         created_at=row["created_at"],
     )
 

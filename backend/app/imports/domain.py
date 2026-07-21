@@ -430,6 +430,24 @@ class DocumentExtractionGenerationResponse(BaseModel):
     created_at: str
 
 
+class DocumentExtractionPageResponse(BaseModel):
+    id: str
+    generation_id: str
+    page_number: int
+    extraction_method: str
+    status: str
+    native_text_quality: float | None = None
+    text_chars: int
+    span_count: int
+    rendered_artifact_id: str | None = None
+    preview_artifact_id: str | None = None
+    retryable: bool
+    error_code: str | None = None
+    warning_codes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
 class DocumentExtractionCreateResponse(BaseModel):
     generation: DocumentExtractionGenerationResponse
     artifact: SourceArtifactResponse | None = None
@@ -437,8 +455,20 @@ class DocumentExtractionCreateResponse(BaseModel):
     mentions: list[ExtractedMentionResponse] = Field(default_factory=list)
     derivation: ArtifactDerivationResponse | None = None
     spans: list[DocumentTextSpanResponse] = Field(default_factory=list)
+    pages: list[DocumentExtractionPageResponse] = Field(default_factory=list)
     duplicate_artifact: bool = False
     idempotent_replay: bool = False
+
+
+class DocumentMentionBoxEvidenceResponse(BaseModel):
+    page_number: int
+    span_id: str
+    block_id: str
+    line_id: str
+    token_id: str | None = None
+    bbox: dict[str, Any]
+    extraction_method: str
+    reading_order: int
 
 
 class DocumentMentionEvidenceResponse(BaseModel):
@@ -451,6 +481,7 @@ class DocumentMentionEvidenceResponse(BaseModel):
     line_ids: list[str] = Field(default_factory=list)
     token_ids: list[str] = Field(default_factory=list)
     bounding_boxes: list[dict[str, Any]] = Field(default_factory=list)
+    box_evidence: list[DocumentMentionBoxEvidenceResponse] = Field(default_factory=list)
     extraction_methods: list[str] = Field(default_factory=list)
     geometry_available: bool
 
@@ -459,6 +490,7 @@ class DocumentExtractionEvidenceResponse(BaseModel):
     generation: DocumentExtractionGenerationResponse
     artifact: SourceArtifactResponse
     job: ImportJobResponse
+    pages: list[DocumentExtractionPageResponse] = Field(default_factory=list)
     layout_manifest: dict[str, Any] = Field(default_factory=dict)
     span_map: list[dict[str, Any]] = Field(default_factory=list)
     mentions: list[ExtractedMentionResponse] = Field(default_factory=list)
@@ -714,6 +746,25 @@ class DocumentExtractionGenerationRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentExtractionPageRecord:
+    id: str
+    generation_id: str
+    page_number: int
+    extraction_method: str
+    status: str
+    native_text_quality: float | None
+    text_chars: int
+    span_count: int
+    rendered_artifact_id: str | None
+    preview_artifact_id: str | None
+    retryable: bool
+    error_code: str | None
+    warning_codes: list[str]
+    metadata: dict[str, Any]
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentTextSpanRecord:
     id: str
     generation_id: str
@@ -785,6 +836,10 @@ def generate_document_extraction_generation_id() -> str:
 
 def generate_document_text_span_id() -> str:
     return f"doc_span_{uuid4().hex}"
+
+
+def generate_document_extraction_page_id() -> str:
+    return f"doc_page_{uuid4().hex}"
 
 
 def source_checksum(content: bytes) -> str:

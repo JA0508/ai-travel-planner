@@ -53,7 +53,7 @@ jobs:
           cache: pip
 
       - name: Install document extraction system dependencies
-        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim fonts-noto-cjk
 
       - name: Verify document OCR capabilities
         run: |

@@ -8,9 +8,11 @@ import {
   extractDocumentImport,
   fetchBinaryInspection,
   fetchDocumentExtractionEvidence,
+  fetchDocumentPagePreviewBlob,
   fetchImportArtifact,
   fetchImportReview,
   fetchSanitizedImageBlob,
+  retryDocumentPageExtraction,
   submitBinaryImport,
   submitUrlImport,
   submitTextImport,
@@ -26,7 +28,7 @@ import {
 } from "./binaryImportState";
 import { importIdempotencyKey, importWorkspaceReducer } from "./importState";
 import type { DocumentExtractionEvidenceResponse, DocumentExtractionGeneration, ImportMention, URLFetchSnapshot } from "./importTypes";
-import { buildDocumentEvidenceSummary, mapNormalizedBoxToOverlay, mentionEvidenceBoxes } from "./documentEvidenceViewModel";
+import { buildDocumentEvidenceSummary, mapNormalizedBoxToOverlay, mentionEvidenceBoxes, toNormalizedDocumentBox } from "./documentEvidenceViewModel";
 import { buildImportSummary, selectedResolutionId, sourceSegments } from "./importViewModel";
 
 type ImportReviewWorkspaceProps = {
@@ -283,6 +285,56 @@ export function ImportReviewWorkspace({
     });
   }
 
+  async function handleDocumentPageRetry(pageNumber: number) {
+    if (!savedTripId || documentExtraction.status !== "ready") {
+      return;
+    }
+    const sourceImportJobId = documentExtraction.evidence.generation.source_import_job_id;
+    const key = importIdempotencyKey(
+      "document-page-retry",
+      savedTripId,
+      `${documentExtraction.evidence.generation.id}:${pageNumber}`,
+    );
+    setDocumentExtraction({ ...documentExtraction, status: "ready" });
+    const response = await retryDocumentPageExtraction(savedTripId, sourceImportJobId, pageNumber, key);
+    if (!response.ok || !response.data.job || !response.data.artifact) {
+      setDocumentExtraction({
+        status: "error",
+        code: response.ok ? "import_document_retry_incomplete" : response.code ?? "import_document_retry_failed",
+        message: response.ok ? "Document page retry did not return a reviewable import." : response.message,
+      });
+      return;
+    }
+    const artifact = await fetchImportArtifact(savedTripId, response.data.job.id);
+    if (!artifact.ok) {
+      setDocumentExtraction({ status: "error", code: artifact.code, message: artifact.message });
+      return;
+    }
+    const evidence = await fetchDocumentExtractionEvidence(savedTripId, response.data.job.id);
+    if (!evidence.ok) {
+      setDocumentExtraction({
+        status: "error",
+        code: evidence.code ?? "import_document_evidence_failed",
+        message: evidence.message,
+      });
+      return;
+    }
+    setDocumentExtraction({
+      status: "ready",
+      generation: response.data.generation,
+      spanCount: response.data.spans.length,
+      evidence: evidence.data,
+    });
+    dispatch({
+      type: "review",
+      artifact: response.data.artifact,
+      job: response.data.job,
+      mentions: response.data.mentions,
+      sourceText: artifact.data,
+      derivation: response.data.derivation,
+    });
+  }
+
   async function loadSanitizedPreview(tripId: string, jobId: string) {
     const preview = await fetchSanitizedImageBlob(tripId, jobId);
     if (!preview.ok) {
@@ -468,6 +520,7 @@ export function ImportReviewWorkspace({
 
       {state.status === "reviewing" ? (
         <ReviewPane
+          tripId={savedTripId}
           sourceText={state.sourceText}
           mentions={state.mentions}
           activeMentionId={state.activeMentionId}
@@ -477,6 +530,7 @@ export function ImportReviewWorkspace({
           onCommit={() => void handleCommit()}
           sourceFetch={state.sourceFetch}
           documentEvidence={documentExtraction.status === "ready" ? documentExtraction.evidence : null}
+          onRetryDocumentPage={(pageNumber) => handleDocumentPageRetry(pageNumber)}
         />
       ) : null}
 
@@ -510,13 +564,38 @@ export function ImportReviewWorkspace({
 }
 
 const BINARY_IMPORT_STORAGE_KEY = "ai-travel-planner:last-binary-import";
-const DOCUMENT_EVIDENCE_SURFACE = { width: 180, height: 240 };
+const DOCUMENT_EVIDENCE_MAX_SURFACE = { width: 180, height: 240 };
 
 function rememberBinaryImport(tripId: string, jobId: string, declaredKind: "image" | "pdf") {
   if (typeof window === "undefined") {
     return;
   }
   window.localStorage.setItem(BINARY_IMPORT_STORAGE_KEY, binaryImportStorageValue(tripId, jobId, declaredKind));
+}
+
+function pagePreviewSurface(page: DocumentExtractionEvidenceResponse["pages"][number] | null): { width: number; height: number } {
+  return fitPreviewSurface(
+    numericMetadata(page?.metadata.image_width) ?? DOCUMENT_EVIDENCE_MAX_SURFACE.width,
+    numericMetadata(page?.metadata.image_height) ?? DOCUMENT_EVIDENCE_MAX_SURFACE.height,
+  );
+}
+
+function fitPreviewSurface(width: number, height: number): { width: number; height: number } {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return DOCUMENT_EVIDENCE_MAX_SURFACE;
+  }
+  const scale = Math.min(
+    DOCUMENT_EVIDENCE_MAX_SURFACE.width / width,
+    DOCUMENT_EVIDENCE_MAX_SURFACE.height / height,
+  );
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+}
+
+function numericMetadata(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function DocumentExtractionAction({
@@ -562,6 +641,7 @@ function DocumentExtractionAction({
 }
 
 function ReviewPane({
+  tripId,
   sourceText,
   mentions,
   activeMentionId,
@@ -571,7 +651,9 @@ function ReviewPane({
   onCommit,
   sourceFetch,
   documentEvidence,
+  onRetryDocumentPage,
 }: {
+  tripId: string | null;
   sourceText: string;
   mentions: ImportMention[];
   activeMentionId: string | null;
@@ -581,6 +663,7 @@ function ReviewPane({
   onCommit: () => void;
   sourceFetch?: URLFetchSnapshot | null;
   documentEvidence?: DocumentExtractionEvidenceResponse | null;
+  onRetryDocumentPage: (pageNumber: number) => Promise<void>;
 }) {
   const activeMention = mentions.find((mention) => mention.id === activeMentionId) ?? mentions[0] ?? null;
   const summary = buildImportSummary(mentions);
@@ -593,7 +676,14 @@ function ReviewPane({
           <span style={hintStyle}>review v{reviewVersion}</span>
         </div>
         {sourceFetch ? <URLProvenance sourceFetch={sourceFetch} /> : null}
-        {documentEvidence ? <DocumentEvidencePanel evidence={documentEvidence} activeMentionId={activeMention?.id ?? null} /> : null}
+        {documentEvidence && tripId ? (
+          <DocumentEvidencePanel
+            tripId={tripId}
+            evidence={documentEvidence}
+            activeMentionId={activeMention?.id ?? null}
+            onRetryPage={onRetryDocumentPage}
+          />
+        ) : null}
         <pre style={sourceTextStyle}>
           {sourceSegments(sourceText, activeMention).map((segment, index) =>
             segment.active ? (
@@ -633,16 +723,96 @@ function ReviewPane({
 }
 
 function DocumentEvidencePanel({
+  tripId,
   evidence,
   activeMentionId,
+  onRetryPage,
 }: {
+  tripId: string;
   evidence: DocumentExtractionEvidenceResponse;
   activeMentionId: string | null;
+  onRetryPage: (pageNumber: number) => Promise<void>;
 }) {
   const summary = buildDocumentEvidenceSummary(evidence);
   const activeEvidence = evidence.mention_evidence.find((mention) => mention.mention_id === activeMentionId) ?? null;
-  const boxes = activeEvidence ? mentionEvidenceBoxes(activeEvidence) : [];
-  const overlayBoxes = boxes.map((box) => mapNormalizedBoxToOverlay(box, DOCUMENT_EVIDENCE_SURFACE));
+  const pageNumbers = evidence.pages.map((page) => page.page_number).sort((first, second) => first - second);
+  const suggestedPageNumber = activeEvidence?.box_evidence?.[0]?.page_number ?? activeEvidence?.page_numbers[0] ?? pageNumbers[0] ?? null;
+  const [selectedPageNumber, setSelectedPageNumber] = useState<number | null>(suggestedPageNumber);
+  const [zoom, setZoom] = useState(1);
+  const [retryingPage, setRetryingPage] = useState<number | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const activePageNumber = selectedPageNumber ?? suggestedPageNumber;
+  const activePage = activePageNumber
+    ? evidence.pages.find((page) => page.page_number === activePageNumber) ?? null
+    : null;
+  const [preview, setPreview] = useState<
+    | { status: "idle" }
+    | { status: "loading"; pageNumber: number }
+    | { status: "ready"; pageNumber: number; url: string; width: number; height: number }
+    | { status: "error"; pageNumber: number }
+  >({ status: "idle" });
+  const previewUrlRef = useRef<string | null>(null);
+  const surface = preview.status === "ready"
+    ? fitPreviewSurface(preview.width, preview.height)
+    : pagePreviewSurface(activePage);
+  const zoomedSurface = { width: Math.round(surface.width * zoom), height: Math.round(surface.height * zoom) };
+  const boxes = activeEvidence ? mentionEvidenceBoxesForPage(activeEvidence, activePageNumber) : [];
+  const overlayBoxes = boxes
+    .map((box) => mapNormalizedBoxToOverlay(box, zoomedSurface));
+
+  useEffect(() => {
+    setSelectedPageNumber(suggestedPageNumber);
+  }, [suggestedPageNumber]);
+
+  useEffect(() => {
+    if (!activePageNumber || !activePage?.preview_artifact_id) {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = null;
+      }
+      setPreview({ status: "idle" });
+      return;
+    }
+    let cancelled = false;
+    setPreview({ status: "loading", pageNumber: activePageNumber });
+    void fetchDocumentPagePreviewBlob(tripId, evidence.job.id, activePageNumber).then((response) => {
+      if (cancelled) {
+        return;
+      }
+      if (!response.ok) {
+        if (previewUrlRef.current) {
+          URL.revokeObjectURL(previewUrlRef.current);
+          previewUrlRef.current = null;
+        }
+        setPreview({ status: "error", pageNumber: activePageNumber });
+        return;
+      }
+      const url = URL.createObjectURL(response.data);
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+      }
+      previewUrlRef.current = url;
+      setPreview({
+        status: "ready",
+        pageNumber: activePageNumber,
+        url,
+        width: numericMetadata(activePage.metadata.image_width) ?? DOCUMENT_EVIDENCE_MAX_SURFACE.width,
+        height: numericMetadata(activePage.metadata.image_height) ?? DOCUMENT_EVIDENCE_MAX_SURFACE.height,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePage?.metadata, activePage?.preview_artifact_id, activePageNumber, evidence.job.id, tripId]);
+
+  useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+      }
+    };
+  }, []);
+
   if (!summary) {
     return null;
   }
@@ -664,12 +834,73 @@ function DocumentEvidencePanel({
         <span>Reading</span>
         <span>{summary.readingOrderAlgorithm ?? "unknown"}</span>
       </div>
+      {pageNumbers.length ? (
+        <div style={documentEvidenceControlsStyle} data-document-page-controls>
+          <button
+            type="button"
+            onClick={() => setSelectedPageNumber(previousPageNumber(pageNumbers, activePageNumber))}
+            disabled={pageNumbers.length <= 1}
+            style={miniButtonStyle}
+            aria-label="Previous document page"
+          >
+            Prev
+          </button>
+          <span style={hintStyle}>Page {activePageNumber ?? "-"} / {pageNumbers.length}</span>
+          <button
+            type="button"
+            onClick={() => setSelectedPageNumber(nextPageNumber(pageNumbers, activePageNumber))}
+            disabled={pageNumbers.length <= 1}
+            style={miniButtonStyle}
+            aria-label="Next document page"
+          >
+            Next
+          </button>
+          <button type="button" onClick={() => setZoom((value) => Math.max(0.75, Math.round((value - 0.25) * 100) / 100))} style={miniButtonStyle} aria-label="Zoom document page out">-</button>
+          <span style={hintStyle}>{Math.round(zoom * 100)}%</span>
+          <button type="button" onClick={() => setZoom((value) => Math.min(2, Math.round((value + 0.25) * 100) / 100))} style={miniButtonStyle} aria-label="Zoom document page in">+</button>
+          {activePage?.retryable ? (
+            <button
+              type="button"
+              disabled={retryingPage === activePage.page_number}
+              onClick={() => {
+                setRetryError(null);
+                setRetryingPage(activePage.page_number);
+                Promise.resolve(onRetryPage(activePage.page_number))
+                  .catch((error: unknown) => setRetryError(error instanceof Error ? error.message : "Retry failed"))
+                  .finally(() => setRetryingPage(null));
+              }}
+              style={miniButtonStyle}
+              data-document-page-retry
+            >
+              {retryingPage === activePage.page_number ? "Retrying" : "Retry page"}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {retryError ? <p style={errorStyle}>{retryError}</p> : null}
       {activeEvidence ? (
         <div style={documentEvidenceOverlayRowStyle}>
           <span style={hintStyle}>
             {activeEvidence.mention_text} · {activeEvidence.geometry_available ? `page ${activeEvidence.page_numbers.join(", ")}` : "geometry unavailable"}
           </span>
-          <div style={documentPageSurfaceStyle} aria-label="Active mention document geometry">
+          <div style={{ ...documentPageSurfaceStyle, width: zoomedSurface.width, height: zoomedSurface.height }} aria-label="Active mention document geometry">
+            {preview.status === "ready" ? (
+              <img
+                src={preview.url}
+                alt=""
+                style={documentPagePreviewImageStyle}
+                onLoad={(event) => {
+                  const image = event.currentTarget;
+                  if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+                    setPreview((current) =>
+                      current.status === "ready" && current.pageNumber === preview.pageNumber
+                        ? { ...current, width: image.naturalWidth, height: image.naturalHeight }
+                        : current,
+                    );
+                  }
+                }}
+              />
+            ) : null}
             {overlayBoxes.map((box, index) => (
               <span
                 key={`${box.left}:${box.top}:${index}`}
@@ -683,11 +914,47 @@ function DocumentEvidencePanel({
                 }}
               />
             ))}
+            {preview.status === "loading" ? <span style={documentPreviewStatusStyle}>Loading preview</span> : null}
+            {preview.status === "error" || !activePage?.preview_artifact_id ? (
+              <span style={documentPreviewStatusStyle}>Preview unavailable</span>
+            ) : null}
           </div>
         </div>
       ) : null}
     </div>
   );
+}
+
+function mentionEvidenceBoxesForPage(
+  activeEvidence: DocumentExtractionEvidenceResponse["mention_evidence"][number],
+  pageNumber: number | null,
+) {
+  const linkedBoxes = (activeEvidence.box_evidence ?? [])
+    .filter((box) => pageNumber === null || box.page_number === pageNumber)
+    .flatMap((box) => {
+      const normalized = toNormalizedDocumentBox(box.bbox);
+      return normalized ? [normalized] : [];
+    });
+  if (linkedBoxes.length) {
+    return linkedBoxes;
+  }
+  return mentionEvidenceBoxes(activeEvidence);
+}
+
+function previousPageNumber(pageNumbers: number[], current: number | null): number {
+  if (!pageNumbers.length) {
+    return 1;
+  }
+  const index = Math.max(0, pageNumbers.indexOf(current ?? pageNumbers[0]));
+  return pageNumbers[Math.max(0, index - 1)] ?? pageNumbers[0];
+}
+
+function nextPageNumber(pageNumbers: number[], current: number | null): number {
+  if (!pageNumbers.length) {
+    return 1;
+  }
+  const index = Math.max(0, pageNumbers.indexOf(current ?? pageNumbers[0]));
+  return pageNumbers[Math.min(pageNumbers.length - 1, index + 1)] ?? pageNumbers[pageNumbers.length - 1];
 }
 
 function URLProvenance({ sourceFetch }: { sourceFetch: URLFetchSnapshot }) {
@@ -854,9 +1121,13 @@ const sourcePaneStyle = { display: "grid", gap: 8, minWidth: 0 } satisfies CSSPr
 const provenanceStyle = { display: "grid", gap: 5, padding: 10, borderRadius: 12, border: "1px solid rgba(21,21,21,0.08)", background: "rgba(255,255,255,0.8)", fontSize: 12, color: "var(--ec-slate)" } satisfies CSSProperties;
 const provenanceRowStyle = { display: "flex", justifyContent: "space-between", gap: 10, overflowWrap: "anywhere" } satisfies CSSProperties;
 const documentEvidenceStyle = { ...provenanceStyle, background: "rgba(255,255,255,0.9)" } satisfies CSSProperties;
+const documentEvidenceControlsStyle = { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" } satisfies CSSProperties;
 const documentEvidenceOverlayRowStyle = { display: "grid", gap: 8, justifyItems: "start" } satisfies CSSProperties;
-const documentPageSurfaceStyle = { position: "relative", width: DOCUMENT_EVIDENCE_SURFACE.width, height: DOCUMENT_EVIDENCE_SURFACE.height, borderRadius: 8, border: "1px solid rgba(21,21,21,0.12)", background: "linear-gradient(180deg, rgba(21,21,21,0.035), rgba(21,21,21,0.015))", overflow: "hidden" } satisfies CSSProperties;
+const documentPageSurfaceStyle = { position: "relative", borderRadius: 8, border: "1px solid rgba(21,21,21,0.12)", background: "rgba(21,21,21,0.035)", overflow: "hidden" } satisfies CSSProperties;
+const documentPagePreviewImageStyle = { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "fill" } satisfies CSSProperties;
 const documentBoxStyle = { position: "absolute", display: "block", border: "1px solid #48673f", background: "rgba(123,160,127,0.28)", borderRadius: 2, pointerEvents: "none" } satisfies CSSProperties;
+const miniButtonStyle = { border: "1px solid rgba(21,21,21,0.12)", borderRadius: 8, padding: "4px 7px", background: "white", color: "var(--ec-ink)", fontSize: 11, fontWeight: 800, cursor: "pointer" } satisfies CSSProperties;
+const documentPreviewStatusStyle = { position: "absolute", inset: 0, display: "grid", placeItems: "center", fontSize: 11, color: "var(--ec-slate)", background: "rgba(255,255,255,0.7)" } satisfies CSSProperties;
 const sourceLinkStyle = { color: "#48673f", fontWeight: 900, textDecoration: "none" } satisfies CSSProperties;
 const sourceTextStyle = { margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 420, overflow: "auto", padding: 12, borderRadius: 12, border: "1px solid rgba(21,21,21,0.08)", background: "rgba(21,21,21,0.035)", color: "var(--ec-ink)", fontFamily: "inherit", lineHeight: 1.6 } satisfies CSSProperties;
 const markStyle = { background: "rgba(247,208,138,0.85)", color: "inherit", borderRadius: 4, padding: "1px 2px" } satisfies CSSProperties;

@@ -66,6 +66,14 @@ export const TRIP_API_ENDPOINTS = {
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/document-extraction`,
     ),
+  getDocumentPagePreview: (tripId: string, importJobId: string, pageNumber: number) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/document-extraction/pages/${encodeURIComponent(String(pageNumber))}/preview`,
+    ),
+  retryDocumentPageExtraction: (tripId: string, importJobId: string, pageNumber: number) =>
+    buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/document-extraction/pages/${encodeURIComponent(String(pageNumber))}/retry`,
+    ),
   getTextImportArtifact: (tripId: string, importJobId: string) =>
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/imports/${encodeURIComponent(importJobId)}/artifact`,
