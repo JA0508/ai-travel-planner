@@ -98,6 +98,7 @@ from app.imports.resolution import PlaceMentionResolver
 from app.imports.url_fetcher import SecureURLFetcher
 from app.trips.access import hash_capability, hash_idempotency_key
 from app.trips.candidates import (
+    CandidateEvidenceLinkInput,
     CandidateCoordinate,
     CandidateSourceKind,
     CandidateType,
@@ -1449,6 +1450,14 @@ class TextImportService:
         candidate_ids: list[str] = []
         created_count = 0
         reused_count = 0
+        document_generation = self.import_repository.get_document_extraction_for_derived_job(
+            derived_import_job_id=job.id
+        ) if job.input_type == "document" else None
+        document_spans = (
+            self.import_repository.list_document_text_spans(generation_id=document_generation.id)
+            if document_generation is not None
+            else []
+        )
         for group_key, group_items in sorted(confirmed_groups.items()):
             first_mention, selected = group_items[0]
             evidence_refs = [
@@ -1458,6 +1467,39 @@ class TextImportService:
             snapshot = self.import_repository.get_url_fetch_snapshot_for_job(import_job_id=import_job_id)
             if snapshot is not None:
                 evidence_refs = (evidence_refs + [f"fetch:{snapshot.id}"])[:8]
+            evidence_links: list[CandidateEvidenceLinkInput] = []
+            for mention, resolution in group_items:
+                decision = decisions_by_mention[mention.id]
+                overlapping_spans = [
+                    span
+                    for span in document_spans
+                    if span.span_start < mention.end_offset and span.span_end > mention.start_offset
+                ]
+                first_span = sorted(overlapping_spans, key=lambda span: span.reading_order)[0] if overlapping_spans else None
+                boxes = [span.bbox for span in overlapping_spans if span.bbox]
+                evidence_links.append(
+                    CandidateEvidenceLinkInput(
+                        source_artifact_id=mention.artifact_id,
+                        import_job_id=mention.import_job_id,
+                        mention_id=mention.id,
+                        review_decision_id=decision.id,
+                        resolution_candidate_id=resolution.id,
+                        document_generation_id=document_generation.id if document_generation else None,
+                        document_page_number=first_span.page_number if first_span else None,
+                        document_span_id=first_span.id if first_span else None,
+                        bounding_boxes=boxes,
+                        source_digest=sha256_digest(
+                            {
+                                "artifact_checksum": self.import_repository.get_artifact(
+                                    trip_id=trip_id, artifact_id=mention.artifact_id
+                                ).content_checksum,
+                                "mention_digest": mention.content_digest,
+                                "review_decision_id": decision.id,
+                                "resolution_digest": resolution.candidate_digest,
+                            }
+                        ),
+                    )
+                )
             response = self.trip_service.register_candidate(
                 trip_id=trip_id,
                 capability=capability,
@@ -1477,6 +1519,7 @@ class TextImportService:
                     source_kind=candidate_source_kind_for_import(job.input_type),
                     source_ref=f"import:{import_job_id}",
                     evidence_refs=evidence_refs,
+                    evidence_links=evidence_links,
                 ),
             )
             candidate_ids.append(response.candidate.id)

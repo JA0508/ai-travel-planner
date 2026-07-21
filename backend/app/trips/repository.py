@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from .models import (
+    CandidateEvidenceLinkRecord,
     CandidateDecisionResult,
     CandidateRegistrationResult,
     CreateRevisionResult,
@@ -90,7 +91,16 @@ class TripRepository(Protocol):
         decision: TripCandidateDecisionRecord,
         request_digest: str,
         idempotency_key_hash: str,
+        evidence_links: list[CandidateEvidenceLinkRecord] | None = None,
     ) -> CandidateRegistrationResult:
+        ...
+
+    def list_candidate_evidence_links(
+        self,
+        *,
+        trip_id: str,
+        candidate_id: str,
+    ) -> list[CandidateEvidenceLinkRecord]:
         ...
 
     def get_candidate(self, *, trip_id: str, candidate_id: str) -> TripCandidateRecord:

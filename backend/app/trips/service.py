@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import uuid4
@@ -18,6 +19,7 @@ from app.api.routes.itinerary import (
     resolve_replan_base_intent,
 )
 from app.planner.trace import PlannerTrace, PlannerTraceCollector, planner_trace_digest
+from app.imports.repository import ImportRepository
 from app.core.runtime_config import get_trip_replan_proposal_ttl_seconds
 from app.evaluation.invariants import (
     missing_route_not_zero,
@@ -45,8 +47,10 @@ from .access import (
     verify_capability,
 )
 from .candidates import (
+    CandidateEvidenceLinkRecord,
     CandidateDecisionReasonCode,
     CandidateDecisionType,
+    CandidateSourceKind,
     TripCandidateCreateRequest,
     TripCandidateDecisionRecord,
     TripCandidateDecisionRequest,
@@ -140,8 +144,9 @@ class CreatedTripResult:
 
 
 class TripPersistenceService:
-    def __init__(self, repository: TripRepository, *, clock=None) -> None:
+    def __init__(self, repository: TripRepository, *, import_repository: ImportRepository | None = None, clock=None) -> None:
         self.repository = repository
+        self.import_repository = import_repository
         self.clock = clock or utc_now_datetime
 
     def create_persisted_plan(self, payload: TripPlanRequest) -> CreatedTripResult:
@@ -230,6 +235,25 @@ class TripPersistenceService:
         trip = self._require_trip_access(trip_id, capability)
         now = format_utc(self.clock())
         candidate = build_candidate_record(trip_id=trip_id, payload=payload, now=now)
+        evidence_links = [
+            CandidateEvidenceLinkRecord(
+                id=f"candidate_evidence_{uuid4().hex}",
+                trip_id=trip_id,
+                trip_candidate_id=candidate.id,
+                source_artifact_id=item.source_artifact_id,
+                import_job_id=item.import_job_id,
+                mention_id=item.mention_id,
+                review_decision_id=item.review_decision_id,
+                resolution_candidate_id=item.resolution_candidate_id,
+                document_generation_id=item.document_generation_id,
+                document_page_number=item.document_page_number,
+                document_span_id=item.document_span_id,
+                bounding_boxes=list(item.bounding_boxes),
+                source_digest=item.source_digest,
+                created_at=now,
+            )
+            for item in payload.evidence_links
+        ]
         decision = TripCandidateDecisionRecord(
             id=generate_candidate_decision_id(),
             trip_id=trip_id,
@@ -254,6 +278,7 @@ class TripPersistenceService:
             decision=decision,
             request_digest=req_digest,
             idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+            evidence_links=evidence_links,
         )
         decisions = self.repository.list_candidate_decisions(
             trip_id=trip_id,
@@ -595,49 +620,47 @@ class TripPersistenceService:
 
     def _verified_candidate_source_refs(
         self,
+        trip_id: str,
         candidates: list[TripCandidateRecord],
-    ) -> dict[str, list]:
-        from .intent_contracts import IntentSourceReference
+    ) -> tuple[dict[str, list], dict[str, str]]:
+        from .intent_provenance import VerifiedIntentEvidenceAssembler
 
-        result: dict[str, list[IntentSourceReference]] = {}
-        for candidate in candidates:
-            refs = [
-                IntentSourceReference(
-                    source_ref_id=f"trip_candidate:{candidate.id}",
-                    source_type="trip_candidate",
-                    source_id=candidate.id,
+        result: dict[str, list] = {}
+        verification_states: dict[str, str] = {}
+        if self.import_repository is not None:
+            assembler = VerifiedIntentEvidenceAssembler(
+                trip_repository=self.repository,
+                import_repository=self.import_repository,
+            )
+            for candidate in candidates:
+                if candidate.source_kind not in {
+                    CandidateSourceKind.TEXT_IMPORT,
+                    CandidateSourceKind.URL_IMPORT,
+                    CandidateSourceKind.DOCUMENT_IMPORT,
+                }:
+                    result[candidate.id] = []
+                    verification_states[candidate.id] = "not_applicable"
+                    continue
+                assembly = assembler.assemble_candidate_evidence(
+                    trip_id=trip_id,
                     trip_candidate_id=candidate.id,
-                    source_digest=candidate.content_digest,
-                    authority="review_confirmed"
-                    if candidate.source_kind in {"text_import", "url_import", "document_import"}
-                    else "user_confirmed",
-                    confirmed=True,
                 )
-            ]
-            for evidence in candidate.evidence_refs:
-                artifact_id, mention_id = _structured_import_evidence_ids(evidence)
-                if artifact_id and mention_id:
-                    refs.append(
-                        IntentSourceReference(
-                            source_ref_id=f"import_mention:{artifact_id}:{mention_id}",
-                            source_type="import_mention",
-                            source_id=mention_id,
-                            artifact_id=artifact_id,
-                            mention_id=mention_id,
-                            trip_candidate_id=candidate.id,
-                            source_digest=request_digest(
-                                {
-                                    "candidate_id": candidate.id,
-                                    "artifact_id": artifact_id,
-                                    "mention_id": mention_id,
-                                }
-                            ),
-                            authority="review_confirmed",
-                            confirmed=True,
-                        )
-                    )
-            result[candidate.id] = refs
-        return result
+                result[candidate.id] = assembly.refs
+                verification_states[candidate.id] = assembly.verification_state
+            return result, verification_states
+        for candidate in candidates:
+            result[candidate.id] = []
+            verification_states[candidate.id] = (
+                "legacy_unverified"
+                if candidate.source_kind
+                in {
+                    CandidateSourceKind.TEXT_IMPORT,
+                    CandidateSourceKind.URL_IMPORT,
+                    CandidateSourceKind.DOCUMENT_IMPORT,
+                }
+                else "not_applicable"
+            )
+        return result, verification_states
 
     def _create_intent_revision_from_request(
         self,
@@ -654,7 +677,7 @@ class TripPersistenceService:
         validation_report_updates: dict[str, Any] | None = None,
     ) -> CompileTripIntentResponse:
         candidates, candidate_workflow_states = self._intent_candidate_context(trip_id, payload)
-        verified_source_refs = self._verified_candidate_source_refs(candidates)
+        verified_source_refs, candidate_verification_states = self._verified_candidate_source_refs(trip_id, candidates)
         now = format_utc(self.clock())
         req_digest = request_digest(
             {
@@ -687,6 +710,7 @@ class TripPersistenceService:
             candidates=candidates,
             candidate_workflow_states=candidate_workflow_states,
             verified_candidate_source_refs=verified_source_refs,
+            candidate_verification_states=candidate_verification_states,
         )
         if validation_report_updates:
             envelope.validation_report.update(validation_report_updates)
@@ -1779,14 +1803,22 @@ def _field_updates_from_clarification(
     question: ClarificationQuestion,
     answer: Any,
 ) -> IntentStructuredOverrides:
-    field_path = question.answer_field_path or (question.field_paths[0] if question.field_paths else "")
-    handler = CLARIFICATION_FIELD_HANDLERS.get(field_path)
-    if handler is None:
-        raise InvalidRevisionOperationError("Unsupported clarification target field.")
-    return handler(answer)
+    definition = CLARIFICATION_REGISTRY.get(question.reason_code)
+    if definition is None:
+        raise InvalidRevisionOperationError("Unsupported clarification issue code.")
+    return definition.handler(answer)
 
 
 ClarificationHandler = Callable[[Any], IntentStructuredOverrides]
+
+
+@dataclass(frozen=True)
+class ClarificationDefinition:
+    issue_code: str
+    impact: str
+    response_schema: str
+    assumption_allowed: bool
+    handler: ClarificationHandler
 
 
 def _clarify_city(answer: Any) -> IntentStructuredOverrides:
@@ -1819,25 +1851,13 @@ def _clarify_transport(answer: Any) -> IntentStructuredOverrides:
     return IntentStructuredOverrides(transport_preferences=normalized)
 
 
-CLARIFICATION_FIELD_HANDLERS: dict[str, ClarificationHandler] = {
-    "trip.city": _clarify_city,
-    "trip.trip_days": _clarify_trip_days,
-    "trip.pace": _clarify_pace,
-    "preferences.transport": _clarify_transport,
+CLARIFICATION_REGISTRY: dict[str, ClarificationDefinition] = {
+    "missing_destination": ClarificationDefinition("missing_destination", "blocking", "string", False, _clarify_city),
+    "destination_missing": ClarificationDefinition("destination_missing", "blocking", "string", False, _clarify_city),
+    "missing_trip_length": ClarificationDefinition("missing_trip_length", "blocking", "integer", False, _clarify_trip_days),
+    "trip_length_missing": ClarificationDefinition("trip_length_missing", "blocking", "integer", False, _clarify_trip_days),
+    "transport_preference_conflict": ClarificationDefinition("transport_preference_conflict", "high", "string_list", True, _clarify_transport),
 }
-
-
-def _structured_import_evidence_ids(evidence: str) -> tuple[str | None, str | None]:
-    artifact_prefix = "artifact:"
-    mention_marker = "#mention:"
-    if not evidence.startswith(artifact_prefix) or mention_marker not in evidence:
-        return None, None
-    artifact_part, mention_part = evidence.split(mention_marker, 1)
-    artifact_id = artifact_part[len(artifact_prefix):].strip()
-    mention_id = mention_part.strip()
-    if not artifact_id or not mention_id:
-        return None, None
-    return artifact_id, mention_id
 
 
 def candidate_assumption_codes(candidate) -> list[str]:
