@@ -3,6 +3,7 @@ import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import type {
   CompileTripIntentResponse,
   IntentDomainValue,
+  IntentStructuredOverrides,
   TripIntentRevisionDetailResponse,
   TripIntentRevisionListResponse,
 } from "./intentTypes";
@@ -46,17 +47,7 @@ export function editTripIntentEnvelope(
   payload: {
     base_revision_id: string;
     base_intent_revision_id: string;
-    field_updates: {
-      city?: string | null;
-      trip_days?: number | null;
-      start_date?: string | null;
-      end_date?: string | null;
-      timezone?: string | null;
-      reference_date?: string | null;
-      date_expressions?: string[];
-      pace?: "relaxed" | "balanced" | "intensive" | null;
-      transport_preferences?: string[];
-    };
+    field_updates: IntentStructuredOverrides;
   },
   idempotencyKey: string,
 ) {

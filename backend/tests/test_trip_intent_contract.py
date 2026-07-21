@@ -178,11 +178,11 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertTrue(city["confirmed_by_user"])
         self.assertEqual(envelope["planner_ready_intent"]["city"], "杭州")
         self.assertTrue(envelope["validation_report"]["manual_override_priority_enforced"])
-        self.assertTrue(
+        self.assertFalse(
             any(
-                conflict["field_path"] == "trip.city"
-                and conflict["reason_code"] == "higher_priority_source_selected"
-                for conflict in envelope["conflicts"]
+                field["field_path"] == "trip.city"
+                and field["source_refs"][0]["source_type"] == "llm_proposal"
+                for field in envelope["fields"]
             )
         )
 
@@ -337,6 +337,60 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(formal["departure_boundary"]["boundary_type"], "departure")
         self.assertEqual(formal["availability_windows"][0]["timezone"], "Asia/Shanghai")
         self.assertEqual(formal["pace"]["value"], "relaxed")
+
+    def test_explicit_empty_structured_override_removes_prior_event_and_window(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        created = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={
+                "base_trip_revision_id": base_revision_id,
+                "base_intent_revision_id": None,
+                "structured_overrides": {
+                    "city": "上海",
+                    "trip_days": 2,
+                    "availability_windows": [
+                        {
+                            "date": "2026-08-01",
+                            "start_time": "10:00:00",
+                            "end_time": "20:00:00",
+                            "timezone": "Asia/Shanghai",
+                        }
+                    ],
+                    "fixed_events": [
+                        {
+                            "event_id": "booking-1",
+                            "name": "Museum reservation",
+                            "fixed_day": 1,
+                            "flexibility": "fixed",
+                        }
+                    ],
+                },
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "create-editable-fields"},
+        )
+        intent_revision_id = created.json()["revision"]["id"]
+        edited = client.post(
+            f"/trips/{trip_id}/intent-envelope/{intent_revision_id}/edit",
+            json={
+                "base_trip_revision_id": base_revision_id,
+                "base_intent_revision_id": intent_revision_id,
+                "field_updates": {"availability_windows": [], "fixed_events": []},
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "clear-editable-fields"},
+        )
+
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(edited.status_code, 201, edited.text)
+        formal = edited.json()["envelope"]["formal_contract"]
+        self.assertEqual(formal["availability_windows"], [])
+        self.assertEqual(formal["fixed_events"], [])
+        self.assertFalse(
+            any(
+                field["field_path"] in {"time.availability_windows", "time.fixed_events"}
+                and field["status"] == "selected"
+                for field in edited.json()["envelope"]["fields"]
+            )
+        )
 
     def test_stale_base_revision_is_rejected_before_intent_revision_is_created(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()

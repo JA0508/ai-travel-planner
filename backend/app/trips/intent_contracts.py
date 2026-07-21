@@ -1109,6 +1109,42 @@ class _CandidateField:
     explanation: str
 
 
+def _structured_override_field_paths(overrides: IntentStructuredOverrides) -> set[str]:
+    """Map explicitly supplied typed override keys to formal contract field paths."""
+
+    paths: set[str] = set()
+    for key in overrides.model_fields_set:
+        if key == "city":
+            paths.add("trip.city")
+        elif key == "trip_days":
+            paths.update({"trip.trip_days", "trip.date_policy"})
+        elif key in {"start_date", "end_date", "timezone", "reference_date", "date_expressions"}:
+            paths.add("trip.date_policy")
+        elif key == "arrival_boundary":
+            paths.add("trip.arrival_boundary")
+        elif key == "departure_boundary":
+            paths.add("trip.departure_boundary")
+        elif key == "availability_windows":
+            paths.add("time.availability_windows")
+        elif key == "fixed_events":
+            paths.add("time.fixed_events")
+        elif key == "must_candidate_ids":
+            paths.add("poi.must_candidates")
+        elif key == "optional_candidate_ids":
+            paths.add("poi.optional_candidates")
+        elif key == "avoid_candidate_ids":
+            paths.add("poi.avoid_candidates")
+        elif key == "pace":
+            paths.add("trip.pace")
+        elif key == "transport_preferences":
+            paths.add("preferences.transport")
+        elif key == "budget":
+            paths.add("budget")
+        elif key == "traveler_needs":
+            paths.add("travelers.needs")
+    return paths
+
+
 def compile_source_linked_intent(
     *,
     trip_id: str,
@@ -1127,6 +1163,7 @@ def compile_source_linked_intent(
     candidate_verification_states: dict[str, str] | None = None,
 ) -> SourceLinkedTripIntentEnvelope:
     field_candidates: list[_CandidateField] = []
+    manual_override_priority_enforced = False
     if parent_intent_snapshot is not None:
         field_candidates.extend(_fields_from_existing_intent_revision(parent_intent_snapshot))
     field_candidates.extend(_fields_from_existing_trip(existing_trip_snapshot))
@@ -1144,13 +1181,30 @@ def compile_source_linked_intent(
             )
         )
     if request.structured_overrides is not None:
+        structured_override_paths = _structured_override_field_paths(request.structured_overrides)
         field_candidates.extend(
             _fields_from_payload(
-                request.structured_overrides.model_dump(mode="json"),
+                request.structured_overrides.model_dump(mode="json", exclude_unset=True),
                 IntentSourceType.STRUCTURED_USER_OVERRIDE,
                 candidate_display_names,
             )
         )
+        # An explicit structured edit is authoritative, including an empty value
+        # that deliberately clears an earlier suggestion or saved intent field.
+        # Without this filter, lower-authority parent/direct/LLM fields can silently
+        # reappear after a user removes them in the confirmation workspace.
+        if structured_override_paths:
+            manual_override_priority_enforced = any(
+                field.field_path in structured_override_paths
+                and field.source_ref.source_type != IntentSourceType.STRUCTURED_USER_OVERRIDE
+                for field in field_candidates
+            )
+            field_candidates = [
+                field
+                for field in field_candidates
+                if field.field_path not in structured_override_paths
+                or field.source_ref.source_type == IntentSourceType.STRUCTURED_USER_OVERRIDE
+            ]
 
     selected, shadowed, conflicts, clarifications = _select_fields(field_candidates)
     legacy_candidate_ids = [
@@ -1249,11 +1303,7 @@ def compile_source_linked_intent(
         "date_policy_version": INTENT_DATE_POLICY_VERSION,
         "llm_proposal_validated": proposal is not None,
         "parser_status": envelope_parser_result.status,
-        "manual_override_priority_enforced": any(
-            conflict.reason_code == "higher_priority_source_selected"
-            and any(ref.source_type == IntentSourceType.STRUCTURED_USER_OVERRIDE for ref in conflict.source_refs)
-            for conflict in conflicts
-        ),
+        "manual_override_priority_enforced": manual_override_priority_enforced,
         "blocking_conflict_count": sum(1 for conflict in conflicts if conflict.severity == "blocking"),
         "clarification_count": len(clarifications),
         "blocking_clarification_count": len(blocking_clarifications),

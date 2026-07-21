@@ -24,6 +24,8 @@ export type IntentDomainValue =
   | { type: "pace"; pace: "relaxed" | "balanced" | "intensive" }
   | { type: "transport_preference"; mode: string }
   | { type: "must_candidate"; candidate_id: string; display_name?: string | null }
+  | { type: "optional_candidate"; candidate_id: string; display_name?: string | null }
+  | { type: "avoid_candidate"; candidate_id: string; display_name?: string | null }
   | {
       type: "fixed_event";
       name: string;
@@ -31,10 +33,29 @@ export type IntentDomainValue =
       fixed_time_start?: string | null;
       fixed_time_end?: string | null;
       source_label?: string | null;
+      event_id?: string | null;
+      start_at?: string | null;
+      end_at?: string | null;
+      timezone?: string | null;
+      location_text?: string | null;
+      flexibility?: "fixed" | "movable_with_confirmation";
     }
   | { type: "general_preference"; preference: string }
-  | { type: "budget"; amount?: number | null; currency?: string | null; budget_level?: "low" | "medium" | "high" | null }
-  | { type: "traveler_need"; need: string; traveler_group?: string | null }
+  | {
+      type: "budget";
+      amount_minor?: number | null;
+      currency?: string | null;
+      scope?: "total" | "per_person" | "per_day" | null;
+      budget_level?: "low" | "medium" | "high" | null;
+      flexibility_percent?: number;
+    }
+  | {
+      type: "traveler_need";
+      need: string;
+      traveler_group?: string | null;
+      need_type?: "mobility" | "wheelchair" | "child" | "elderly" | "dietary" | "medical" | "sensory" | "other";
+      severity?: "required" | "preferred";
+    }
   | { type: "unknown"; raw?: unknown };
 
 export type TypedIntentValue = {
@@ -176,54 +197,200 @@ export type IntentFieldMetadata = {
   revision_number: number;
 };
 
+export type FormalIntentMetadata = {
+  field_id: string;
+  field_path: string;
+  kind: "hard" | "soft" | "assumption";
+  confirmation_state: "user_confirmed" | "review_confirmed" | "proposed" | "assumed" | "conflicted" | "superseded";
+  authority: "user_confirmed" | "review_confirmed" | "saved_state" | "direct_user_proposal" | "llm_untrusted" | "system_assumption";
+  confidence: number | null;
+  source_refs: IntentSourceReference[];
+  compiler_rule_code: string;
+  warning_codes: string[];
+};
+
 export type DestinationIntent = {
-  city: string;
-  canonical_place_id: string | null;
-  metadata: IntentFieldMetadata;
+  city_name: string;
+  country_code: string | null;
+  timezone: string | null;
+  order: number;
+  metadata: FormalIntentMetadata;
 };
 
 export type DatePolicyIntent = {
-  trip_days: number | null;
   start_date: string | null;
   end_date: string | null;
-  metadata: IntentFieldMetadata | null;
-  timezone?: string;
-  reference_date?: string | null;
-  original_expressions?: string[];
-  normalization_rule_codes?: string[];
+  trip_days: number | null;
+  timezone: string;
+  original_expressions: string[];
+  reference_date: string | null;
+  normalization_rule_codes: string[];
+  metadata: FormalIntentMetadata;
 };
 
-export type PaceIntent = {
-  metadata: IntentFieldMetadata;
-  value: "relaxed" | "balanced" | "intensive";
+export type PaceIntent = { metadata: FormalIntentMetadata; value: "relaxed" | "balanced" | "intensive" };
+
+export type TravelBoundaryIntent = {
+  metadata: FormalIntentMetadata;
+  boundary_type: "arrival" | "departure";
+  local_datetime: string;
+  timezone: string;
+  flexibility_minutes: number;
+  location_candidate_id: string | null;
+  location_text: string | null;
+};
+
+export type AvailabilityWindowIntent = {
+  metadata: FormalIntentMetadata;
+  date: string;
+  start_time: string;
+  end_time: string;
+  timezone: string;
+  crosses_midnight: boolean;
+};
+
+export type FixedEventIntent = {
+  metadata: FormalIntentMetadata;
+  event_id: string;
+  title: string;
+  start_at: string | null;
+  end_at: string | null;
+  timezone: string | null;
+  fixed_day: number | null;
+  place_candidate_id: string | null;
+  location_text: string | null;
+  flexibility: "fixed" | "movable_with_confirmation";
+};
+
+export type PlacePreferenceIntent = {
+  metadata: FormalIntentMetadata;
+  trip_candidate_id: string;
+  display_name: string | null;
+  preference: "must" | "optional" | "avoid";
+  strength: number;
+};
+
+export type TransportPreferenceIntent = {
+  metadata: FormalIntentMetadata;
+  mode: "walk" | "metro" | "bus" | "taxi" | "ride_hailing" | "drive" | "bike" | "rail" | "flight" | "other";
+  preference: "prefer" | "avoid" | "require";
+  custom_label: string | null;
+};
+
+export type BudgetIntent = {
+  metadata: FormalIntentMetadata;
+  amount_minor: number | null;
+  currency: string | null;
+  scope: "total" | "per_person" | "per_day" | null;
+  level: "low" | "medium" | "high" | null;
+  flexibility_percent: number;
+};
+
+export type TravelerNeedIntent = {
+  metadata: FormalIntentMetadata;
+  need_type: "mobility" | "wheelchair" | "child" | "elderly" | "dietary" | "medical" | "sensory" | "other";
+  description: string;
+  severity: "required" | "preferred";
+};
+
+export type FormalPlanningAssumption = {
+  assumption_id: string;
+  field_path: string;
+  assumed_value: string | number | boolean;
+  value_type: "integer" | "string" | "date" | "datetime" | "enum" | "boolean";
+  reason_code: string;
+  impact: "medium" | "low";
+  source_refs: IntentSourceReference[];
+  user_acknowledged: boolean;
+  supersedes_clarification_id: string | null;
 };
 
 export type FormalTripIntentContract = {
   schema_version: string;
-  compiler_version: string;
-  revision_id: string;
-  revision_number: number;
-  trip_id: string;
-  base_trip_revision_id: string;
-  parent_intent_revision_id: string | null;
+  formal_contract_origin: "deterministic_compiler" | "legacy_backfill";
+  formal_contract_verified: boolean;
   destinations: DestinationIntent[];
-  date_policy: DatePolicyIntent;
-  arrival: Record<string, unknown> | null;
-  departure: Record<string, unknown> | null;
-  availability_windows: Array<Record<string, unknown>>;
-  fixed_events: Array<Record<string, unknown>>;
-  must_places: Array<Record<string, unknown>>;
-  optional_places: Array<Record<string, unknown>>;
-  exclusions: Array<Record<string, unknown>>;
+  date_policy: DatePolicyIntent | null;
+  arrival_boundary: TravelBoundaryIntent | null;
+  departure_boundary: TravelBoundaryIntent | null;
+  availability_windows: AvailabilityWindowIntent[];
+  fixed_events: FixedEventIntent[];
+  must_visit_places: PlacePreferenceIntent[];
+  optional_places: PlacePreferenceIntent[];
+  avoid_places: PlacePreferenceIntent[];
   pace: PaceIntent | null;
-  transport_preferences: Array<Record<string, unknown>>;
-  meal_preferences: Array<Record<string, unknown>>;
-  budget: Record<string, unknown> | null;
-  traveler_needs: Array<Record<string, unknown>>;
-  assumptions: IntentAssumption[];
-  readiness: IntentReadinessPolicy;
-  semantic_digest: string | null;
-  lineage_digest: string | null;
+  transport_preferences: TransportPreferenceIntent[];
+  meal_preferences: Array<{ metadata: FormalIntentMetadata; preference_text: string; preference: "prefer" | "avoid" | "require" }>;
+  budget: BudgetIntent | null;
+  traveler_needs: TravelerNeedIntent[];
+  exclusions: Array<{ metadata: FormalIntentMetadata; exclusion_text: string }>;
+  assumptions: FormalPlanningAssumption[];
+  clarifications: IntentClarification[];
+  conflicts: IntentConflict[];
+  readiness: {
+    status: "blocked" | "needs_clarification" | "ready_with_assumptions" | "ready_for_planning";
+    planner_contract_complete: boolean;
+    blocking_issue_codes: string[];
+    unresolved_required_field_paths: string[];
+    active_assumption_ids: string[];
+    warning_codes: string[];
+  };
+};
+
+export type IntentStructuredOverrides = {
+  city: string | null;
+  trip_days: number | null;
+  start_date: string | null;
+  end_date: string | null;
+  timezone: string | null;
+  arrival_boundary: {
+    local_datetime: string;
+    timezone: string;
+    flexibility_minutes: number;
+    location_text: string | null;
+  } | null;
+  departure_boundary: {
+    local_datetime: string;
+    timezone: string;
+    flexibility_minutes: number;
+    location_text: string | null;
+  } | null;
+  availability_windows: Array<{
+    date: string;
+    start_time: string;
+    end_time: string;
+    timezone: string;
+    crosses_midnight: boolean;
+  }>;
+  fixed_events: Array<{
+    event_id: string;
+    name: string;
+    start_at: string | null;
+    end_at: string | null;
+    timezone: string | null;
+    fixed_day: number | null;
+    location_text: string | null;
+    flexibility: "fixed" | "movable_with_confirmation";
+  }>;
+  must_candidate_ids: string[];
+  optional_candidate_ids: string[];
+  avoid_candidate_ids: string[];
+  pace: "relaxed" | "balanced" | "intensive" | null;
+  transport_preferences: string[];
+  budget: {
+    type: "budget";
+    amount_minor: number | null;
+    currency: string | null;
+    scope: "total" | "per_person" | "per_day" | null;
+    budget_level: "low" | "medium" | "high" | null;
+    flexibility_percent: number;
+  } | null;
+  traveler_needs: Array<{
+    type: "traveler_need";
+    need: string;
+    need_type: "mobility" | "wheelchair" | "child" | "elderly" | "dietary" | "medical" | "sensory" | "other";
+    severity: "required" | "preferred";
+  }>;
 };
 
 export type IntentProvenanceGraph = {
