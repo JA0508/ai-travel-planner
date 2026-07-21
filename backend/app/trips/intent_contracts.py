@@ -74,6 +74,8 @@ class IntentValueType(str, Enum):
     PACE = "pace"
     TRANSPORT_PREFERENCE = "transport_preference"
     MUST_CANDIDATE = "must_candidate"
+    OPTIONAL_CANDIDATE = "optional_candidate"
+    AVOID_CANDIDATE = "avoid_candidate"
     FIXED_EVENT = "fixed_event"
     GENERAL_PREFERENCE = "general_preference"
     BUDGET = "budget"
@@ -152,6 +154,22 @@ class IntentMustCandidateValue(BaseModel):
     display_name: str | None = None
 
 
+class IntentOptionalCandidateValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["optional_candidate"] = "optional_candidate"
+    candidate_id: str
+    display_name: str | None = None
+
+
+class IntentAvoidCandidateValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["avoid_candidate"] = "avoid_candidate"
+    candidate_id: str
+    display_name: str | None = None
+
+
 class IntentFixedEventValue(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -161,6 +179,21 @@ class IntentFixedEventValue(BaseModel):
     fixed_time_start: str | None = None
     fixed_time_end: str | None = None
     source_label: str | None = None
+    event_id: str | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    timezone: str | None = Field(default=None, max_length=80)
+    place_candidate_id: str | None = None
+    location_text: str | None = Field(default=None, max_length=240)
+    flexibility: Literal["fixed", "movable_with_confirmation"] = "fixed"
+
+    @model_validator(mode="after")
+    def validate_event_interval(self) -> "IntentFixedEventValue":
+        if self.start_at is not None and self.end_at is not None and self.end_at <= self.start_at:
+            raise ValueError("fixed_event_end_before_start")
+        if (self.start_at is not None or self.end_at is not None) and not self.timezone:
+            raise ValueError("fixed_event_timezone_required")
+        return self
 
 
 class IntentGeneralPreferenceValue(BaseModel):
@@ -177,6 +210,17 @@ class IntentBudgetValue(BaseModel):
     amount: float | None = Field(default=None, ge=0)
     currency: str | None = None
     budget_level: Literal["low", "medium", "high"] | None = None
+    amount_minor: int | None = Field(default=None, gt=0)
+    scope: Literal["total", "per_person", "per_day"] | None = None
+    flexibility_percent: int = Field(default=0, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_amount_representation(self) -> "IntentBudgetValue":
+        if self.amount is not None and self.amount_minor is not None:
+            raise ValueError("budget_amount_representations_conflict")
+        if (self.amount is not None or self.amount_minor is not None) and (self.currency is None or self.scope is None):
+            raise ValueError("numeric_budget_requires_currency_and_scope")
+        return self
 
 
 class IntentTravelerNeedValue(BaseModel):
@@ -185,6 +229,8 @@ class IntentTravelerNeedValue(BaseModel):
     type: Literal["traveler_need"] = "traveler_need"
     need: str
     traveler_group: str | None = None
+    need_type: Literal["mobility", "wheelchair", "child", "elderly", "dietary", "medical", "sensory", "other"] | None = None
+    severity: Literal["required", "preferred"] | None = None
 
 
 class IntentUnknownValue(BaseModel):
@@ -200,6 +246,8 @@ IntentFieldValue = (
     | IntentPaceValue
     | IntentTransportPreferenceValue
     | IntentMustCandidateValue
+    | IntentOptionalCandidateValue
+    | IntentAvoidCandidateValue
     | IntentFixedEventValue
     | IntentGeneralPreferenceValue
     | IntentBudgetValue
@@ -277,6 +325,7 @@ class IntentSourceReference(BaseModel):
         "system_assumption",
     ]
     confirmed: bool
+    provenance_verification_state: Literal["verified", "legacy_unverified"] = "legacy_unverified"
 
 
 class IntentFieldMetadata(BaseModel):
@@ -328,6 +377,41 @@ class DatePolicyIntent(BaseModel):
     original_expressions: list[str] = Field(default_factory=list)
     reference_date: date | None = None
     normalization_rule_codes: list[str] = Field(default_factory=list)
+
+
+class PaceIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: IntentFieldMetadata
+    value: Literal["relaxed", "balanced", "intensive"]
+
+
+class TravelBoundaryInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    local_datetime: datetime
+    timezone: str = Field(..., min_length=1, max_length=80)
+    flexibility_minutes: int = Field(default=0, ge=0, le=1440)
+    location_candidate_id: str | None = Field(default=None, max_length=120)
+    location_text: str | None = Field(default=None, max_length=240)
+
+
+class AvailabilityWindowInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: date
+    start_time: time
+    end_time: time
+    timezone: str = Field(..., min_length=1, max_length=80)
+    crosses_midnight: bool = False
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> "AvailabilityWindowInput":
+        if self.end_time <= self.start_time and not self.crosses_midnight:
+            raise ValueError("end_before_start")
+        if self.end_time > self.start_time and self.crosses_midnight:
+            raise ValueError("cross_midnight_without_explicit_range")
+        return self
 
 
 class TravelBoundaryIntent(BaseModel):
@@ -468,6 +552,8 @@ class FormalTripIntentContract(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str = "formal-trip-intent-v1"
+    formal_contract_origin: Literal["deterministic_compiler", "legacy_backfill"] = "deterministic_compiler"
+    formal_contract_verified: bool = True
     destinations: list[DestinationIntent] = Field(default_factory=list)
     date_policy: DatePolicyIntent | None = None
     arrival_boundary: TravelBoundaryIntent | None = None
@@ -477,7 +563,7 @@ class FormalTripIntentContract(BaseModel):
     must_visit_places: list[PlacePreferenceIntent] = Field(default_factory=list)
     optional_places: list[PlacePreferenceIntent] = Field(default_factory=list)
     avoid_places: list[PlacePreferenceIntent] = Field(default_factory=list)
-    pace: IntentFieldMetadata | None = None
+    pace: PaceIntent | None = None
     transport_preferences: list[TransportPreferenceIntent] = Field(default_factory=list)
     meal_preferences: list[MealPreferenceIntent] = Field(default_factory=list)
     budget: BudgetIntent | None = None
@@ -680,6 +766,7 @@ class IntentProvenanceNode(BaseModel):
     source_type: IntentSourceType | None = None
     source_id: str | None = None
     artifact_id: str | None = None
+    import_job_id: str | None = None
     mention_id: str | None = None
     review_decision_id: str | None = None
     candidate_id: str | None = None
@@ -791,7 +878,7 @@ class SourceLinkedTripIntentEnvelope(BaseModel):
                     allowed_assumption_ids=[],
                 )
             )
-            legacy["formal_contract"] = _build_formal_contract(
+            backfilled = _build_formal_contract(
                 selected=selected,
                 conflicts=conflicts,
                 clarifications=clarifications,
@@ -799,7 +886,10 @@ class SourceLinkedTripIntentEnvelope(BaseModel):
                 planner_ready_status=planner_status,
                 readiness_policy=readiness_policy,
                 verified_candidate_source_refs={},
-            ).model_dump(mode="json")
+            )
+            backfilled.formal_contract_origin = "legacy_backfill"
+            backfilled.formal_contract_verified = False
+            legacy["formal_contract"] = backfilled.model_dump(mode="json")
         return data
 
 
@@ -808,12 +898,22 @@ class IntentStructuredOverrides(BaseModel):
 
     city: str | None = Field(default=None, max_length=120)
     trip_days: int | None = Field(default=None, ge=1, le=60)
+    start_date: date | None = None
+    end_date: date | None = None
+    timezone: str | None = Field(default=None, min_length=1, max_length=80)
+    reference_date: date | None = None
+    date_expressions: list[str] = Field(default_factory=list, max_length=20)
+    arrival_boundary: TravelBoundaryInput | None = None
+    departure_boundary: TravelBoundaryInput | None = None
+    availability_windows: list[AvailabilityWindowInput] = Field(default_factory=list, max_length=60)
     must_candidate_ids: list[str] = Field(default_factory=list, max_length=40)
+    optional_candidate_ids: list[str] = Field(default_factory=list, max_length=40)
+    avoid_candidate_ids: list[str] = Field(default_factory=list, max_length=40)
     pace: Literal["relaxed", "balanced", "intensive"] | None = None
     transport_preferences: list[str] = Field(default_factory=list, max_length=20)
     fixed_events: list[IntentFixedEventValue] = Field(default_factory=list, max_length=40)
     budget: IntentBudgetValue | None = None
-    traveler_needs: list[str] = Field(default_factory=list, max_length=20)
+    traveler_needs: list[IntentTravelerNeedValue | str] = Field(default_factory=list, max_length=20)
 
     @field_validator("city")
     @classmethod
@@ -831,12 +931,22 @@ class UntrustedIntentProposal(BaseModel):
 
     city: str | None = Field(default=None, max_length=120)
     trip_days: int | None = Field(default=None, ge=1, le=60)
+    start_date: date | None = None
+    end_date: date | None = None
+    timezone: str | None = Field(default=None, min_length=1, max_length=80)
+    reference_date: date | None = None
+    date_expressions: list[str] = Field(default_factory=list, max_length=20)
+    arrival_boundary: TravelBoundaryInput | None = None
+    departure_boundary: TravelBoundaryInput | None = None
+    availability_windows: list[AvailabilityWindowInput] = Field(default_factory=list, max_length=60)
     must_candidate_ids: list[str] = Field(default_factory=list, max_length=40)
+    optional_candidate_ids: list[str] = Field(default_factory=list, max_length=40)
+    avoid_candidate_ids: list[str] = Field(default_factory=list, max_length=40)
     pace: Literal["relaxed", "balanced", "intensive"] | None = None
     transport_preferences: list[str] = Field(default_factory=list, max_length=20)
     fixed_events: list[IntentFixedEventValue] = Field(default_factory=list, max_length=40)
     budget: IntentBudgetValue | None = None
-    traveler_needs: list[str] = Field(default_factory=list, max_length=20)
+    traveler_needs: list[IntentTravelerNeedValue | str] = Field(default_factory=list, max_length=20)
     explanation: str | None = Field(default=None, max_length=1000)
 
 
@@ -1013,6 +1123,7 @@ def compile_source_linked_intent(
     candidates: list[TripCandidateRecord],
     candidate_workflow_states: dict[str, str],
     verified_candidate_source_refs: dict[str, list[IntentSourceReference]] | None = None,
+    candidate_verification_states: dict[str, str] | None = None,
 ) -> SourceLinkedTripIntentEnvelope:
     field_candidates: list[_CandidateField] = []
     if parent_intent_snapshot is not None:
@@ -1028,10 +1139,36 @@ def compile_source_linked_intent(
         field_candidates.extend(_fields_from_payload(request.structured_overrides.model_dump(mode="json"), IntentSourceType.STRUCTURED_USER_OVERRIDE))
 
     selected, shadowed, conflicts, clarifications = _select_fields(field_candidates)
+    legacy_candidate_ids = [
+        candidate.id
+        for candidate in candidates
+        if (candidate_verification_states or {}).get(candidate.id) == "legacy_unverified"
+    ]
+    for candidate_id in legacy_candidate_ids:
+        selected_candidate = next(
+            (field for field in selected if field.field_path == "poi.must_candidates" and isinstance(field.value, IntentMustCandidateValue) and field.value.candidate_id == candidate_id),
+            None,
+        )
+        if selected_candidate is not None:
+            clarifications.append(
+                ClarificationQuestion(
+                    question_id=f"clarify:legacy_candidate_evidence_not_verified:{candidate_id}",
+                    field_paths=["poi.must_candidates"],
+                    answer_field_path=None,
+                    answer_value_type="string",
+                    question="This imported place has legacy evidence that cannot be verified. Confirm or replace it before planning.",
+                    priority=100,
+                    blocking=True,
+                    impact="planner_blocking",
+                    reason_code="legacy_candidate_evidence_not_verified",
+                    options=[],
+                )
+            )
     fields = [*selected, *shadowed]
     planner_ready = _build_planner_ready(selected)
     validation_conflicts = _validate_selected_fields(selected, planner_ready)
     conflicts.extend(validation_conflicts)
+    conflicts.extend(_validate_date_policy_fields(selected))
     typed_assumptions = _build_typed_assumptions(selected, planner_ready)
     assumptions = [assumption.explanation for assumption in typed_assumptions]
     for assumption in assumptions:
@@ -1103,6 +1240,8 @@ def compile_source_linked_intent(
         "blocking_unvalued_assumption_count": len(blocking_assumptions),
         "typed_intent_sections": _typed_section_names(typed_intent),
         "formal_contract_authority": True,
+        "FORMAL_CONTRACT_IS_AUTHORITY": True,
+        "LEGACY_FIELDS_ARE_DERIVED_ONLY": True,
         "formal_contract_schema_version": formal_contract.schema_version,
         "provenance_summary_count": len(provenance_summary),
         "provenance_graph_node_count": len(provenance_graph.nodes),
@@ -1112,6 +1251,7 @@ def compile_source_linked_intent(
             for candidate in candidates
             if candidate_workflow_states.get(candidate.id) in {"rejected", "deferred"}
         ],
+        "legacy_unverified_candidate_ids": legacy_candidate_ids,
     }
     source_digest = sha256_digest(
         {
@@ -1260,6 +1400,8 @@ def _domain_value_for_field(field_path: str, value: Any) -> IntentFieldValue:
             IntentPaceValue,
             IntentTransportPreferenceValue,
             IntentMustCandidateValue,
+            IntentOptionalCandidateValue,
+            IntentAvoidCandidateValue,
             IntentFixedEventValue,
             IntentGeneralPreferenceValue,
             IntentBudgetValue,
@@ -1293,6 +1435,20 @@ def _domain_value_for_field(field_path: str, value: Any) -> IntentFieldValue:
             candidate_id=candidate_id,
             display_name=str(display_name).strip() if display_name else None,
         )
+    if field_path == "poi.optional_candidates":
+        candidate_id = str(_dict_get(value, "candidate_id", value)).strip()
+        display_name = _dict_get(value, "display_name", None)
+        return IntentOptionalCandidateValue(
+            candidate_id=candidate_id,
+            display_name=str(display_name).strip() if display_name else None,
+        )
+    if field_path == "poi.avoid_candidates":
+        candidate_id = str(_dict_get(value, "candidate_id", value)).strip()
+        display_name = _dict_get(value, "display_name", None)
+        return IntentAvoidCandidateValue(
+            candidate_id=candidate_id,
+            display_name=str(display_name).strip() if display_name else None,
+        )
     if field_path == "time.fixed_events":
         event = value if isinstance(value, dict) else {"name": str(value)}
         name = str(event.get("name") or event.get("title") or event.get("value") or "Fixed event").strip()
@@ -1303,6 +1459,13 @@ def _domain_value_for_field(field_path: str, value: Any) -> IntentFieldValue:
             fixed_time_start=str(event.get("fixed_time_start")).strip() if event.get("fixed_time_start") else None,
             fixed_time_end=str(event.get("fixed_time_end")).strip() if event.get("fixed_time_end") else None,
             source_label=str(event.get("source_label")).strip() if event.get("source_label") else None,
+            event_id=str(event.get("event_id")).strip() if event.get("event_id") else None,
+            start_at=event.get("start_at"),
+            end_at=event.get("end_at"),
+            timezone=str(event.get("timezone")).strip() if event.get("timezone") else None,
+            place_candidate_id=str(event.get("place_candidate_id")).strip() if event.get("place_candidate_id") else None,
+            location_text=str(event.get("location_text")).strip() if event.get("location_text") else None,
+            flexibility=event.get("flexibility") or "fixed",
         )
     if field_path == "preferences.general":
         return IntentGeneralPreferenceValue(preference=str(_dict_get(value, "preference", value)).strip())
@@ -1323,6 +1486,8 @@ def _domain_value_from_typed_dict(value: dict[str, Any]) -> IntentFieldValue | N
         "pace": IntentPaceValue,
         "transport_preference": IntentTransportPreferenceValue,
         "must_candidate": IntentMustCandidateValue,
+        "optional_candidate": IntentOptionalCandidateValue,
+        "avoid_candidate": IntentAvoidCandidateValue,
         "fixed_event": IntentFixedEventValue,
         "general_preference": IntentGeneralPreferenceValue,
         "budget": IntentBudgetValue,
@@ -1392,6 +1557,8 @@ def _semantic_type_for_field(field_path: str) -> IntentValueType:
         "trip.pace": IntentValueType.PACE,
         "preferences.transport": IntentValueType.TRANSPORT_PREFERENCE,
         "poi.must_candidates": IntentValueType.MUST_CANDIDATE,
+        "poi.optional_candidates": IntentValueType.OPTIONAL_CANDIDATE,
+        "poi.avoid_candidates": IntentValueType.AVOID_CANDIDATE,
         "time.fixed_events": IntentValueType.FIXED_EVENT,
         "preferences.general": IntentValueType.GENERAL_PREFERENCE,
         "budget": IntentValueType.BUDGET,
@@ -1409,6 +1576,8 @@ def _semantic_value_for_field(field_path: str, value: Any) -> dict[str, Any]:
     if field_path == "preferences.transport":
         return {"mode": str(value).strip()}
     if field_path == "poi.must_candidates":
+        return {"candidate_id": str(value).strip()}
+    if field_path in {"poi.optional_candidates", "poi.avoid_candidates"}:
         return {"candidate_id": str(value).strip()}
     if field_path == "time.fixed_events":
         return {"event": value if isinstance(value, dict) else {"value": value}}
@@ -1443,6 +1612,75 @@ def _fields_from_payload(payload: dict[str, Any], source_type: IntentSourceType)
                     value=value,
                 ),
                 explanation=f"{label} supplied {field_path}.",
+            )
+        )
+    date_policy_value = {
+        key: payload.get(key)
+        for key in ("start_date", "end_date", "trip_days", "timezone", "reference_date", "date_expressions")
+        if payload.get(key) not in (None, "", [])
+    }
+    if date_policy_value:
+        field_path = "trip.date_policy"
+        fields.append(
+            _candidate(
+                field_path,
+                date_policy_value,
+                kind=IntentFieldKind.HARD,
+                confidence=1.0 if confirmed else 0.55,
+                source_ref=_source_ref(
+                    source_type,
+                    field_path=field_path,
+                    label=label,
+                    source_id=f"{source_type.value}:date_policy",
+                    priority=priority,
+                    confirmed=confirmed,
+                    value=date_policy_value,
+                ),
+                explanation=f"{label} supplied an explicit date policy.",
+            )
+        )
+    for key, field_path in (
+        ("arrival_boundary", "trip.arrival_boundary"),
+        ("departure_boundary", "trip.departure_boundary"),
+    ):
+        value = payload.get(key)
+        if value is None:
+            continue
+        fields.append(
+            _candidate(
+                field_path,
+                value,
+                kind=IntentFieldKind.HARD,
+                confidence=1.0 if confirmed else 0.55,
+                source_ref=_source_ref(
+                    source_type,
+                    field_path=field_path,
+                    label=label,
+                    source_id=f"{source_type.value}:{key}",
+                    priority=priority,
+                    confirmed=confirmed,
+                    value=value,
+                ),
+                explanation=f"{label} supplied a travel boundary.",
+            )
+        )
+    for index, value in enumerate(payload.get("availability_windows") or []):
+        fields.append(
+            _candidate(
+                "time.availability_windows",
+                value,
+                kind=IntentFieldKind.HARD,
+                confidence=1.0 if confirmed else 0.55,
+                source_ref=_source_ref(
+                    source_type,
+                    field_path="time.availability_windows",
+                    label=label,
+                    source_id=f"{source_type.value}:availability_window:{index}",
+                    priority=priority,
+                    confirmed=confirmed,
+                    value=value,
+                ),
+                explanation=f"{label} supplied an availability window.",
             )
         )
     for value in unique_texts(payload.get("transport_preferences") or []):
@@ -1485,6 +1723,29 @@ def _fields_from_payload(payload: dict[str, Any], source_type: IntentSourceType)
                 explanation=f"{label} referenced a must-visit candidate.",
             )
         )
+    for field_path, candidate_ids, label_text in (
+        ("poi.optional_candidates", payload.get("optional_candidate_ids") or [], "optional"),
+        ("poi.avoid_candidates", payload.get("avoid_candidate_ids") or [], "avoid"),
+    ):
+        for candidate_id in candidate_ids:
+            fields.append(
+                _candidate(
+                    field_path,
+                    candidate_id,
+                    kind=IntentFieldKind.SOFT,
+                    confidence=1.0 if confirmed else 0.45,
+                    source_ref=_source_ref(
+                        source_type,
+                        field_path=field_path,
+                        label=label,
+                        source_id=str(candidate_id),
+                        priority=priority,
+                        confirmed=confirmed,
+                        value=candidate_id,
+                    ),
+                    explanation=f"{label} referenced an {label_text} TripCandidate.",
+                )
+            )
     for index, event in enumerate(payload.get("fixed_events") or []):
         field_path = "time.fixed_events"
         fields.append(
@@ -1526,7 +1787,11 @@ def _fields_from_payload(payload: dict[str, Any], source_type: IntentSourceType)
                 explanation=f"{label} supplied a budget preference.",
             )
         )
-    for value in unique_texts(payload.get("traveler_needs") or []):
+    for raw_value in payload.get("traveler_needs") or []:
+        value = raw_value.model_dump(mode="json") if isinstance(raw_value, BaseModel) else raw_value
+        label_value = value.get("need") if isinstance(value, dict) else value
+        if not str(label_value).strip():
+            continue
         field_path = "travelers.needs"
         fields.append(
             _candidate(
@@ -1837,6 +2102,10 @@ def _build_typed_intent(
             typed.fixed_events.append(value)
         elif field.field_path == "poi.must_candidates":
             typed.poi_preferences.must_candidates.append(value)
+        elif field.field_path == "poi.optional_candidates":
+            typed.poi_preferences.optional_candidates.append(value)
+        elif field.field_path == "poi.avoid_candidates":
+            typed.poi_preferences.exclusions.append(value)
         elif field.field_path == "trip.pace":
             typed.pace = value
         elif field.field_path == "preferences.transport":
@@ -1956,6 +2225,48 @@ def _validate_selected_fields(
     return conflicts
 
 
+def _validate_date_policy_fields(fields: list[IntentField]) -> list[IntentConflict]:
+    date_fields = [field for field in fields if field.field_path == "trip.date_policy"]
+    if not date_fields:
+        return []
+    field = date_fields[-1]
+    raw = field.value.raw if isinstance(field.value, IntentUnknownValue) and isinstance(field.value.raw, dict) else {}
+    start_raw = raw.get("start_date")
+    end_raw = raw.get("end_date")
+    trip_days = raw.get("trip_days")
+    refs = field.source_refs
+    conflicts: list[IntentConflict] = []
+    try:
+        start = date.fromisoformat(start_raw) if isinstance(start_raw, str) else start_raw
+        end = date.fromisoformat(end_raw) if isinstance(end_raw, str) else end_raw
+    except ValueError:
+        start = end = None
+        conflicts.append(_date_conflict(field, "date_invalid", "The date policy contains an invalid ISO calendar date."))
+    if start is not None and end is not None:
+        if end < start:
+            conflicts.append(_date_conflict(field, "date_range_conflict", "Trip end date is earlier than start date."))
+        elif trip_days is not None and (end - start).days + 1 != int(trip_days):
+            conflicts.append(_date_conflict(field, "date_range_conflict", "Trip dates and trip length disagree."))
+    expressions = raw.get("date_expressions") or []
+    if expressions and raw.get("reference_date") is None and any("relative" in str(value).lower() for value in expressions):
+        conflicts.append(_date_conflict(field, "relative_date_requires_anchor", "Relative travel dates require an explicit reference date."))
+    return conflicts
+
+
+def _date_conflict(field: IntentField, reason_code: str, explanation: str) -> IntentConflict:
+    return IntentConflict(
+        conflict_id=f"conf_{sha256_digest({'field': field.field_id, 'reason': reason_code})[:16]}",
+        field_path="trip.date_policy",
+        severity="blocking",
+        winner_field_id=None,
+        losing_field_ids=[field.field_id],
+        reason_code=reason_code,
+        explanation=explanation,
+        requires_clarification=True,
+        source_refs=field.source_refs,
+    )
+
+
 def _build_typed_assumptions(fields: list[IntentField], preview: PlannerReadyIntentPreview) -> list[IntentAssumption]:
     assumptions: list[IntentAssumption] = []
     if preview.trip_days is None:
@@ -2049,11 +2360,18 @@ def _build_formal_contract(
     destinations: list[DestinationIntent] = []
     fixed_events: list[FixedEventIntent] = []
     must_places: list[PlacePreferenceIntent] = []
+    optional_places: list[PlacePreferenceIntent] = []
+    avoid_places: list[PlacePreferenceIntent] = []
     transport_preferences: list[TransportPreferenceIntent] = []
     traveler_needs: list[TravelerNeedIntent] = []
+    availability_windows: list[AvailabilityWindowIntent] = []
+    arrival_boundary: TravelBoundaryIntent | None = None
+    departure_boundary: TravelBoundaryIntent | None = None
     date_policy: DatePolicyIntent | None = None
     budget: BudgetIntent | None = None
-    pace: IntentFieldMetadata | None = None
+    pace: PaceIntent | None = None
+    date_policy_value: dict[str, Any] = {}
+    date_policy_metadata: IntentFieldMetadata | None = None
 
     for field in selected:
         metadata = _formal_metadata_for_field(field, verified_candidate_source_refs)
@@ -2068,21 +2386,52 @@ def _build_formal_contract(
                 )
             )
         elif field.field_path == "trip.trip_days" and isinstance(field.value, IntentTripDaysValue):
-            date_policy = DatePolicyIntent(
+            date_policy_value["trip_days"] = field.value.days
+            date_policy_metadata = metadata
+        elif field.field_path == "trip.date_policy" and isinstance(field.value, IntentUnknownValue):
+            raw = field.value.raw if isinstance(field.value.raw, dict) else {}
+            date_policy_value.update(raw)
+            date_policy_metadata = metadata
+        elif field.field_path in {"trip.arrival_boundary", "trip.departure_boundary"} and isinstance(field.value, IntentUnknownValue):
+            raw = field.value.raw if isinstance(field.value.raw, dict) else {}
+            boundary = TravelBoundaryIntent(
                 metadata=metadata,
-                trip_days=field.value.days,
-                timezone="unknown",
-                normalization_rule_codes=[INTENT_DATE_POLICY_VERSION, "duration_known_calendar_unanchored"],
+                boundary_type="arrival" if field.field_path == "trip.arrival_boundary" else "departure",
+                local_datetime=raw["local_datetime"],
+                timezone=raw["timezone"],
+                flexibility_minutes=raw.get("flexibility_minutes", 0),
+                location_candidate_id=raw.get("location_candidate_id"),
+                location_text=raw.get("location_text"),
+            )
+            if boundary.boundary_type == "arrival":
+                arrival_boundary = boundary
+            else:
+                departure_boundary = boundary
+        elif field.field_path == "time.availability_windows" and isinstance(field.value, IntentUnknownValue):
+            raw = field.value.raw if isinstance(field.value.raw, dict) else {}
+            availability_windows.append(
+                AvailabilityWindowIntent(
+                    metadata=metadata,
+                    date=raw["date"],
+                    start_time=raw["start_time"],
+                    end_time=raw["end_time"],
+                    timezone=raw["timezone"],
+                    crosses_midnight=raw.get("crosses_midnight", False),
+                )
             )
         elif field.field_path == "time.fixed_events" and isinstance(field.value, IntentFixedEventValue):
             fixed_events.append(
                 FixedEventIntent(
                     metadata=metadata,
-                    event_id=field.field_id,
+                    event_id=field.value.event_id or field.field_id,
                     title=field.value.name,
+                    start_at=field.value.start_at,
+                    end_at=field.value.end_at,
+                    timezone=field.value.timezone,
                     fixed_day=field.value.fixed_day,
-                    location_text=field.value.source_label,
-                    flexibility="fixed",
+                    place_candidate_id=field.value.place_candidate_id,
+                    location_text=field.value.location_text or field.value.source_label,
+                    flexibility=field.value.flexibility,
                 )
             )
         elif field.field_path == "poi.must_candidates" and isinstance(field.value, IntentMustCandidateValue):
@@ -2095,8 +2444,29 @@ def _build_formal_contract(
                     strength=100,
                 )
             )
+        elif field.field_path == "poi.optional_candidates" and isinstance(field.value, IntentOptionalCandidateValue):
+            optional_places.append(
+                PlacePreferenceIntent(
+                    metadata=metadata,
+                    trip_candidate_id=field.value.candidate_id,
+                    display_name=field.value.display_name,
+                    preference="optional",
+                    strength=50,
+                )
+            )
+        elif field.field_path == "poi.avoid_candidates" and isinstance(field.value, IntentAvoidCandidateValue):
+            avoid_places.append(
+                PlacePreferenceIntent(
+                    metadata=metadata,
+                    trip_candidate_id=field.value.candidate_id,
+                    display_name=field.value.display_name,
+                    preference="avoid",
+                    strength=100,
+                )
+            )
         elif field.field_path == "trip.pace":
-            pace = metadata
+            if isinstance(field.value, IntentPaceValue):
+                pace = PaceIntent(metadata=metadata, value=field.value.pace)
         elif field.field_path == "preferences.transport" and isinstance(field.value, IntentTransportPreferenceValue):
             mode, custom_label = _normalize_transport_mode(field.value.mode)
             transport_preferences.append(
@@ -2108,25 +2478,50 @@ def _build_formal_contract(
                 )
             )
         elif field.field_path == "budget" and isinstance(field.value, IntentBudgetValue):
-            amount_minor = int(field.value.amount * 100) if field.value.amount is not None else None
+            amount_minor = field.value.amount_minor or (int(round(field.value.amount * 100)) if field.value.amount is not None else None)
             budget = BudgetIntent(
                 metadata=metadata,
                 amount_minor=amount_minor if amount_minor and amount_minor > 0 else None,
                 currency=field.value.currency.upper() if field.value.currency else None,
-                scope="total" if amount_minor else None,
+                scope=field.value.scope or ("total" if amount_minor else None),
                 level=field.value.budget_level,
-                flexibility_percent=0,
+                flexibility_percent=field.value.flexibility_percent,
             )
         elif field.field_path == "travelers.needs" and isinstance(field.value, IntentTravelerNeedValue):
             need_type = _classify_traveler_need(field.value.need)
             traveler_needs.append(
                 TravelerNeedIntent(
                     metadata=metadata,
-                    need_type=need_type,
+                    need_type=field.value.need_type or need_type,
                     description=field.value.need,
-                    severity="required" if field.kind == IntentFieldKind.HARD else "preferred",
+                    severity=field.value.severity or ("required" if field.kind == IntentFieldKind.HARD else "preferred"),
                 )
             )
+
+    if date_policy_metadata is not None:
+        start_date_value = date_policy_value.get("start_date")
+        end_date_value = date_policy_value.get("end_date")
+        reference_date_value = date_policy_value.get("reference_date")
+        start = date.fromisoformat(start_date_value) if isinstance(start_date_value, str) else start_date_value
+        end = date.fromisoformat(end_date_value) if isinstance(end_date_value, str) else end_date_value
+        reference = date.fromisoformat(reference_date_value) if isinstance(reference_date_value, str) else reference_date_value
+        trip_days_value = date_policy_value.get("trip_days")
+        if start is not None and end is not None and trip_days_value is None:
+            trip_days_value = (end - start).days + 1
+        if start is not None and trip_days_value is not None and end is None:
+            end = start.fromordinal(start.toordinal() + int(trip_days_value) - 1)
+        rule_codes = [INTENT_DATE_POLICY_VERSION]
+        rule_codes.append("duration_known_calendar_unanchored" if start is None and end is None else "explicit_calendar_policy")
+        date_policy = DatePolicyIntent(
+            metadata=date_policy_metadata,
+            start_date=start,
+            end_date=end,
+            trip_days=int(trip_days_value) if trip_days_value is not None else None,
+            timezone=str(date_policy_value.get("timezone") or "unknown"),
+            original_expressions=[str(item) for item in date_policy_value.get("date_expressions") or []],
+            reference_date=reference,
+            normalization_rule_codes=rule_codes,
+        )
 
     formal_assumptions = [
         _formal_assumption(item, verified_candidate_source_refs)
@@ -2165,8 +2560,13 @@ def _build_formal_contract(
     return FormalTripIntentContract(
         destinations=destinations,
         date_policy=date_policy,
+        arrival_boundary=arrival_boundary,
+        departure_boundary=departure_boundary,
+        availability_windows=availability_windows,
         fixed_events=fixed_events,
         must_visit_places=must_places,
+        optional_places=optional_places,
+        avoid_places=avoid_places,
         pace=pace,
         transport_preferences=transport_preferences,
         budget=budget,
@@ -2196,8 +2596,8 @@ def _formal_metadata_for_field(
 ) -> IntentFieldMetadata:
     source_refs: list[IntentSourceReference] = []
     for ref in field.source_refs:
-        if ref.source_type == IntentSourceType.TRIP_CANDIDATE and ref.source_id in verified_candidate_source_refs:
-            source_refs.extend(verified_candidate_source_refs[ref.source_id])
+        if ref.source_type == IntentSourceType.TRIP_CANDIDATE:
+            source_refs.extend(verified_candidate_source_refs.get(ref.source_id or "", []))
         else:
             source_refs.append(_structured_source_ref_from_legacy(ref))
     authority = _formal_authority(_strongest_authority(field.source_refs))
@@ -2456,12 +2856,17 @@ def _formal_metadata_items(
         items.append((destination.metadata, {"city_name": destination.city_name, "order": destination.order}))
     if contract.date_policy is not None:
         items.append((contract.date_policy.metadata, {"trip_days": contract.date_policy.trip_days}))
+    for boundary in [contract.arrival_boundary, contract.departure_boundary]:
+        if boundary is not None:
+            items.append((boundary.metadata, {"boundary_type": boundary.boundary_type, "local_datetime": boundary.local_datetime.isoformat()}))
+    for window in contract.availability_windows:
+        items.append((window.metadata, {"date": window.date.isoformat(), "start": window.start_time.isoformat(), "end": window.end_time.isoformat()}))
     for event in contract.fixed_events:
         items.append((event.metadata, {"title": event.title, "fixed_day": event.fixed_day}))
     for place in [*contract.must_visit_places, *contract.optional_places, *contract.avoid_places]:
         items.append((place.metadata, {"trip_candidate_id": place.trip_candidate_id, "preference": place.preference}))
     if contract.pace is not None:
-        items.append((contract.pace, {"pace": "selected"}))
+        items.append((contract.pace.metadata, {"pace": contract.pace.value}))
     for transport in contract.transport_preferences:
         items.append((transport.metadata, {"mode": transport.mode, "preference": transport.preference}))
     if contract.budget is not None:
@@ -2504,6 +2909,7 @@ def _provenance_nodes_for_source_ref(ref: IntentSourceReference) -> list[IntentP
         else IntentSourceType.SYSTEM_ASSUMPTION,
         source_id=ref.source_id,
         artifact_id=ref.artifact_id,
+        import_job_id=ref.import_job_id,
         mention_id=ref.mention_id,
         review_decision_id=ref.review_decision_id,
         candidate_id=ref.trip_candidate_id,
@@ -2534,6 +2940,7 @@ def _provenance_nodes_for_source_ref(ref: IntentSourceReference) -> list[IntentP
                 label=f"ImportJob {ref.import_job_id}",
                 source_id=ref.import_job_id,
                 artifact_id=ref.artifact_id,
+                import_job_id=ref.import_job_id,
                 authority=_legacy_authority(ref.authority),
                 confirmed=ref.confirmed,
                 digest=sha256_digest({"import_job_id": ref.import_job_id, "source_digest": ref.source_digest}),
@@ -2547,6 +2954,7 @@ def _provenance_nodes_for_source_ref(ref: IntentSourceReference) -> list[IntentP
                 label=f"Document page {ref.page_number}",
                 source_id=ref.source_id,
                 artifact_id=ref.artifact_id,
+                import_job_id=ref.import_job_id,
                 page_number=ref.page_number,
                 authority=_legacy_authority(ref.authority),
                 confirmed=ref.confirmed,
@@ -2561,6 +2969,7 @@ def _provenance_nodes_for_source_ref(ref: IntentSourceReference) -> list[IntentP
                 label="Bounding box evidence",
                 source_id=ref.source_id,
                 artifact_id=ref.artifact_id,
+                import_job_id=ref.import_job_id,
                 mention_id=ref.mention_id,
                 page_number=ref.page_number,
                 bbox=box.model_dump(mode="json"),
@@ -2675,9 +3084,6 @@ def _build_semantic_digest(
                         "field_path": field.field_path,
                         "semantic_type": field.semantic_type.value,
                         "semantic_value": _domain_value_dump(field.semantic_value),
-                        "kind": field.kind.value,
-                        "confirmed_by_user": field.confirmed_by_user,
-                        "authority": _strongest_authority(field.source_refs).value,
                     }
                     for field in selected
                     if field.status == IntentFieldStatus.SELECTED
@@ -2686,7 +3092,7 @@ def _build_semantic_digest(
                     str(item["field_path"]),
                     str(item["semantic_type"]),
                     sha256_digest(item["semantic_value"]),
-                    str(item["authority"]),
+                    sha256_digest(item["semantic_value"]),
                 ),
             ),
             "blocking_conflicts": sorted(
@@ -2812,36 +3218,46 @@ def finalize_intent_envelope_for_revision(
 def _semantic_formal_contract_payload(contract: FormalTripIntentContract) -> dict[str, Any]:
     return {
         "destinations": [
-            {"city_name": item.city_name, "order": item.order, "kind": item.metadata.kind, "confirmation_state": item.metadata.confirmation_state}
+            {"city_name": item.city_name, "country_code": item.country_code, "timezone": item.timezone, "order": item.order}
             for item in contract.destinations
         ],
-        "date_policy": contract.date_policy.model_dump(
-            mode="json",
-            exclude={"metadata": {"source_refs"}},
-            exclude_none=True,
-        )
-        if contract.date_policy
-        else None,
+        "date_policy": _semantic_model_payload(contract.date_policy),
+        "arrival_boundary": _semantic_model_payload(contract.arrival_boundary),
+        "departure_boundary": _semantic_model_payload(contract.departure_boundary),
+        "availability_windows": [_semantic_model_payload(item) for item in contract.availability_windows],
         "fixed_events": [
-            item.model_dump(mode="json", exclude={"metadata": {"source_refs"}}, exclude_none=True)
+            _semantic_model_payload(item)
             for item in contract.fixed_events
         ],
         "must_visit_places": [
-            item.model_dump(mode="json", exclude={"metadata": {"source_refs"}}, exclude_none=True)
+            _semantic_model_payload(item)
             for item in contract.must_visit_places
         ],
+        "optional_places": [_semantic_model_payload(item) for item in contract.optional_places],
+        "avoid_places": [_semantic_model_payload(item) for item in contract.avoid_places],
+        "pace": _semantic_model_payload(contract.pace),
         "transport_preferences": [
-            item.model_dump(mode="json", exclude={"metadata": {"source_refs"}}, exclude_none=True)
+            _semantic_model_payload(item)
             for item in contract.transport_preferences
         ],
-        "budget": contract.budget.model_dump(mode="json", exclude={"metadata": {"source_refs"}}, exclude_none=True)
-        if contract.budget
-        else None,
+        "meal_preferences": [_semantic_model_payload(item) for item in contract.meal_preferences],
+        "budget": _semantic_model_payload(contract.budget),
         "traveler_needs": [
-            item.model_dump(mode="json", exclude={"metadata": {"source_refs"}}, exclude_none=True)
+            _semantic_model_payload(item)
             for item in contract.traveler_needs
         ],
-        "assumptions": [item.model_dump(mode="json", exclude={"source_refs"}) for item in contract.assumptions],
+        "exclusions": [_semantic_model_payload(item) for item in contract.exclusions],
+        "assumptions": [
+            {
+                "field_path": item.field_path,
+                "assumed_value": item.assumed_value,
+                "value_type": item.value_type,
+                "reason_code": item.reason_code,
+                "impact": item.impact,
+                "user_acknowledged": item.user_acknowledged,
+            }
+            for item in contract.assumptions
+        ],
         "clarifications": [
             {"question_id": item.question_id, "reason_code": item.reason_code, "field_paths": item.field_paths, "blocking": item.blocking}
             for item in contract.clarifications
@@ -2852,6 +3268,13 @@ def _semantic_formal_contract_payload(contract: FormalTripIntentContract) -> dic
         ],
         "readiness": contract.readiness.model_dump(mode="json"),
     }
+
+
+def _semantic_model_payload(model: BaseModel | None) -> dict[str, Any] | None:
+    """Exclude metadata because provenance belongs to lineage, not semantic identity."""
+    if model is None:
+        return None
+    return model.model_dump(mode="json", exclude={"metadata"}, exclude_none=True)
 
 
 def _formal_source_digest_payload(contract: FormalTripIntentContract) -> list[dict[str, Any]]:

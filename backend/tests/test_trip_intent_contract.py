@@ -118,6 +118,19 @@ class TripIntentContractTests(unittest.TestCase):
             )
         )
         self.assertTrue(envelope["validation_report"]["llm_proposal_validated"])
+        formal_candidate = envelope["formal_contract"]["must_visit_places"][0]
+        self.assertTrue(formal_candidate["metadata"]["source_refs"])
+        self.assertTrue(
+            all(
+                ref["provenance_verification_state"] == "verified"
+                for ref in formal_candidate["metadata"]["source_refs"]
+            )
+        )
+        self.assertEqual(
+            {ref["source_type"] for ref in formal_candidate["metadata"]["source_refs"]},
+            {"source_artifact", "import_mention", "import_review_decision", "resolution_candidate", "trip_candidate"},
+        )
+        self.assertEqual(envelope["formal_contract"]["pace"]["value"], "relaxed")
         self.assertEqual(envelope["parser_result"]["status"], "success")
         self.assertTrue(envelope["semantic_digest"])
         self.assertTrue(envelope["lineage_digest"])
@@ -279,6 +292,49 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(first.json()["envelope"]["semantic_digest"], second.json()["envelope"]["semantic_digest"])
         self.assertNotEqual(first.json()["envelope"]["lineage_digest"], second.json()["envelope"]["lineage_digest"])
         self.assertNotEqual(first.json()["envelope"]["content_digest"], second.json()["envelope"]["content_digest"])
+
+    def test_formal_contract_compiles_explicit_date_boundaries_and_availability(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        response = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={
+                "base_trip_revision_id": base_revision_id,
+                "base_intent_revision_id": None,
+                "structured_overrides": {
+                    "city": "上海",
+                    "trip_days": 2,
+                    "start_date": "2026-08-01",
+                    "timezone": "Asia/Shanghai",
+                    "arrival_boundary": {
+                        "local_datetime": "2026-08-01T10:00:00",
+                        "timezone": "Asia/Shanghai",
+                        "flexibility_minutes": 15,
+                    },
+                    "departure_boundary": {
+                        "local_datetime": "2026-08-02T20:00:00",
+                        "timezone": "Asia/Shanghai",
+                    },
+                    "availability_windows": [
+                        {
+                            "date": "2026-08-01",
+                            "start_time": "11:00:00",
+                            "end_time": "21:00:00",
+                            "timezone": "Asia/Shanghai",
+                        }
+                    ],
+                    "pace": "relaxed",
+                },
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "formal-boundaries"},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        formal = response.json()["envelope"]["formal_contract"]
+        self.assertEqual(formal["date_policy"]["start_date"], "2026-08-01")
+        self.assertEqual(formal["date_policy"]["end_date"], "2026-08-02")
+        self.assertEqual(formal["arrival_boundary"]["flexibility_minutes"], 15)
+        self.assertEqual(formal["departure_boundary"]["boundary_type"], "departure")
+        self.assertEqual(formal["availability_windows"][0]["timezone"], "Asia/Shanghai")
+        self.assertEqual(formal["pace"]["value"], "relaxed")
 
     def test_stale_base_revision_is_rejected_before_intent_revision_is_created(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()
@@ -691,6 +747,107 @@ class TripIntentContractTests(unittest.TestCase):
                 )
         finally:
             connection.close()
+
+    def test_formal_contract_preserves_domain_native_event_budget_and_place_preferences(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        response = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={
+                "base_revision_id": base_revision_id,
+                "base_intent_revision_id": None,
+                "structured_overrides": {
+                    "city": "上海",
+                    "trip_days": 3,
+                    "optional_candidate_ids": ["candidate-optional"],
+                    "avoid_candidate_ids": ["candidate-avoid"],
+                    "fixed_events": [{
+                        "event_id": "booking-1",
+                        "name": "Museum booking",
+                        "start_at": "2026-08-02T14:00:00",
+                        "end_at": "2026-08-02T16:00:00",
+                        "timezone": "Asia/Shanghai",
+                        "location_text": "People's Square",
+                    }],
+                    "budget": {
+                        "amount_minor": 150000,
+                        "currency": "CNY",
+                        "scope": "total",
+                        "flexibility_percent": 10,
+                    },
+                    "traveler_needs": [{
+                        "need": "Wheelchair accessible",
+                        "need_type": "wheelchair",
+                        "severity": "required",
+                    }],
+                },
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "formal-native-values"},
+        )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        contract = response.json()["envelope"]["formal_contract"]
+        self.assertEqual(contract["optional_places"][0]["trip_candidate_id"], "candidate-optional")
+        self.assertEqual(contract["avoid_places"][0]["trip_candidate_id"], "candidate-avoid")
+        self.assertEqual(contract["fixed_events"][0]["event_id"], "booking-1")
+        self.assertEqual(contract["fixed_events"][0]["start_at"], "2026-08-02T14:00:00")
+        self.assertEqual(contract["budget"]["amount_minor"], 150000)
+        self.assertEqual(contract["budget"]["scope"], "total")
+        self.assertEqual(contract["traveler_needs"][0]["need_type"], "wheelchair")
+        self.assertEqual(contract["traveler_needs"][0]["severity"], "required")
+
+    def test_unverified_import_candidate_blocks_handoff_but_manual_candidate_does_not(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        imported = client.post(
+            f"/trips/{trip_id}/candidates",
+            json={
+                "candidate_type": "place",
+                "display_name": "Legacy imported place",
+                "category": "scenic",
+                "source_kind": "text_import",
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "legacy-import-candidate"},
+        )
+        self.assertEqual(imported.status_code, 201, imported.text)
+        legacy_id = imported.json()["candidate"]["id"]
+        response = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={
+                "base_revision_id": base_revision_id,
+                "base_intent_revision_id": None,
+                "candidate_ids": [legacy_id],
+                "structured_overrides": {"city": "上海", "trip_days": 2},
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "legacy-import-intent"},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        envelope = response.json()["envelope"]
+        self.assertEqual(envelope["planner_ready_status"], "needs_clarification")
+        self.assertIn("legacy_candidate_evidence_not_verified", envelope["readiness_policy"]["blocking_reason_codes"])
+
+        manual = client.post(
+            f"/trips/{trip_id}/candidates",
+            json={
+                "candidate_type": "place",
+                "display_name": "Manual place",
+                "category": "scenic",
+                "source_kind": "manual_entry",
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "manual-candidate"},
+        )
+        self.assertEqual(manual.status_code, 201, manual.text)
+        manual_id = manual.json()["candidate"]["id"]
+        response = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={
+                "base_revision_id": base_revision_id,
+                "base_intent_revision_id": envelope["id"],
+                "candidate_ids": [manual_id],
+                "structured_overrides": {"city": "上海", "trip_days": 2},
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "manual-candidate-intent"},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertNotIn("legacy_candidate_evidence_not_verified", response.json()["envelope"]["readiness_policy"]["blocking_reason_codes"])
 
 
 def create_saved_trip() -> tuple[TestClient, str, str]:

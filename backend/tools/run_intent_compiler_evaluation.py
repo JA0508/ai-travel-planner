@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -12,7 +15,14 @@ from fastapi.testclient import TestClient
 from app.imports.dependencies import reset_import_dependencies_for_tests
 from app.main import app
 from app.trips.dependencies import reset_trip_repository_cache_for_tests
-from app.trips.intent_contracts import UntrustedIntentProposal
+from app.trips.dependencies import get_trip_persistence_service, get_trip_repository
+from app.trips.errors import StaleIntentRevisionError
+from app.trips.intent_contracts import (
+    CompileTripIntentRequest,
+    EditTripIntentEnvelopeRequest,
+    RestoreTripIntentEnvelopeRequest,
+    UntrustedIntentProposal,
+)
 from tests.test_trip_persistence_api import simple_itinerary
 
 
@@ -211,7 +221,7 @@ FIXTURES.extend(
         IntentCompilerFixture(name="availability_invalid_text_stays_non_authoritative", category="clarification", payload={"direct_user_text": "城市：上海\n每天凌晨以后随便安排"}, expected_status="needs_clarification", expected_clarification="clarify_trip_days"),
         IntentCompilerFixture(name="budget_level_low", category="semantic", payload={"structured_overrides": {"city": "上海", "trip_days": 2, "budget": {"budget_level": "low"}}}, expected_status="ready", expected_typed_section="budget"),
         IntentCompilerFixture(name="budget_level_high", category="semantic", payload={"structured_overrides": {"city": "上海", "trip_days": 2, "budget": {"budget_level": "high"}}}, expected_status="ready", expected_typed_section="budget"),
-        IntentCompilerFixture(name="numeric_budget_soft_value", category="semantic", payload={"structured_overrides": {"city": "上海", "trip_days": 2, "budget": {"amount": 500, "currency": "CNY"}}}, expected_status="ready", expected_typed_section="budget"),
+        IntentCompilerFixture(name="numeric_budget_soft_value", category="semantic", payload={"structured_overrides": {"city": "上海", "trip_days": 2, "budget": {"amount": 500, "currency": "CNY", "scope": "total"}}}, expected_status="ready", expected_typed_section="budget"),
         IntentCompilerFixture(name="traveler_need_child_required", category="semantic", payload={"structured_overrides": {"city": "上海", "trip_days": 2, "traveler_needs": ["带儿童"]}}, expected_status="ready", expected_typed_section="travelers"),
         IntentCompilerFixture(name="traveler_need_dietary_required", category="semantic", payload={"structured_overrides": {"city": "上海", "trip_days": 2, "traveler_needs": ["素食"]}}, expected_status="ready", expected_typed_section="travelers"),
         IntentCompilerFixture(name="transport_unknown_maps_other", category="semantic", payload={"structured_overrides": {"city": "上海", "trip_days": 2, "transport_preferences": ["缆车"]}}, expected_status="ready", expected_typed_section="transport_preferences"),
@@ -258,7 +268,9 @@ def main() -> int:
     parser.add_argument("--ci", action="store_true")
     args = parser.parse_args()
     results = run_evaluation()
-    summary = summarize_results(results)
+    rerun_results = run_evaluation()
+    deterministic_mismatch_count = count_deterministic_mismatches(results, rerun_results)
+    summary = summarize_results(results, deterministic_mismatch_count=deterministic_mismatch_count)
     if args.ci:
         for key, minimum in MIN_COUNTS.items():
             actual = summary["total_fixture_count"] if key == "total" else summary[f"{key}_fixture_count"]
@@ -271,7 +283,7 @@ def main() -> int:
                         "error": f"Intent evaluation requires at least {minimum} {key} fixtures.",
                     }
                 )
-        summary = summarize_results(results)
+        summary = summarize_results(results, deterministic_mismatch_count=deterministic_mismatch_count)
     failed = [result for result in results if not result["passed"]]
     if args.json:
         print(json.dumps({**summary, "results": results}, ensure_ascii=False, indent=2))
@@ -302,16 +314,223 @@ def run_evaluation() -> list[dict]:
             reset_import_dependencies_for_tests()
             client = TestClient(app)
             for index, fixture in enumerate(FIXTURES):
+                started = time.perf_counter()
+                if fixture.category == "concurrency":
+                    results.append(execute_concurrency_scenario(client, fixture, index, started))
+                    continue
+                if fixture.category == "revision":
+                    results.append(execute_revision_scenario(client, fixture, index, started))
+                    continue
                 trip_id, base_revision_id = create_trip(client)
                 payload = {"base_revision_id": base_revision_id, "base_intent_revision_id": None, **fixture.payload}
                 response = post_fixture(client, fixture, trip_id, payload, index)
                 passed, detail = evaluate_response(fixture, response)
-                results.append({"name": fixture.name, "category": fixture.category, "passed": passed, **detail})
+                results.append({
+                    "name": fixture.name,
+                    "category": fixture.category,
+                    "passed": passed,
+                    "runtime_seconds": time.perf_counter() - started,
+                    **detail,
+                })
         finally:
             reset_trip_repository_cache_for_tests()
             reset_import_dependencies_for_tests()
             env.stop()
     return results
+
+
+def execute_concurrency_scenario(client: TestClient, fixture: IntentCompilerFixture, index: int, started: float) -> dict:
+    """Run an actual two-writer SQLite race against one immutable intent base."""
+    trip_id, base_revision_id = create_trip(client)
+    capability = client.cookies.get(f"trip_capability_{trip_id}")
+    service = get_trip_persistence_service()
+    initial = None
+    if fixture.name != "concurrency_compile_compile_gate":
+        initial = service.compile_intent_envelope(
+            trip_id=trip_id,
+            capability=capability,
+            idempotency_key=f"intent-race-seed-{index}",
+            payload=CompileTripIntentRequest(
+                base_trip_revision_id=base_revision_id,
+                base_intent_revision_id=None,
+                structured_overrides={"city": "上海", "trip_days": 2},
+            ),
+        )
+    base_intent_id = initial.revision.id if initial is not None else None
+    barrier = threading.Barrier(2)
+
+    def writer(city: str):
+        barrier.wait(timeout=5)
+        if fixture.name == "concurrency_compile_compile_gate":
+            return service.compile_intent_envelope(
+                trip_id=trip_id,
+                capability=capability,
+                idempotency_key=f"intent-race-{index}-{city}",
+                payload=CompileTripIntentRequest(
+                    base_trip_revision_id=base_revision_id,
+                    base_intent_revision_id=None,
+                    structured_overrides={"city": city, "trip_days": 2},
+                ),
+            )
+        return service.edit_intent_envelope(
+            trip_id=trip_id,
+            capability=capability,
+            revision_id=base_intent_id,
+            idempotency_key=f"intent-race-{index}-{city}",
+            payload=EditTripIntentEnvelopeRequest(
+                base_trip_revision_id=base_revision_id,
+                base_intent_revision_id=base_intent_id,
+                field_updates={"city": city},
+            ),
+        )
+
+    outcomes: list[str] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(writer, "杭州"), executor.submit(writer, "苏州")]
+        for future in futures:
+            try:
+                future.result(timeout=10)
+                outcomes.append("success")
+            except StaleIntentRevisionError:
+                outcomes.append("stale")
+            except Exception as exc:  # pragma: no cover - rendered in evaluation evidence
+                outcomes.append(type(exc).__name__)
+    revisions = get_trip_repository().list_intent_revisions(trip_id=trip_id)
+    revision_numbers = [item.revision_number for item in revisions]
+    invariants = [
+        {"code": "race_success_count", "passed": outcomes.count("success") == 1},
+        {"code": "race_stale_count", "passed": outcomes.count("stale") == 1},
+        {"code": "race_revision_delta", "passed": len(revisions) == (1 if initial is None else 2)},
+        {"code": "race_no_duplicate_revision_number", "passed": len(revision_numbers) == len(set(revision_numbers))},
+        {"code": "race_no_sibling_revision", "passed": len([item for item in revisions if item.parent_intent_revision_id == base_intent_id]) == 1 if base_intent_id else len(revisions) == 1},
+    ]
+    passed = all(item["passed"] for item in invariants)
+    return {
+        "name": fixture.name,
+        "category": fixture.category,
+        "passed": passed,
+        "status": "race_complete",
+        "outcomes": outcomes,
+        "revision_numbers": revision_numbers,
+        "runtime_seconds": time.perf_counter() - started,
+        "invariants": invariants,
+    }
+
+
+def execute_revision_scenario(client: TestClient, fixture: IntentCompilerFixture, index: int, started: float) -> dict:
+    """Exercise immutable compile/edit/restore/idempotency paths instead of relabeling one compile."""
+    trip_id, base_revision_id = create_trip(client)
+    capability = client.cookies.get(f"trip_capability_{trip_id}")
+    service = get_trip_persistence_service()
+    seed = service.compile_intent_envelope(
+        trip_id=trip_id,
+        capability=capability,
+        idempotency_key=f"intent-revision-seed-{index}",
+        payload=CompileTripIntentRequest(
+            base_trip_revision_id=base_revision_id,
+            base_intent_revision_id=None,
+            structured_overrides={"city": "上海", "trip_days": 2},
+        ),
+    )
+    invariants: list[dict[str, object]] = []
+
+    def invariant(code: str, passed: bool) -> None:
+        invariants.append({"code": code, "passed": passed})
+
+    if fixture.name == "first_compile_revision_one":
+        invariant("first_revision_number", seed.revision.revision_number == 1)
+    elif fixture.name == "semantic_digest_stable_fixture":
+        replay = service.edit_intent_envelope(
+            trip_id=trip_id,
+            capability=capability,
+            revision_id=seed.revision.id,
+            idempotency_key=f"intent-semantic-repeat-{index}",
+            payload=EditTripIntentEnvelopeRequest(
+                base_trip_revision_id=base_revision_id,
+                base_intent_revision_id=seed.revision.id,
+                field_updates={"city": "上海", "trip_days": 2},
+            ),
+        )
+        invariant("semantic_digest_stable", replay.envelope.semantic_digest == seed.envelope.semantic_digest)
+        invariant("lineage_digest_changes", replay.envelope.lineage_digest != seed.envelope.lineage_digest)
+    elif fixture.name == "lineage_differs_by_source_fixture":
+        changed = service.edit_intent_envelope(
+            trip_id=trip_id,
+            capability=capability,
+            revision_id=seed.revision.id,
+            idempotency_key=f"intent-source-change-{index}",
+            payload=EditTripIntentEnvelopeRequest(
+                base_trip_revision_id=base_revision_id,
+                base_intent_revision_id=seed.revision.id,
+                field_updates={"city": "上海", "trip_days": 2, "pace": "relaxed"},
+            ),
+        )
+        invariant("lineage_digest_changes_for_new_revision", changed.envelope.lineage_digest != seed.envelope.lineage_digest)
+    elif fixture.name == "restore_semantics_fixture":
+        changed = service.edit_intent_envelope(
+            trip_id=trip_id,
+            capability=capability,
+            revision_id=seed.revision.id,
+            idempotency_key=f"intent-restore-edit-{index}",
+            payload=EditTripIntentEnvelopeRequest(
+                base_trip_revision_id=base_revision_id,
+                base_intent_revision_id=seed.revision.id,
+                field_updates={"city": "杭州"},
+            ),
+        )
+        restored = service.restore_intent_envelope(
+            trip_id=trip_id,
+            capability=capability,
+            revision_id=seed.revision.id,
+            idempotency_key=f"intent-restore-{index}",
+            payload=RestoreTripIntentEnvelopeRequest(
+                base_trip_revision_id=base_revision_id,
+                base_intent_revision_id=changed.revision.id,
+            ),
+        )
+        invariant("restore_creates_new_revision", restored.revision.revision_number == 3)
+        invariant("restore_preserves_semantics", restored.envelope.semantic_digest == seed.envelope.semantic_digest)
+    elif fixture.name == "missing_base_intent_fixture":
+        try:
+            service.compile_intent_envelope(
+                trip_id=trip_id,
+                capability=capability,
+                idempotency_key=f"intent-stale-{index}",
+                payload=CompileTripIntentRequest(
+                    base_trip_revision_id=base_revision_id,
+                    base_intent_revision_id=None,
+                    structured_overrides={"city": "杭州", "trip_days": 2},
+                ),
+            )
+        except StaleIntentRevisionError:
+            invariant("stale_base_rejected", True)
+        else:
+            invariant("stale_base_rejected", False)
+    elif fixture.name == "idempotent_replay_fixture":
+        payload = CompileTripIntentRequest(
+            base_trip_revision_id=base_revision_id,
+            base_intent_revision_id=seed.revision.id,
+            structured_overrides={"pace": "balanced"},
+        )
+        first = service.compile_intent_envelope(
+            trip_id=trip_id, capability=capability, idempotency_key=f"intent-idempotent-{index}", payload=payload
+        )
+        replay = service.compile_intent_envelope(
+            trip_id=trip_id, capability=capability, idempotency_key=f"intent-idempotent-{index}", payload=payload
+        )
+        invariant("idempotent_replay_same_revision", first.revision.id == replay.revision.id)
+        invariant("idempotent_replay_flag", replay.idempotent_replay)
+    revisions = get_trip_repository().list_intent_revisions(trip_id=trip_id)
+    invariant("revision_numbers_unique", len({item.revision_number for item in revisions}) == len(revisions))
+    return {
+        "name": fixture.name,
+        "category": fixture.category,
+        "passed": all(bool(item["passed"]) for item in invariants),
+        "status": "revision_complete",
+        "revision_numbers": [item.revision_number for item in revisions],
+        "runtime_seconds": time.perf_counter() - started,
+        "invariants": invariants,
+    }
 
 
 def post_fixture(client: TestClient, fixture: IntentCompilerFixture, trip_id: str, payload: dict, index: int):
@@ -335,7 +554,7 @@ def post_fixture(client: TestClient, fixture: IntentCompilerFixture, trip_id: st
     return client.post(url, json=payload, headers=headers)
 
 
-def summarize_results(results: list[dict]) -> dict:
+def summarize_results(results: list[dict], *, deterministic_mismatch_count: int = 0) -> dict:
     failed = [result for result in results if not result["passed"]]
     return {
         "total_fixture_count": len([result for result in results if not result["name"].endswith("_gate")]),
@@ -345,11 +564,37 @@ def summarize_results(results: list[dict]) -> dict:
         "concurrency_fixture_count": sum(1 for result in results if result.get("category") == "concurrency"),
         "revision_fixture_count": sum(1 for result in results if result.get("category") == "revision"),
         "clarification_fixture_count": sum(1 for result in results if result.get("category") == "clarification"),
-        "invariant_count": sum(int(result.get("invariant_count", 0)) for result in results),
+        "invariant_count": len({
+            f"{result['name']}:{invariant['code']}"
+            for result in results
+            for invariant in result.get("invariants", [])
+            if invariant.get("passed")
+        }),
         "failure_count": len(failed),
-        "deterministic_mismatch_count": 0,
-        "runtime_seconds": 0,
+        "deterministic_mismatch_count": deterministic_mismatch_count,
+        "runtime_seconds": sum(float(result.get("runtime_seconds", 0)) for result in results),
     }
+
+
+def count_deterministic_mismatches(first: list[dict], second: list[dict]) -> int:
+    second_by_name = {result["name"]: result for result in second}
+    mismatches = 0
+    for result in first:
+        duplicate = second_by_name.get(result["name"])
+        if duplicate is None:
+            mismatches += 1
+            continue
+        canonical = {
+            key: result.get(key)
+            for key in ("passed", "status", "conflicts", "clarifications", "typed_sections", "semantic_types", "domain_value_types", "graph_node_types", "blocking_reasons")
+        }
+        repeated = {
+            key: duplicate.get(key)
+            for key in canonical
+        }
+        if canonical != repeated:
+            mismatches += 1
+    return mismatches
 
 
 def create_trip(client: TestClient) -> tuple[str, str]:
@@ -369,11 +614,20 @@ def evaluate_response(fixture: IntentCompilerFixture, response) -> tuple[bool, d
     envelope = response.json()["envelope"]
     conflicts = [conflict["reason_code"] for conflict in envelope["conflicts"]]
     clarifications = [item["question_id"] for item in envelope["clarification_queue"]]
+    invariants: list[dict] = []
+    def invariant(code: str, value: bool) -> None:
+        invariants.append({"code": code, "passed": value})
+
     passed = envelope["planner_ready_status"] == fixture.expected_status
+    invariant("expected_readiness", passed)
     if fixture.expected_conflict:
-        passed = passed and fixture.expected_conflict in conflicts
+        value = fixture.expected_conflict in conflicts
+        invariant("expected_conflict", value)
+        passed = passed and value
     if fixture.expected_clarification:
-        passed = passed and fixture.expected_clarification in clarifications
+        value = fixture.expected_clarification in clarifications
+        invariant("expected_clarification", value)
+        passed = passed and value
     typed_sections = envelope["validation_report"].get("typed_intent_sections", [])
     provenance_fields = [item["field_path"] for item in envelope.get("provenance_summary", [])]
     semantic_types = [field["semantic_type"] for field in envelope["fields"]]
@@ -381,23 +635,39 @@ def evaluate_response(fixture: IntentCompilerFixture, response) -> tuple[bool, d
     graph_node_types = [node["node_type"] for node in envelope.get("provenance_graph", {}).get("nodes", [])]
     blocking_reasons = envelope.get("readiness_policy", {}).get("blocking_reason_codes", [])
     if fixture.expected_typed_section:
-        passed = passed and fixture.expected_typed_section in typed_sections
+        value = fixture.expected_typed_section in typed_sections
+        invariant("typed_section_present", value)
+        passed = passed and value
     if fixture.expected_provenance_field:
-        passed = passed and fixture.expected_provenance_field in provenance_fields
+        value = fixture.expected_provenance_field in provenance_fields
+        invariant("provenance_field_present", value)
+        passed = passed and value
     if fixture.expected_semantic_type:
-        passed = passed and fixture.expected_semantic_type in semantic_types
+        value = fixture.expected_semantic_type in semantic_types
+        invariant("semantic_type_present", value)
+        passed = passed and value
     if fixture.expected_domain_value_type:
-        passed = passed and fixture.expected_domain_value_type in domain_value_types
+        value = fixture.expected_domain_value_type in domain_value_types
+        invariant("domain_value_type_present", value)
+        passed = passed and value
     if fixture.expected_graph_node_type:
-        passed = passed and fixture.expected_graph_node_type in graph_node_types
+        value = fixture.expected_graph_node_type in graph_node_types
+        invariant("graph_node_type_present", value)
+        passed = passed and value
     if fixture.expected_blocking_reason:
-        passed = passed and fixture.expected_blocking_reason in blocking_reasons
-    passed = passed and bool(envelope.get("semantic_digest"))
-    passed = passed and bool(envelope.get("lineage_digest"))
-    passed = passed and envelope.get("semantic_digest") != envelope.get("lineage_digest")
-    passed = passed and envelope["validation_report"].get("provenance_graph_node_count", 0) > 0
-    passed = passed and "typed_assumptions" in envelope
-    passed = passed and "parser_result" in envelope
+        value = fixture.expected_blocking_reason in blocking_reasons
+        invariant("blocking_reason_present", value)
+        passed = passed and value
+    for code, value in [
+        ("semantic_digest_present", bool(envelope.get("semantic_digest"))),
+        ("lineage_digest_present", bool(envelope.get("lineage_digest"))),
+        ("semantic_and_lineage_distinct", envelope.get("semantic_digest") != envelope.get("lineage_digest")),
+        ("provenance_graph_present", envelope["validation_report"].get("provenance_graph_node_count", 0) > 0),
+        ("typed_assumptions_present", "typed_assumptions" in envelope),
+        ("parser_result_present", "parser_result" in envelope),
+    ]:
+        invariant(code, value)
+        passed = passed and value
     return passed, {
         "status": envelope["planner_ready_status"],
         "conflicts": conflicts,
@@ -411,10 +681,7 @@ def evaluate_response(fixture: IntentCompilerFixture, response) -> tuple[bool, d
         "semantic_digest": envelope.get("semantic_digest"),
         "provenance_graph_node_count": envelope["validation_report"].get("provenance_graph_node_count", 0),
         "field_count": len(envelope["fields"]),
-        "invariant_count": 3
-        + int(bool(envelope.get("formal_contract")))
-        + int(bool(envelope.get("parser_result")))
-        + int(envelope["validation_report"].get("formal_contract_authority", False)),
+        "invariants": invariants,
     }
 
 
