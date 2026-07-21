@@ -755,6 +755,8 @@ def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtr
     env_patch = {}
     if fixture.binary_fixture.declared_kind == "image":
         env_patch = {"IMPORT_DOCUMENT_OCR_COMMAND": "definitely-not-installed-tesseract"}
+    elif fixture.name == "document_pdf_partial_page_retry":
+        env_patch = {"IMPORT_PDF_PAGE_OCR_ENABLED": "false"}
     with patch.dict("os.environ", env_patch):
         response = client.post(
             f"/trips/{trip_id}/imports/{binary_body['job']['id']}/extract-document",
