@@ -782,6 +782,21 @@ class TextImportService:
                 duplicate_artifact=True,
                 idempotent_replay=True,
             )
+        if force_new_generation and retry_page_number:
+            if base_generation is None:
+                raise TripError("import_document_extraction_not_found", "Document extraction was not found.", 404)
+            page = next(
+                (
+                    item
+                    for item in self.import_repository.list_document_extraction_pages(generation_id=base_generation.id)
+                    if item.page_number == retry_page_number
+                ),
+                None,
+            )
+            if page is None:
+                raise TripError("import_document_page_not_found", "Document extraction page was not found.", 404)
+            if not page.retryable:
+                raise TripError("import_document_page_not_retryable", "Document extraction page is not retryable.", 409)
         existing_generation = base_generation or self.import_repository.get_latest_document_extraction_for_source(
             trip_id=trip_id,
             source_import_job_id=source_job.id,
@@ -1137,8 +1152,6 @@ class TextImportService:
         )
         if page is None:
             raise TripError("import_document_page_not_found", "Document extraction page was not found.", 404)
-        if not page.retryable:
-            raise TripError("import_document_page_not_retryable", "Document extraction page is not retryable.", 409)
         return self.extract_document_import(
             trip_id=trip_id,
             import_job_id=generation.source_import_job_id,
