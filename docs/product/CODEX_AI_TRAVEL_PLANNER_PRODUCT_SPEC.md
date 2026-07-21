@@ -11,6 +11,21 @@
 - **Codex/工程执行**：从“Codex 实施总则”和 F-001～F-020 开始；每个功能都包含边界、数据、API、异常和验收。
 - **研究可信度**：产品能力优先采用官网；二级来源只用于补充无法从官网读取的圆周旅迹细节，并已标注。论文和 GitHub 用于技术边界与评估，不把 demo README 当生产能力证明。
 
+## 权威与时效
+
+本文件包含 2026-07-12 的产品研究、路线规划和当时仓库观察。实施时的权威顺序为：
+
+```text
+code / schemas / tests
+→ ADRs
+→ CURRENT_PHASE
+→ PRODUCT_DIRECTION
+→ CODEX product specification
+→ research snapshots
+```
+
+其中的历史 LOC、历史缺口、旧阶段判断和竞品研究不得直接当作当前代码事实。Codex 开始任何 F-xxx 实施前，必须重新审计当前 `main` 的真实代码、schema、API、状态 owner、tests、ADR 和 `docs/product/CURRENT_PHASE.md`。
+
 ---
 
 ## 1. 执行摘要
