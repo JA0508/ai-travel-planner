@@ -246,6 +246,32 @@ class SQLiteTripRepository:
             )
             return CreateIntentRevisionResult(revision=revision)
 
+    def get_intent_revision_by_idempotency(
+        self,
+        *,
+        trip_id: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CreateIntentRevisionResult | None:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM trip_intent_idempotency_records
+                WHERE trip_id = ? AND idempotency_key_hash = ?
+                """,
+                (trip_id, idempotency_key_hash),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["request_digest"] != request_digest:
+                raise IdempotencyConflictError()
+            revision = self._get_intent_revision_in_connection(
+                connection,
+                trip_id,
+                row["result_intent_revision_id"],
+            )
+        return CreateIntentRevisionResult(revision=revision, idempotent_replay=True)
+
     def list_intent_revisions(self, *, trip_id: str) -> list[TripIntentRevisionRecord]:
         with closing(self.connection_factory()) as connection:
             rows = connection.execute(

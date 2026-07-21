@@ -12,8 +12,8 @@ from app.trips.candidates import TripCandidateRecord
 from app.trips.digests import sha256_digest
 
 
-TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.0"
-TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v1"
+TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.1"
+TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v2"
 
 
 class IntentSourceType(str, Enum):
@@ -92,11 +92,69 @@ class ClarificationQuestion(BaseModel):
 
     question_id: str
     field_paths: list[str]
+    answer_field_path: str | None = None
+    answer_value_type: Literal["string", "integer", "pace", "string_list"] = "string"
     question: str
     priority: int = Field(..., ge=0, le=100)
     blocking: bool
+    impact: Literal["planner_blocking", "planner_quality", "evidence_quality"] = "planner_blocking"
     reason_code: str
     options: list[Any] = Field(default_factory=list)
+
+
+class TypedIntentValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field_path: str
+    field_id: str | None = None
+    value: Any
+    kind: IntentFieldKind
+    confidence: float = Field(..., ge=0, le=1)
+    confirmed_by_user: bool
+    source_refs: list[IntentSourceRef] = Field(default_factory=list)
+    validation_codes: list[str] = Field(default_factory=list)
+
+
+class TypedDatePolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trip_days: TypedIntentValue | None = None
+    availability_windows: list[TypedIntentValue] = Field(default_factory=list)
+
+
+class TypedPoiPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    must_candidates: list[TypedIntentValue] = Field(default_factory=list)
+    optional_candidates: list[TypedIntentValue] = Field(default_factory=list)
+    exclusions: list[TypedIntentValue] = Field(default_factory=list)
+
+
+class TypedTripIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    destinations: list[TypedIntentValue] = Field(default_factory=list)
+    date_policy: TypedDatePolicy = Field(default_factory=TypedDatePolicy)
+    fixed_events: list[TypedIntentValue] = Field(default_factory=list)
+    poi_preferences: TypedPoiPreferences = Field(default_factory=TypedPoiPreferences)
+    pace: TypedIntentValue | None = None
+    transport_preferences: list[TypedIntentValue] = Field(default_factory=list)
+    budget: TypedIntentValue | None = None
+    travelers: list[TypedIntentValue] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    unresolved_questions: list[ClarificationQuestion] = Field(default_factory=list)
+
+
+class IntentProvenanceSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field_path: str
+    selected_field_ids: list[str] = Field(default_factory=list)
+    shadowed_field_ids: list[str] = Field(default_factory=list)
+    source_types: list[IntentSourceType] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    confirmed: bool
+    max_confidence: float = Field(..., ge=0, le=1)
 
 
 class PlannerReadyIntentPreview(BaseModel):
@@ -126,6 +184,8 @@ class SourceLinkedTripIntentEnvelope(BaseModel):
     conflicts: list[IntentConflict] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     clarification_queue: list[ClarificationQuestion] = Field(default_factory=list)
+    typed_intent: TypedTripIntent = Field(default_factory=TypedTripIntent)
+    provenance_summary: list[IntentProvenanceSummary] = Field(default_factory=list)
     planner_ready_intent: PlannerReadyIntentPreview
     planner_ready_status: IntentPlannerReadyStatus
     validation_report: dict[str, Any]
@@ -286,16 +346,19 @@ def compile_source_linked_intent(
     for assumption in assumptions:
         if assumption not in planner_ready.assumptions:
             planner_ready.assumptions.append(assumption)
-    blocking = [item for item in conflicts if item.severity == "blocking"] + [item for item in clarifications if item.blocking]
+    typed_intent = _build_typed_intent(selected, clarifications, assumptions)
+    provenance_summary = _build_provenance_summary(selected, shadowed)
+    blocking_conflicts = [item for item in conflicts if item.severity == "blocking"]
+    blocking_clarifications = [item for item in clarifications if item.blocking]
     status = (
         IntentPlannerReadyStatus.BLOCKED
-        if any(isinstance(item, IntentConflict) for item in blocking)
+        if blocking_conflicts
         else IntentPlannerReadyStatus.NEEDS_CLARIFICATION
-        if blocking or clarifications
+        if blocking_clarifications
         else IntentPlannerReadyStatus.READY
     )
     validation_report = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "compiler_version": TRIP_INTENT_COMPILER_VERSION,
         "llm_proposal_validated": request.llm_proposal is not None,
         "manual_override_priority_enforced": any(
@@ -305,6 +368,9 @@ def compile_source_linked_intent(
         ),
         "blocking_conflict_count": sum(1 for conflict in conflicts if conflict.severity == "blocking"),
         "clarification_count": len(clarifications),
+        "blocking_clarification_count": len(blocking_clarifications),
+        "typed_intent_sections": _typed_section_names(typed_intent),
+        "provenance_summary_count": len(provenance_summary),
         "planner_ready": status == IntentPlannerReadyStatus.READY,
         "excluded_candidate_ids": [
             candidate.id
@@ -328,6 +394,8 @@ def compile_source_linked_intent(
         "conflicts": [conflict.model_dump(mode="json") for conflict in conflicts],
         "assumptions": assumptions,
         "clarification_queue": [item.model_dump(mode="json") for item in clarifications],
+        "typed_intent": typed_intent.model_dump(mode="json"),
+        "provenance_summary": [item.model_dump(mode="json") for item in provenance_summary],
         "planner_ready_intent": planner_ready.model_dump(mode="json"),
         "planner_ready_status": status.value,
         "validation_report": validation_report,
@@ -344,6 +412,8 @@ def compile_source_linked_intent(
         conflicts=conflicts,
         assumptions=assumptions,
         clarification_queue=clarifications,
+        typed_intent=typed_intent,
+        provenance_summary=provenance_summary,
         planner_ready_intent=planner_ready,
         planner_ready_status=status,
         validation_report=validation_report,
@@ -661,10 +731,27 @@ def _select_fields(candidates: list[_CandidateField]) -> tuple[list[IntentField]
             ClarificationQuestion(
                 question_id="clarify_trip_city",
                 field_paths=["trip.city"],
+                answer_field_path="trip.city",
+                answer_value_type="string",
                 question="Which destination city should this trip be compiled for?",
                 priority=100,
                 blocking=True,
+                impact="planner_blocking",
                 reason_code="missing_destination",
+            )
+        )
+    if not any(field.field_path == "trip.trip_days" and field.status == IntentFieldStatus.SELECTED for field in selected):
+        clarifications.append(
+            ClarificationQuestion(
+                question_id="clarify_trip_days",
+                field_paths=["trip.trip_days"],
+                answer_field_path="trip.trip_days",
+                answer_value_type="integer",
+                question="How many days should the trip cover?",
+                priority=70,
+                blocking=False,
+                impact="planner_quality",
+                reason_code="missing_trip_length",
             )
         )
     return selected, shadowed, conflicts, clarifications
@@ -745,6 +832,99 @@ def _build_planner_ready(fields: list[IntentField]) -> PlannerReadyIntentPreview
         elif field.field_path == "time.fixed_events":
             preview.fixed_events.append(field.value)
     return preview
+
+
+def _build_typed_intent(
+    fields: list[IntentField],
+    clarifications: list[ClarificationQuestion],
+    assumptions: list[str],
+) -> TypedTripIntent:
+    typed = TypedTripIntent(assumptions=assumptions, unresolved_questions=clarifications)
+    for field in fields:
+        if field.status != IntentFieldStatus.SELECTED:
+            continue
+        value = _typed_value(field)
+        if field.field_path == "trip.city":
+            typed.destinations.append(value)
+        elif field.field_path == "trip.trip_days":
+            typed.date_policy.trip_days = value
+        elif field.field_path == "time.fixed_events":
+            typed.fixed_events.append(value)
+        elif field.field_path == "poi.must_candidates":
+            typed.poi_preferences.must_candidates.append(value)
+        elif field.field_path == "trip.pace":
+            typed.pace = value
+        elif field.field_path == "preferences.transport":
+            typed.transport_preferences.append(value)
+    return typed
+
+
+def _typed_value(field: IntentField) -> TypedIntentValue:
+    return TypedIntentValue(
+        field_path=field.field_path,
+        field_id=field.field_id,
+        value=field.value,
+        kind=field.kind,
+        confidence=field.confidence,
+        confirmed_by_user=field.confirmed_by_user,
+        source_refs=field.source_refs,
+        validation_codes=field.validation_codes,
+    )
+
+
+def _build_provenance_summary(
+    selected: list[IntentField],
+    shadowed: list[IntentField],
+) -> list[IntentProvenanceSummary]:
+    fields = [*selected, *shadowed]
+    paths = sorted({field.field_path for field in fields})
+    summary: list[IntentProvenanceSummary] = []
+    for field_path in paths:
+        path_fields = [field for field in fields if field.field_path == field_path]
+        refs = [ref for field in path_fields for ref in field.source_refs]
+        selected_fields = [
+            field.field_id
+            for field in path_fields
+            if field.status == IntentFieldStatus.SELECTED
+        ]
+        shadowed_fields = [
+            field.field_id
+            for field in path_fields
+            if field.status == IntentFieldStatus.SHADOWED
+        ]
+        summary.append(
+            IntentProvenanceSummary(
+                field_path=field_path,
+                selected_field_ids=selected_fields,
+                shadowed_field_ids=shadowed_fields,
+                source_types=list(dict.fromkeys(ref.source_type for ref in refs)),
+                evidence_refs=unique_texts([evidence for ref in refs for evidence in ref.evidence_refs]),
+                confirmed=any(field.confirmed_by_user for field in path_fields),
+                max_confidence=max((field.confidence for field in path_fields), default=0),
+            )
+        )
+    return summary
+
+
+def _typed_section_names(typed: TypedTripIntent) -> list[str]:
+    names: list[str] = []
+    if typed.destinations:
+        names.append("destinations")
+    if typed.date_policy.trip_days or typed.date_policy.availability_windows:
+        names.append("date_policy")
+    if typed.fixed_events:
+        names.append("fixed_events")
+    if typed.poi_preferences.must_candidates or typed.poi_preferences.optional_candidates or typed.poi_preferences.exclusions:
+        names.append("poi_preferences")
+    if typed.pace:
+        names.append("pace")
+    if typed.transport_preferences:
+        names.append("transport_preferences")
+    if typed.assumptions:
+        names.append("assumptions")
+    if typed.unresolved_questions:
+        names.append("unresolved_questions")
+    return names
 
 
 def _validate_selected_fields(

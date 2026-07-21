@@ -108,7 +108,9 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       {status ? <p className="intent-confirmation-workspace__status">{status}</p> : null}
       {envelope ? (
         <div className="intent-confirmation-workspace__body">
+          <TypedIntentPreview envelope={envelope} />
           <FieldList title="Selected fields" fields={summary.selectedFields} />
+          <ProvenanceList envelope={envelope} />
           {envelope.conflicts.length ? (
             <div className="intent-confirmation-workspace__panel">
               <strong>Conflicts</strong>
@@ -122,6 +124,9 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
           {envelope.clarification_queue.map((question) => (
             <div className="intent-confirmation-workspace__panel" key={question.question_id}>
               <strong>{question.question}</strong>
+              <p>
+                {question.blocking ? "Blocking" : "Non-blocking"} · {question.impact} · {question.answer_field_path}
+              </p>
               <div className="intent-confirmation-workspace__answer">
                 <input
                   value={clarificationAnswer}
@@ -266,6 +271,40 @@ function FieldList({ title, fields }: { title: string; fields: SourceLinkedTripI
       {fields.map((field) => (
         <p key={field.field_id}>
           {field.field_path}: {formatValue(field.value)} · {field.kind} · {field.source_refs[0]?.source_type}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function TypedIntentPreview({ envelope }: { envelope: SourceLinkedTripIntentEnvelope }) {
+  const destination = envelope.typed_intent.destinations[0];
+  const tripDays = envelope.typed_intent.date_policy.trip_days;
+  const pace = envelope.typed_intent.pace;
+  return (
+    <div className="intent-confirmation-workspace__panel">
+      <strong>Typed intent preview</strong>
+      <p>Destination: {destination ? formatValue(destination.value) : "unresolved"}</p>
+      <p>Trip days: {tripDays ? formatValue(tripDays.value) : "assumption needed"}</p>
+      <p>Must places: {envelope.typed_intent.poi_preferences.must_candidates.length}</p>
+      <p>Fixed events: {envelope.typed_intent.fixed_events.length}</p>
+      <p>Transport: {envelope.typed_intent.transport_preferences.map((item) => formatValue(item.value)).join(", ") || "none"}</p>
+      <p>Pace: {pace ? formatValue(pace.value) : "unset"}</p>
+    </div>
+  );
+}
+
+function ProvenanceList({ envelope }: { envelope: SourceLinkedTripIntentEnvelope }) {
+  if (!envelope.provenance_summary.length) {
+    return null;
+  }
+  return (
+    <div className="intent-confirmation-workspace__panel">
+      <strong>Source evidence</strong>
+      {envelope.provenance_summary.map((item) => (
+        <p key={item.field_path}>
+          {item.field_path}: {item.source_types.join(", ")} · {item.confirmed ? "confirmed" : "unconfirmed"} · evidence{" "}
+          {item.evidence_refs.length || "none"}
         </p>
       ))}
     </div>

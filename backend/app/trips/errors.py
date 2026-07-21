@@ -81,6 +81,26 @@ class StaleBaseRevisionError(TripError):
         )
 
 
+class StaleIntentRevisionError(TripError):
+    def __init__(
+        self,
+        *,
+        trip_id: str,
+        provided_intent_revision_id: str,
+        current_intent_revision_id: str,
+    ) -> None:
+        super().__init__(
+            code="stale_intent_revision",
+            message="The intent edit was based on a stale intent revision.",
+            status_code=409,
+            context={
+                "trip_id": trip_id,
+                "provided_intent_revision_id": provided_intent_revision_id,
+                "current_intent_revision_id": current_intent_revision_id,
+            },
+        )
+
+
 class IdempotencyConflictError(TripError):
     def __init__(self) -> None:
         super().__init__(

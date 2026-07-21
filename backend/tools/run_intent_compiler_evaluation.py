@@ -22,6 +22,8 @@ class IntentCompilerFixture:
     expected_status: str
     expected_conflict: str | None = None
     expected_clarification: str | None = None
+    expected_typed_section: str | None = None
+    expected_provenance_field: str | None = None
 
 
 FIXTURES = [
@@ -29,6 +31,8 @@ FIXTURES = [
         name="direct_user_text_ready",
         payload={"direct_user_text": "城市：上海\n天数：2\n偏好：不要太赶"},
         expected_status="ready",
+        expected_typed_section="destinations",
+        expected_provenance_field="trip.city",
     ),
     IntentCompilerFixture(
         name="manual_override_beats_llm",
@@ -38,12 +42,20 @@ FIXTURES = [
         },
         expected_status="ready",
         expected_conflict="higher_priority_source_selected",
+        expected_typed_section="date_policy",
     ),
     IntentCompilerFixture(
         name="missing_destination_clarification",
         payload={"direct_user_text": "偏好：不要太赶"},
         expected_status="needs_clarification",
         expected_clarification="clarify_trip_city",
+    ),
+    IntentCompilerFixture(
+        name="missing_trip_days_is_planner_ready_with_assumption",
+        payload={"structured_overrides": {"city": "上海"}},
+        expected_status="ready",
+        expected_clarification="clarify_trip_days",
+        expected_typed_section="unresolved_questions",
     ),
     IntentCompilerFixture(
         name="fixed_event_outside_trip_dates",
@@ -56,11 +68,20 @@ FIXTURES = [
         },
         expected_status="blocked",
         expected_conflict="fixed_event_outside_trip_dates",
+        expected_typed_section="fixed_events",
     ),
     IntentCompilerFixture(
         name="llm_proposal_only_is_assumption_weighted",
         payload={"llm_proposal": {"city": "上海", "trip_days": 2}},
         expected_status="ready",
+        expected_typed_section="destinations",
+    ),
+    IntentCompilerFixture(
+        name="transport_preference_is_typed_soft_field",
+        payload={"structured_overrides": {"city": "上海", "trip_days": 2, "transport_preferences": ["地铁", "步行"]}},
+        expected_status="ready",
+        expected_typed_section="transport_preferences",
+        expected_provenance_field="preferences.transport",
     ),
 ]
 
@@ -138,10 +159,18 @@ def evaluate_response(fixture: IntentCompilerFixture, response) -> tuple[bool, d
         passed = passed and fixture.expected_conflict in conflicts
     if fixture.expected_clarification:
         passed = passed and fixture.expected_clarification in clarifications
+    typed_sections = envelope["validation_report"].get("typed_intent_sections", [])
+    provenance_fields = [item["field_path"] for item in envelope.get("provenance_summary", [])]
+    if fixture.expected_typed_section:
+        passed = passed and fixture.expected_typed_section in typed_sections
+    if fixture.expected_provenance_field:
+        passed = passed and fixture.expected_provenance_field in provenance_fields
     return passed, {
         "status": envelope["planner_ready_status"],
         "conflicts": conflicts,
         "clarifications": clarifications,
+        "typed_sections": typed_sections,
+        "provenance_fields": provenance_fields,
         "field_count": len(envelope["fields"]),
     }
 

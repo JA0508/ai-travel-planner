@@ -2,13 +2,14 @@
 
 ## Current phase
 
-F-004a Source-Linked Intent Contract Foundation draft delivery.
+F-004a.1 Typed Intent, Provenance and Concurrency Hardening.
 
 ## Recently completed and merged
 
 - F-002d Layout-Aware OCR and Document Text Extraction
 - F-002d.1 Page-Level Extraction, Reading Order and Visual Evidence Hardening
 - Product Direction and Roadmap Reconciliation
+- F-004a Source-Linked Intent Contract Foundation
 
 The completed document extraction path now supports:
 
@@ -48,6 +49,7 @@ The completed document extraction path now supports:
 - F-002c Image/PDF Artifact Intake and Safe Document Classification
 - F-002d Layout-Aware OCR and Document Text Extraction
 - F-002d.1 Page-Level Extraction, Reading Order and Visual Evidence Hardening
+- F-004a Source-Linked Intent Contract Foundation
 
 ## Known technical debt
 
@@ -56,27 +58,30 @@ The completed document extraction path now supports:
 - Five-viewport layout-aware browser visual smoke coverage is incomplete.
 - Local OCR behavior is intentionally capability-reported and may vary by
   installed language packs and rendering dependencies.
-- Import Review can produce reviewed mentions and TripCandidates, but reviewed
-  source facts are only now entering F-004a draft intent-contract review; this is
-  not yet planner integration.
-- F-004a currently stops at intent contract preview, revision history,
-  clarification, and confirmation. It does not create TripRevisions or execute
-  itinerary mutations.
+- Import Review can produce reviewed mentions and TripCandidates, and F-004a now
+  compiles them into immutable source-linked intent revisions.
+- F-004a.1 is hardening the intent contract into typed sections, explicit
+  provenance summaries, generic clarification resolution, and stale intent edit
+  protection. It still does not create TripRevisions or execute itinerary
+  mutations.
 
 ## Current next product objective
 
-1. F-004a Source-Linked Intent Contract Foundation
+1. F-004a.1 Typed Intent, Provenance and Concurrency Hardening
 
-The current product step is to compile reviewed source facts into:
+The current product step is to harden reviewed source facts into:
 
 - hard constraints
 - soft preferences
 - assumptions
 - unresolved questions
-- planner-ready intent
+- planner-ready intent preview
+- source evidence summaries
+- generic clarification answers
+- concurrency-safe intent revision edits
 
 This phase must remain a confirmation and contract boundary until the draft PR is
-merged. Planner execution belongs to a later explicitly scoped phase.
+merged. Planner execution belongs to F-004b or a later explicitly scoped phase.
 
 ## Supporting follow-up
 
