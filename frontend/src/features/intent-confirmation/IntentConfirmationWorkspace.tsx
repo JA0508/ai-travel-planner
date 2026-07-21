@@ -13,6 +13,7 @@ import {
 } from "./intentApi";
 import {
   buildIntentCompileIdempotencyKey,
+  formatIntentDomainValue,
   summarizeIntentEnvelope,
 } from "./intentConfirmationModel";
 import type { SourceLinkedTripIntentEnvelope, TripIntentRevisionMetadata } from "./intentTypes";
@@ -34,6 +35,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
   const [history, setHistory] = useState<TripIntentRevisionMetadata[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [clarificationAnswer, setClarificationAnswer] = useState("");
+  const [selectedEvidenceNodeId, setSelectedEvidenceNodeId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<IntentEditForm>({
     city: "",
     tripDays: "",
@@ -84,6 +86,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       saved.tripId,
       {
         base_revision_id: saved.currentRevisionId,
+        base_intent_revision_id: history[0]?.id ?? null,
         direct_user_text: directUserText,
         use_llm_proposal_adapter: true,
       },
@@ -175,7 +178,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     const result = await restoreTripIntentEnvelope(
       saved.tripId,
       intentRevisionId,
-      { base_revision_id: saved.currentRevisionId },
+      { base_revision_id: saved.currentRevisionId, base_intent_revision_id: history[0]?.id ?? null },
       `intent-restore:${intentRevisionId}:${saved.currentRevisionId}`,
     );
     if (!result.ok) {
@@ -208,14 +211,18 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       {envelope ? (
         <div className="intent-confirmation-workspace__body">
           <TypedIntentPreview envelope={envelope} />
-          <ReadinessEvidence envelope={envelope} />
+          <ReadinessEvidence envelope={envelope} latestRevision={history[0] ?? null} />
           <IntentEditPanel
             form={editForm}
             onChange={setEditForm}
             onSave={() => void handleEditIntent()}
           />
           <FieldList title="Selected fields" fields={summary.selectedFields} />
-          <ProvenanceList envelope={envelope} />
+          <ProvenanceList
+            envelope={envelope}
+            selectedNodeId={selectedEvidenceNodeId}
+            onSelectNode={setSelectedEvidenceNodeId}
+          />
           {envelope.conflicts.length ? (
             <div className="intent-confirmation-workspace__panel">
               <strong>Conflicts</strong>
@@ -451,7 +458,7 @@ function FieldList({ title, fields }: { title: string; fields: SourceLinkedTripI
       <strong>{title}</strong>
       {fields.map((field) => (
         <p key={field.field_id}>
-          {field.field_path}: {formatValue(field.value)} · {field.kind} · {field.semantic_type} ·{" "}
+          {field.field_path}: {formatIntentDomainValue(field.value)} · {field.kind} · {field.semantic_type} ·{" "}
           {field.source_refs[0]?.source_type}
         </p>
       ))}
@@ -466,21 +473,32 @@ function TypedIntentPreview({ envelope }: { envelope: SourceLinkedTripIntentEnve
   return (
     <div className="intent-confirmation-workspace__panel">
       <strong>Typed intent preview</strong>
-      <p>Destination: {destination ? formatValue(destination.value) : "unresolved"}</p>
-      <p>Trip days: {tripDays ? formatValue(tripDays.value) : "assumption needed"}</p>
+      <p>Destination: {destination ? formatIntentDomainValue(destination.value) : "unresolved"}</p>
+      <p>Trip days: {tripDays ? formatIntentDomainValue(tripDays.value) : "assumption needed"}</p>
       <p>Must places: {envelope.typed_intent.poi_preferences.must_candidates.length}</p>
       <p>Fixed events: {envelope.typed_intent.fixed_events.length}</p>
-      <p>Transport: {envelope.typed_intent.transport_preferences.map((item) => formatValue(item.value)).join(", ") || "none"}</p>
-      <p>Pace: {pace ? formatValue(pace.value) : "unset"}</p>
+      <p>Transport: {envelope.typed_intent.transport_preferences.map((item) => formatIntentDomainValue(item.value)).join(", ") || "none"}</p>
+      <p>Pace: {pace ? formatIntentDomainValue(pace.value) : "unset"}</p>
+      <p>Budget: {envelope.typed_intent.budget ? formatIntentDomainValue(envelope.typed_intent.budget.value) : "unset"}</p>
+      <p>Traveler needs: {envelope.typed_intent.travelers.map((item) => formatIntentDomainValue(item.value)).join(", ") || "none"}</p>
     </div>
   );
 }
 
-function ReadinessEvidence({ envelope }: { envelope: SourceLinkedTripIntentEnvelope }) {
+function ReadinessEvidence({
+  envelope,
+  latestRevision,
+}: {
+  envelope: SourceLinkedTripIntentEnvelope;
+  latestRevision: TripIntentRevisionMetadata | null;
+}) {
+  const loadedLatest = !latestRevision || latestRevision.id === envelope.id;
   return (
     <div className="intent-confirmation-workspace__panel">
       <strong>Contract evidence</strong>
       <p>Semantic digest: {envelope.semantic_digest?.slice(0, 16) ?? "missing"}</p>
+      <p>Lineage digest: {envelope.lineage_digest?.slice(0, 16) ?? "missing"}</p>
+      <p>Semantic compare: {loadedLatest ? "loaded revision is latest" : "loaded revision differs from latest lineage"}</p>
       <p>
         Parser: {envelope.parser_result.parser_name} · {envelope.parser_result.status} ·{" "}
         {envelope.parser_result.extracted_field_paths.length} fields
@@ -496,10 +514,19 @@ function ReadinessEvidence({ envelope }: { envelope: SourceLinkedTripIntentEnvel
   );
 }
 
-function ProvenanceList({ envelope }: { envelope: SourceLinkedTripIntentEnvelope }) {
+function ProvenanceList({
+  envelope,
+  selectedNodeId,
+  onSelectNode,
+}: {
+  envelope: SourceLinkedTripIntentEnvelope;
+  selectedNodeId: string | null;
+  onSelectNode: (nodeId: string) => void;
+}) {
   if (!envelope.provenance_summary.length) {
     return null;
   }
+  const selectedNode = envelope.provenance_graph.nodes.find((node) => node.node_id === selectedNodeId);
   return (
     <div className="intent-confirmation-workspace__panel">
       <strong>Source evidence</strong>
@@ -509,20 +536,28 @@ function ProvenanceList({ envelope }: { envelope: SourceLinkedTripIntentEnvelope
           {item.evidence_refs.length || "none"}
         </p>
       ))}
+      <div className="intent-confirmation-workspace__evidence-nodes">
+        {envelope.provenance_graph.nodes
+          .filter((node) => node.node_type !== "field" && node.node_type !== "envelope_revision")
+          .slice(0, 12)
+          .map((node) => (
+            <button type="button" key={node.node_id} onClick={() => onSelectNode(node.node_id)}>
+              {node.node_type}
+            </button>
+          ))}
+      </div>
+      {selectedNode ? (
+        <p>
+          {selectedNode.node_type}: {selectedNode.label} ·{" "}
+          {selectedNode.artifact_id ? `artifact ${selectedNode.artifact_id}` : selectedNode.source_id ?? "no source id"}
+          {selectedNode.mention_id ? ` · mention ${selectedNode.mention_id}` : ""}
+          {selectedNode.page_number ? ` · page ${selectedNode.page_number}` : ""}
+        </p>
+      ) : null}
     </div>
   );
 }
 
 function isPace(value: string | null): value is IntentEditForm["pace"] {
   return value === "relaxed" || value === "balanced" || value === "intensive";
-}
-
-function formatValue(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (value == null) {
-    return "empty";
-  }
-  return JSON.stringify(value);
 }

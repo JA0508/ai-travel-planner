@@ -1,4 +1,4 @@
-import type { IntentField, SourceLinkedTripIntentEnvelope } from "./intentTypes";
+import type { IntentDomainValue, IntentField, SourceLinkedTripIntentEnvelope } from "./intentTypes";
 
 export function buildIntentCompileIdempotencyKey(
   tripId: string,
@@ -32,6 +32,33 @@ export function summarizeIntentEnvelope(envelope: SourceLinkedTripIntentEnvelope
     clarificationCount: envelope.clarification_queue.length,
     assumptionCount: envelope.assumptions.length,
   };
+}
+
+export function formatIntentDomainValue(value: IntentDomainValue): string {
+  switch (value.type) {
+    case "destination_city":
+      return value.city;
+    case "trip_days":
+      return `${value.days} days`;
+    case "pace":
+      return value.pace;
+    case "transport_preference":
+      return value.mode;
+    case "must_candidate":
+      return value.display_name ? `${value.display_name} (${value.candidate_id})` : value.candidate_id;
+    case "fixed_event":
+      return [value.name, value.fixed_day ? `day ${value.fixed_day}` : null, value.fixed_time_start]
+        .filter(Boolean)
+        .join(" · ");
+    case "general_preference":
+      return value.preference;
+    case "budget":
+      return [value.budget_level, value.amount, value.currency].filter((item) => item != null && item !== "").join(" ");
+    case "traveler_need":
+      return value.traveler_group ? `${value.traveler_group}: ${value.need}` : value.need;
+    case "unknown":
+      return value.raw == null ? "empty" : JSON.stringify(value.raw);
+  }
 }
 
 function hashText(value: string): string {

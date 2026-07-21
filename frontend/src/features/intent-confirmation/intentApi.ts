@@ -10,6 +10,7 @@ export function compileTripIntentEnvelope(
   tripId: string,
   payload: {
     base_revision_id: string;
+    base_intent_revision_id?: string | null;
     direct_user_text?: string | null;
     use_llm_proposal_adapter?: boolean;
   },
@@ -64,7 +65,7 @@ export function editTripIntentEnvelope(
 export function restoreTripIntentEnvelope(
   tripId: string,
   intentRevisionId: string,
-  payload: { base_revision_id: string },
+  payload: { base_revision_id: string; base_intent_revision_id?: string | null },
   idempotencyKey: string,
 ) {
   return postTripJson<CompileTripIntentResponse>(

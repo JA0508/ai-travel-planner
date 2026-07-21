@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import sqlite3
 import tempfile
 import unittest
@@ -69,17 +70,18 @@ class TripIntentContractTests(unittest.TestCase):
         selected_days = selected_field(envelope, "trip.trip_days")
         selected_pace = selected_field(envelope, "trip.pace")
         selected_candidate = selected_field(envelope, "poi.must_candidates")
-        self.assertEqual(selected_city["value"], "上海")
+        self.assertEqual(selected_city["value"], {"type": "destination_city", "city": "上海"})
         self.assertEqual(selected_city["semantic_type"], "destination_city")
-        self.assertEqual(selected_city["semantic_value"], {"city": "上海"})
+        self.assertEqual(selected_city["semantic_value"], {"type": "destination_city", "city": "上海"})
         self.assertEqual(selected_city["kind"], "hard")
         self.assertTrue(selected_city["confirmed_by_user"])
         self.assertEqual(selected_city["source_refs"][0]["source_type"], "direct_user_language")
         self.assertEqual(selected_city["source_refs"][0]["authority"], "user_confirmed")
-        self.assertEqual(selected_days["value"], 2)
-        self.assertEqual(selected_pace["value"], "relaxed")
+        self.assertEqual(selected_days["value"], {"type": "trip_days", "days": 2})
+        self.assertEqual(selected_pace["value"], {"type": "pace", "pace": "relaxed"})
         self.assertEqual(selected_pace["kind"], "soft")
-        self.assertEqual(selected_candidate["value"], candidate["id"])
+        self.assertEqual(selected_candidate["value"]["candidate_id"], candidate["id"])
+        self.assertEqual(selected_candidate["value"]["display_name"], candidate["display_name"])
         self.assertEqual(selected_candidate["semantic_type"], "must_candidate")
         self.assertEqual(selected_candidate["source_refs"][0]["source_type"], "trip_candidate")
         self.assertEqual(selected_candidate["source_refs"][0]["authority"], "reviewed_source")
@@ -94,15 +96,15 @@ class TripIntentContractTests(unittest.TestCase):
             "schema_validated",
             selected_candidate["validation_codes"],
         )
-        self.assertTrue(any(field["status"] == "shadowed" and field["value"] == "北京" for field in envelope["fields"]))
+        self.assertTrue(any(field["status"] == "shadowed" and field["value"].get("city") == "北京" for field in envelope["fields"]))
         self.assertTrue(any(conflict["reason_code"] == "higher_priority_source_selected" for conflict in envelope["conflicts"]))
         self.assertEqual(envelope["planner_ready_intent"]["city"], "上海")
         self.assertEqual(envelope["planner_ready_intent"]["trip_days"], 2)
         self.assertIn(candidate["id"], envelope["planner_ready_intent"]["must_place_candidate_ids"])
         self.assertEqual(envelope["planner_ready_intent"]["pace"], "relaxed")
-        self.assertEqual(envelope["typed_intent"]["destinations"][0]["value"], "上海")
-        self.assertEqual(envelope["typed_intent"]["date_policy"]["trip_days"]["value"], 2)
-        self.assertEqual(envelope["typed_intent"]["poi_preferences"]["must_candidates"][0]["value"], candidate["id"])
+        self.assertEqual(envelope["typed_intent"]["destinations"][0]["value"]["city"], "上海")
+        self.assertEqual(envelope["typed_intent"]["date_policy"]["trip_days"]["value"]["days"], 2)
+        self.assertEqual(envelope["typed_intent"]["poi_preferences"]["must_candidates"][0]["value"]["candidate_id"], candidate["id"])
         self.assertTrue(
             any(
                 item["field_path"] == "trip.city"
@@ -114,7 +116,13 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertTrue(envelope["validation_report"]["llm_proposal_validated"])
         self.assertEqual(envelope["parser_result"]["status"], "validated")
         self.assertTrue(envelope["semantic_digest"])
+        self.assertTrue(envelope["lineage_digest"])
+        self.assertNotEqual(envelope["semantic_digest"], envelope["lineage_digest"])
         self.assertGreater(envelope["validation_report"]["provenance_graph_node_count"], 0)
+        node_types = {node["node_type"] for node in envelope["provenance_graph"]["nodes"]}
+        self.assertIn("trip_candidate", node_types)
+        self.assertIn("source_artifact", node_types)
+        self.assertIn("extracted_mention", node_types)
         self.assertTrue(
             any(
                 edge["relation"] == "supports"
@@ -145,7 +153,7 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         envelope = response.json()["envelope"]
         city = selected_field(envelope, "trip.city")
-        self.assertEqual(city["value"], "杭州")
+        self.assertEqual(city["value"], {"type": "destination_city", "city": "杭州"})
         self.assertEqual(city["source_refs"][0]["source_type"], "structured_user_override")
         self.assertTrue(city["confirmed_by_user"])
         self.assertEqual(envelope["planner_ready_intent"]["city"], "杭州")
@@ -260,6 +268,7 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertNotEqual(first.json()["revision"]["id"], second.json()["revision"]["id"])
         self.assertEqual(second.json()["revision"]["parent_intent_revision_id"], first.json()["revision"]["id"])
         self.assertEqual(first.json()["envelope"]["semantic_digest"], second.json()["envelope"]["semantic_digest"])
+        self.assertNotEqual(first.json()["envelope"]["lineage_digest"], second.json()["envelope"]["lineage_digest"])
         self.assertNotEqual(first.json()["envelope"]["content_digest"], second.json()["envelope"]["content_digest"])
 
     def test_stale_base_revision_is_rejected_before_intent_revision_is_created(self) -> None:
@@ -278,6 +287,28 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["error"]["code"], "stale_base_revision")
         self.assertEqual(revisions.json()["revisions"], [])
+
+    def test_compile_rejects_stale_base_intent_revision_id(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        initial = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={"base_revision_id": base_revision_id, "structured_overrides": {"city": "上海", "trip_days": 2}},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "base-intent-initial"},
+        )
+        self.assertEqual(initial.status_code, 201, initial.text)
+
+        stale = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={
+                "base_revision_id": base_revision_id,
+                "base_intent_revision_id": "intent_old",
+                "structured_overrides": {"city": "杭州", "trip_days": 2},
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "base-intent-stale"},
+        )
+
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.json()["error"]["code"], "stale_intent_revision")
 
     def test_detail_edit_and_clarification_create_intent_revision_lineage(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()
@@ -306,8 +337,8 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(clarified.json()["revision"]["parent_intent_revision_id"], initial_revision_id)
         self.assertEqual(edited.json()["revision"]["parent_intent_revision_id"], clarified.json()["revision"]["id"])
-        self.assertEqual(selected_field(edited.json()["envelope"], "trip.city")["value"], "上海")
-        self.assertEqual(selected_field(edited.json()["envelope"], "trip.trip_days")["value"], 3)
+        self.assertEqual(selected_field(edited.json()["envelope"], "trip.city")["value"]["city"], "上海")
+        self.assertEqual(selected_field(edited.json()["envelope"], "trip.trip_days")["value"]["days"], 3)
         self.assertEqual([item["revision_number"] for item in history.json()["revisions"]], [3, 2, 1])
 
     def test_restore_intent_revision_appends_new_revision_without_trip_revision_mutation(self) -> None:
@@ -334,7 +365,7 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(edited.status_code, 201, edited.text)
         self.assertEqual(restored.status_code, 201, restored.text)
         self.assertEqual(restored.json()["revision"]["parent_intent_revision_id"], edited.json()["revision"]["id"])
-        self.assertEqual(selected_field(restored.json()["envelope"], "trip.city")["value"], "上海")
+        self.assertEqual(selected_field(restored.json()["envelope"], "trip.city")["value"]["city"], "上海")
         self.assertEqual(restored.json()["envelope"]["validation_report"]["restored_from_intent_revision_id"], initial.json()["revision"]["id"])
         self.assertEqual([item["revision_number"] for item in history.json()["revisions"]], [3, 2, 1])
         self.assertEqual(len(trip_revisions.json()["revisions"]), 1)
@@ -355,8 +386,8 @@ class TripIntentContractTests(unittest.TestCase):
 
         self.assertEqual(answered.status_code, 201, answered.text)
         envelope = answered.json()["envelope"]
-        self.assertEqual(selected_field(envelope, "trip.trip_days")["value"], 4)
-        self.assertEqual(envelope["typed_intent"]["date_policy"]["trip_days"]["value"], 4)
+        self.assertEqual(selected_field(envelope, "trip.trip_days")["value"]["days"], 4)
+        self.assertEqual(envelope["typed_intent"]["date_policy"]["trip_days"]["value"]["days"], 4)
         self.assertEqual(envelope["revision_number"], 2)
         self.assertEqual(envelope["parent_intent_revision_id"], initial.json()["revision"]["id"])
 
@@ -391,6 +422,33 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(first_edit.json()["revision"]["id"], replay.json()["revision"]["id"])
         self.assertEqual(stale_edit.status_code, 409)
         self.assertEqual(stale_edit.json()["error"]["code"], "stale_intent_revision")
+
+    def test_concurrent_intent_edits_cannot_create_sibling_revisions(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        initial = client.post(
+            f"/trips/{trip_id}/intent-envelope/compile",
+            json={"base_revision_id": base_revision_id, "structured_overrides": {"city": "上海", "trip_days": 2}},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "concurrent-initial"},
+        )
+        self.assertEqual(initial.status_code, 201, initial.text)
+        parent_id = initial.json()["revision"]["id"]
+
+        def edit_city(city: tuple[str, str]) -> tuple[int, dict]:
+            city_name, key_suffix = city
+            response = client.post(
+                f"/trips/{trip_id}/intent-envelope/{parent_id}/edit",
+                json={"base_revision_id": base_revision_id, "field_updates": {"city": city_name, "trip_days": 2}},
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": f"concurrent-edit-{key_suffix}"},
+            )
+            return response.status_code, response.json()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(edit_city, [("杭州", "hz"), ("苏州", "sz")]))
+
+        status_codes = sorted(status for status, _body in results)
+        history = client.get(f"/trips/{trip_id}/intent-envelope")
+        self.assertEqual(status_codes, [201, 409])
+        self.assertEqual([item["revision_number"] for item in history.json()["revisions"]], [2, 1])
 
     def test_repository_compare_and_append_rejects_stale_parent_inside_transaction(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()
@@ -489,10 +547,32 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         envelope = response.json()["envelope"]
         self.assertTrue(envelope["validation_report"]["llm_proposal_validated"])
-        self.assertEqual(selected_field(envelope, "trip.city")["value"], "上海")
+        self.assertEqual(selected_field(envelope, "trip.city")["value"]["city"], "上海")
         self.assertTrue(
             any(field["status"] == "shadowed" and field["source_refs"][0]["source_type"] == "llm_proposal" for field in envelope["fields"])
         )
+
+    def test_llm_adapter_timeout_is_recorded_without_trusting_parser_output(self) -> None:
+        client, trip_id, base_revision_id = create_saved_trip()
+        with patch(
+            "app.trips.service.build_untrusted_llm_intent_proposal",
+            side_effect=TimeoutError(),
+        ):
+            response = client.post(
+                f"/trips/{trip_id}/intent-envelope/compile",
+                json={
+                    "base_revision_id": base_revision_id,
+                    "direct_user_text": "城市：上海\n天数：2",
+                    "use_llm_proposal_adapter": True,
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "llm-adapter-timeout"},
+            )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        envelope = response.json()["envelope"]
+        self.assertEqual(envelope["parser_result"]["status"], "timeout")
+        self.assertIn("llm_adapter_timeout", envelope["parser_result"]["warnings"])
+        self.assertFalse(envelope["validation_report"]["llm_proposal_validated"])
 
     def test_sqlite_intent_revisions_are_immutable(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()

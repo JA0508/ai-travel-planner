@@ -201,8 +201,21 @@ class SQLiteTripRepository:
         idempotency_key_hash: str,
         expected_parent_intent_revision_id: str | None = None,
         require_latest_parent: bool = False,
+        expected_base_revision_id: str | None = None,
     ) -> CreateIntentRevisionResult:
         with self._transaction() as connection:
+            trip_row = connection.execute(
+                "SELECT current_revision_id FROM trips WHERE id = ?",
+                (revision.trip_id,),
+            ).fetchone()
+            if trip_row is None:
+                raise TripNotFoundError(revision.trip_id)
+            if expected_base_revision_id is not None and trip_row["current_revision_id"] != expected_base_revision_id:
+                raise StaleBaseRevisionError(
+                    trip_id=revision.trip_id,
+                    provided_base_revision_id=expected_base_revision_id,
+                    current_revision_id=trip_row["current_revision_id"],
+                )
             base_row = connection.execute(
                 "SELECT 1 FROM trip_revisions WHERE id = ? AND trip_id = ?",
                 (revision.base_trip_revision_id, revision.trip_id),
@@ -233,7 +246,7 @@ class SQLiteTripRepository:
             if require_latest_parent:
                 latest_row = connection.execute(
                     """
-                    SELECT id FROM trip_intent_revisions
+                    SELECT id, revision_number FROM trip_intent_revisions
                     WHERE trip_id = ?
                     ORDER BY revision_number DESC, created_at DESC
                     LIMIT 1
@@ -242,6 +255,13 @@ class SQLiteTripRepository:
                 ).fetchone()
                 latest_id = latest_row["id"] if latest_row is not None else None
                 if latest_id != expected_parent_intent_revision_id:
+                    raise StaleIntentRevisionError(
+                        trip_id=revision.trip_id,
+                        provided_intent_revision_id=expected_parent_intent_revision_id or "",
+                        current_intent_revision_id=latest_id or "",
+                    )
+                expected_revision_number = 1 if latest_row is None else int(latest_row["revision_number"]) + 1
+                if revision.revision_number != expected_revision_number:
                     raise StaleIntentRevisionError(
                         trip_id=revision.trip_id,
                         provided_intent_revision_id=expected_parent_intent_revision_id or "",

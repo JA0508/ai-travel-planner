@@ -58,6 +58,7 @@ class TripRepository(Protocol):
         idempotency_key_hash: str,
         expected_parent_intent_revision_id: str | None = None,
         require_latest_parent: bool = False,
+        expected_base_revision_id: str | None = None,
     ) -> CreateIntentRevisionResult:
         ...
 

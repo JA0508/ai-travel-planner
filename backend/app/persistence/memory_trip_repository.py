@@ -173,7 +173,15 @@ class MemoryTripRepository:
         idempotency_key_hash: str,
         expected_parent_intent_revision_id: str | None = None,
         require_latest_parent: bool = False,
+        expected_base_revision_id: str | None = None,
     ) -> CreateIntentRevisionResult:
+        trip = self.get_trip(revision.trip_id)
+        if expected_base_revision_id is not None and trip.current_revision_id != expected_base_revision_id:
+            raise StaleBaseRevisionError(
+                trip_id=revision.trip_id,
+                provided_base_revision_id=expected_base_revision_id,
+                current_revision_id=trip.current_revision_id,
+            )
         self.get_revision(revision.trip_id, revision.base_trip_revision_id)
         key = (revision.trip_id, idempotency_key_hash)
         existing = self.intent_idempotency_records.get(key)
@@ -189,6 +197,13 @@ class MemoryTripRepository:
             latest = self.get_latest_intent_revision(trip_id=revision.trip_id)
             latest_id = latest.id if latest is not None else None
             if latest_id != expected_parent_intent_revision_id:
+                raise StaleIntentRevisionError(
+                    trip_id=revision.trip_id,
+                    provided_intent_revision_id=expected_parent_intent_revision_id or "",
+                    current_intent_revision_id=latest_id or "",
+                )
+            expected_revision_number = 1 if latest is None else latest.revision_number + 1
+            if revision.revision_number != expected_revision_number:
                 raise StaleIntentRevisionError(
                     trip_id=revision.trip_id,
                     provided_intent_revision_id=expected_parent_intent_revision_id or "",

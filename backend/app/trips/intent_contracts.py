@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.services.nl_parser import parse_trip_text_fallback
 from app.trips.access import generate_intent_revision_id
@@ -12,8 +13,8 @@ from app.trips.candidates import TripCandidateRecord
 from app.trips.digests import sha256_digest
 
 
-TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.2"
-TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v3"
+TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.3"
+TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v4"
 
 
 class IntentSourceType(str, Enum):
@@ -61,12 +62,20 @@ class IntentValueType(str, Enum):
     MUST_CANDIDATE = "must_candidate"
     FIXED_EVENT = "fixed_event"
     GENERAL_PREFERENCE = "general_preference"
+    BUDGET = "budget"
+    TRAVELER_NEED = "traveler_need"
 
 
 class ProvenanceNodeType(str, Enum):
     ENVELOPE_REVISION = "envelope_revision"
     PARSER_RESULT = "parser_result"
     SOURCE = "source"
+    SOURCE_ARTIFACT = "source_artifact"
+    EXTRACTED_MENTION = "extracted_mention"
+    REVIEW_DECISION = "review_decision"
+    TRIP_CANDIDATE = "trip_candidate"
+    DOCUMENT_PAGE = "document_page"
+    BOUNDING_BOX = "bounding_box"
     FIELD = "field"
     ASSUMPTION = "assumption"
 
@@ -74,9 +83,103 @@ class ProvenanceNodeType(str, Enum):
 class ProvenanceEdgeType(str, Enum):
     PRODUCED = "produced"
     SUPPORTS = "supports"
+    DERIVED_FROM = "derived_from"
+    EVIDENCES = "evidences"
     SELECTED_IN = "selected_in"
     SHADOWED_IN = "shadowed_in"
     CREATED_ASSUMPTION = "created_assumption"
+
+
+class IntentDestinationValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["destination_city"] = "destination_city"
+    city: str
+
+
+class IntentTripDaysValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["trip_days"] = "trip_days"
+    days: int = Field(..., ge=1, le=60)
+
+
+class IntentPaceValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["pace"] = "pace"
+    pace: Literal["relaxed", "balanced", "intensive"]
+
+
+class IntentTransportPreferenceValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["transport_preference"] = "transport_preference"
+    mode: str
+
+
+class IntentMustCandidateValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["must_candidate"] = "must_candidate"
+    candidate_id: str
+    display_name: str | None = None
+
+
+class IntentFixedEventValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["fixed_event"] = "fixed_event"
+    name: str
+    fixed_day: int | None = Field(default=None, ge=1, le=60)
+    fixed_time_start: str | None = None
+    fixed_time_end: str | None = None
+    source_label: str | None = None
+
+
+class IntentGeneralPreferenceValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["general_preference"] = "general_preference"
+    preference: str
+
+
+class IntentBudgetValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["budget"] = "budget"
+    amount: float | None = Field(default=None, ge=0)
+    currency: str | None = None
+    budget_level: Literal["low", "medium", "high"] | None = None
+
+
+class IntentTravelerNeedValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["traveler_need"] = "traveler_need"
+    need: str
+    traveler_group: str | None = None
+
+
+class IntentUnknownValue(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["unknown"] = "unknown"
+    raw: str | int | float | bool | dict[str, object] | list[object] | None = None
+
+
+IntentFieldValue = (
+    IntentDestinationValue
+    | IntentTripDaysValue
+    | IntentPaceValue
+    | IntentTransportPreferenceValue
+    | IntentMustCandidateValue
+    | IntentFixedEventValue
+    | IntentGeneralPreferenceValue
+    | IntentBudgetValue
+    | IntentTravelerNeedValue
+    | IntentUnknownValue
+)
 
 
 class IntentSourceRef(BaseModel):
@@ -99,9 +202,9 @@ class IntentField(BaseModel):
 
     field_id: str
     field_path: str
-    value: Any
+    value: IntentFieldValue
     semantic_type: IntentValueType = IntentValueType.UNKNOWN
-    semantic_value: dict[str, Any] = Field(default_factory=dict)
+    semantic_value: IntentFieldValue
     kind: IntentFieldKind
     confidence: float = Field(..., ge=0, le=1)
     source_refs: list[IntentSourceRef] = Field(default_factory=list)
@@ -110,6 +213,19 @@ class IntentField(BaseModel):
     status: IntentFieldStatus = IntentFieldStatus.SELECTED
     validation_codes: list[str] = Field(default_factory=list)
     explanation: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_domain_value(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            field_path = str(data.get("field_path") or "")
+            data = dict(data)
+            data["value"] = _domain_value_for_field(field_path, data.get("value"))
+            data["semantic_value"] = _domain_value_for_field(
+                field_path,
+                data.get("semantic_value", data["value"]),
+            )
+        return data
 
 
 class IntentConflict(BaseModel):
@@ -132,7 +248,7 @@ class ClarificationQuestion(BaseModel):
     question_id: str
     field_paths: list[str]
     answer_field_path: str | None = None
-    answer_value_type: Literal["string", "integer", "pace", "string_list"] = "string"
+    answer_value_type: Literal["string", "integer", "pace", "string_list", "fixed_event", "budget"] = "string"
     question: str
     priority: int = Field(..., ge=0, le=100)
     blocking: bool
@@ -146,14 +262,27 @@ class TypedIntentValue(BaseModel):
 
     field_path: str
     field_id: str | None = None
-    value: Any
+    value: IntentFieldValue
     semantic_type: IntentValueType = IntentValueType.UNKNOWN
-    semantic_value: dict[str, Any] = Field(default_factory=dict)
+    semantic_value: IntentFieldValue
     kind: IntentFieldKind
     confidence: float = Field(..., ge=0, le=1)
     confirmed_by_user: bool
     source_refs: list[IntentSourceRef] = Field(default_factory=list)
     validation_codes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_domain_value(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            field_path = str(data.get("field_path") or "")
+            data = dict(data)
+            data["value"] = _domain_value_for_field(field_path, data.get("value"))
+            data["semantic_value"] = _domain_value_for_field(
+                field_path,
+                data.get("semantic_value", data["value"]),
+            )
+        return data
 
 
 class TypedDatePolicy(BaseModel):
@@ -193,12 +322,25 @@ class IntentAssumption(BaseModel):
     assumption_id: str
     field_path: str
     assumption_type: Literal["missing_value", "empty_reviewed_candidate_set", "carried_forward_assumption"]
-    value: Any = None
+    value: IntentFieldValue | list[IntentFieldValue] | None = None
     has_assumed_value: bool
     blocks_planner_ready: bool
     reason_code: str
     explanation: str
     source_refs: list[IntentSourceRef] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_assumption_value(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "value" in data:
+            field_path = str(data.get("field_path") or "")
+            data = dict(data)
+            value = data.get("value")
+            if isinstance(value, list):
+                data["value"] = [_domain_value_for_field(field_path, item) for item in value]
+            elif value is not None:
+                data["value"] = _domain_value_for_field(field_path, value)
+        return data
 
 
 class IntentProvenanceSummary(BaseModel):
@@ -218,7 +360,7 @@ class IntentParserResult(BaseModel):
 
     parser_name: str
     parser_version: str
-    status: Literal["not_run", "parsed", "validated"]
+    status: Literal["not_run", "parsed", "validated", "unavailable", "timeout", "invalid", "provider_error"]
     input_digests: list[str] = Field(default_factory=list)
     extracted_field_paths: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -233,6 +375,12 @@ class IntentProvenanceNode(BaseModel):
     field_path: str | None = None
     source_type: IntentSourceType | None = None
     source_id: str | None = None
+    artifact_id: str | None = None
+    mention_id: str | None = None
+    review_decision_id: str | None = None
+    candidate_id: str | None = None
+    page_number: int | None = None
+    bbox: dict[str, float | str] | None = None
     authority: IntentAuthority = IntentAuthority.LEGACY_UNKNOWN
     confirmed: bool = False
     digest: str | None = None
@@ -305,6 +453,7 @@ class SourceLinkedTripIntentEnvelope(BaseModel):
     validation_report: dict[str, Any]
     source_digest: str
     semantic_digest: str | None = None
+    lineage_digest: str | None = None
     content_digest: str
     created_at: str
 
@@ -318,6 +467,8 @@ class IntentStructuredOverrides(BaseModel):
     pace: Literal["relaxed", "balanced", "intensive"] | None = None
     transport_preferences: list[str] = Field(default_factory=list, max_length=20)
     fixed_events: list[dict[str, Any]] = Field(default_factory=list, max_length=40)
+    budget: IntentBudgetValue | None = None
+    traveler_needs: list[str] = Field(default_factory=list, max_length=20)
 
     @field_validator("city")
     @classmethod
@@ -339,6 +490,8 @@ class UntrustedIntentProposal(BaseModel):
     pace: Literal["relaxed", "balanced", "intensive"] | None = None
     transport_preferences: list[str] = Field(default_factory=list, max_length=20)
     fixed_events: list[dict[str, Any]] = Field(default_factory=list, max_length=40)
+    budget: IntentBudgetValue | None = None
+    traveler_needs: list[str] = Field(default_factory=list, max_length=20)
     explanation: str | None = Field(default=None, max_length=1000)
 
 
@@ -346,11 +499,14 @@ class CompileTripIntentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_revision_id: str = Field(..., min_length=1)
+    base_intent_revision_id: str | None = Field(default=None, min_length=1)
     direct_user_text: str | None = Field(default=None, max_length=10000)
     candidate_ids: list[str] = Field(default_factory=list, max_length=80)
     structured_overrides: IntentStructuredOverrides | None = None
     llm_proposal: UntrustedIntentProposal | None = None
     use_llm_proposal_adapter: bool = False
+    parser_error_status: Literal["unavailable", "timeout", "invalid", "provider_error"] | None = None
+    parser_error_code: str | None = Field(default=None, max_length=120)
 
 
 class EditTripIntentEnvelopeRequest(BaseModel):
@@ -371,6 +527,7 @@ class RestoreTripIntentEnvelopeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_revision_id: str = Field(..., min_length=1)
+    base_intent_revision_id: str | None = Field(default=None, min_length=1)
 
 
 class TripIntentRevisionMetadata(BaseModel):
@@ -426,9 +583,9 @@ class CreateIntentRevisionResult:
 @dataclass(slots=True)
 class _CandidateField:
     field_path: str
-    value: Any
+    value: IntentFieldValue
     semantic_type: IntentValueType
-    semantic_value: dict[str, Any]
+    semantic_value: IntentFieldValue
     kind: IntentFieldKind
     confidence: float
     source_ref: IntentSourceRef
@@ -510,7 +667,7 @@ def compile_source_linked_intent(
         requires_user_confirmation=bool(blocking_clarifications or blocking_assumptions),
     )
     validation_report = {
-        "schema_version": "1.2",
+        "schema_version": "1.3",
         "compiler_version": TRIP_INTENT_COMPILER_VERSION,
         "llm_proposal_validated": request.llm_proposal is not None,
         "parser_status": parser_result.status,
@@ -546,6 +703,12 @@ def compile_source_linked_intent(
         assumptions=typed_assumptions,
         planner_ready_status=status,
     )
+    lineage_digest_value = _build_intent_lineage_digest(
+        trip_id=trip_id,
+        base_revision_id=base_revision_id,
+        parent_intent_revision_id=parent_intent_revision_id,
+        revision_number=next_revision_number,
+    )
     envelope_without_digest = {
         "trip_id": trip_id,
         "base_trip_revision_id": base_revision_id,
@@ -566,6 +729,7 @@ def compile_source_linked_intent(
         "validation_report": validation_report,
         "source_digest": source_digest,
         "semantic_digest": semantic_digest,
+        "lineage_digest": lineage_digest_value,
     }
     content_digest = sha256_digest(envelope_without_digest)
     return SourceLinkedTripIntentEnvelope(
@@ -589,6 +753,7 @@ def compile_source_linked_intent(
         validation_report=validation_report,
         source_digest=source_digest,
         semantic_digest=semantic_digest,
+        lineage_digest=lineage_digest_value,
         content_digest=content_digest,
         created_at=created_at,
     )
@@ -656,6 +821,118 @@ def _authority_for_source(source_type: IntentSourceType, confirmed: bool) -> Int
     return IntentAuthority.LEGACY_UNKNOWN
 
 
+def _domain_value_for_field(field_path: str, value: Any) -> IntentFieldValue:
+    if isinstance(
+        value,
+        (
+            IntentDestinationValue,
+            IntentTripDaysValue,
+            IntentPaceValue,
+            IntentTransportPreferenceValue,
+            IntentMustCandidateValue,
+            IntentFixedEventValue,
+            IntentGeneralPreferenceValue,
+            IntentBudgetValue,
+            IntentTravelerNeedValue,
+            IntentUnknownValue,
+        ),
+    ):
+        return value
+    if isinstance(value, dict) and isinstance(value.get("type"), str):
+        typed = _domain_value_from_typed_dict(value)
+        if typed is not None:
+            return typed
+    if isinstance(value, dict) and "event" in value and field_path == "time.fixed_events":
+        value = value["event"]
+    if field_path == "trip.city":
+        city = str(_dict_get(value, "city", value)).strip()
+        return IntentDestinationValue(city=city)
+    if field_path == "trip.trip_days":
+        return IntentTripDaysValue(days=int(_dict_get(value, "days", value)))
+    if field_path == "trip.pace":
+        pace = str(_dict_get(value, "pace", value)).strip()
+        if pace not in {"relaxed", "balanced", "intensive"}:
+            return IntentUnknownValue(raw={"pace": pace})
+        return IntentPaceValue(pace=pace)  # type: ignore[arg-type]
+    if field_path == "preferences.transport":
+        return IntentTransportPreferenceValue(mode=str(_dict_get(value, "mode", value)).strip())
+    if field_path == "poi.must_candidates":
+        candidate_id = str(_dict_get(value, "candidate_id", value)).strip()
+        display_name = _dict_get(value, "display_name", None)
+        return IntentMustCandidateValue(
+            candidate_id=candidate_id,
+            display_name=str(display_name).strip() if display_name else None,
+        )
+    if field_path == "time.fixed_events":
+        event = value if isinstance(value, dict) else {"name": str(value)}
+        name = str(event.get("name") or event.get("title") or event.get("value") or "Fixed event").strip()
+        fixed_day = event.get("fixed_day")
+        return IntentFixedEventValue(
+            name=name,
+            fixed_day=int(fixed_day) if fixed_day not in (None, "") else None,
+            fixed_time_start=str(event.get("fixed_time_start")).strip() if event.get("fixed_time_start") else None,
+            fixed_time_end=str(event.get("fixed_time_end")).strip() if event.get("fixed_time_end") else None,
+            source_label=str(event.get("source_label")).strip() if event.get("source_label") else None,
+        )
+    if field_path == "preferences.general":
+        return IntentGeneralPreferenceValue(preference=str(_dict_get(value, "preference", value)).strip())
+    if field_path == "budget":
+        if isinstance(value, dict):
+            return IntentBudgetValue.model_validate(value if value.get("type") else {"type": "budget", **value})
+        return IntentBudgetValue(budget_level=str(value).strip())  # type: ignore[arg-type]
+    if field_path == "travelers.needs":
+        return IntentTravelerNeedValue(need=str(_dict_get(value, "need", value)).strip())
+    return IntentUnknownValue(raw=value if isinstance(value, (str, int, float, bool, dict, list)) or value is None else str(value))
+
+
+def _domain_value_from_typed_dict(value: dict[str, Any]) -> IntentFieldValue | None:
+    type_name = value.get("type")
+    model_by_type = {
+        "destination_city": IntentDestinationValue,
+        "trip_days": IntentTripDaysValue,
+        "pace": IntentPaceValue,
+        "transport_preference": IntentTransportPreferenceValue,
+        "must_candidate": IntentMustCandidateValue,
+        "fixed_event": IntentFixedEventValue,
+        "general_preference": IntentGeneralPreferenceValue,
+        "budget": IntentBudgetValue,
+        "traveler_need": IntentTravelerNeedValue,
+        "unknown": IntentUnknownValue,
+    }
+    model = model_by_type.get(type_name)
+    return model.model_validate(value) if model else None
+
+
+def _dict_get(value: Any, key: str, default: Any) -> Any:
+    return value.get(key, default) if isinstance(value, dict) else default
+
+
+def _domain_value_dump(value: IntentFieldValue) -> dict[str, Any]:
+    return value.model_dump(mode="json", exclude_none=True)
+
+
+def _domain_raw_value(value: IntentFieldValue) -> Any:
+    if isinstance(value, IntentDestinationValue):
+        return value.city
+    if isinstance(value, IntentTripDaysValue):
+        return value.days
+    if isinstance(value, IntentPaceValue):
+        return value.pace
+    if isinstance(value, IntentTransportPreferenceValue):
+        return value.mode
+    if isinstance(value, IntentMustCandidateValue):
+        return value.candidate_id
+    if isinstance(value, IntentFixedEventValue):
+        return value.model_dump(mode="json", exclude_none=True, exclude={"type"})
+    if isinstance(value, IntentGeneralPreferenceValue):
+        return value.preference
+    if isinstance(value, IntentBudgetValue):
+        return value.model_dump(mode="json", exclude_none=True, exclude={"type"})
+    if isinstance(value, IntentTravelerNeedValue):
+        return value.need
+    return value.raw
+
+
 def _candidate(
     field_path: str,
     value: Any,
@@ -665,11 +942,12 @@ def _candidate(
     source_ref: IntentSourceRef,
     explanation: str,
 ) -> _CandidateField:
+    domain_value = _domain_value_for_field(field_path, value)
     return _CandidateField(
         field_path=field_path,
-        value=value,
+        value=domain_value,
         semantic_type=_semantic_type_for_field(field_path),
-        semantic_value=_semantic_value_for_field(field_path, value),
+        semantic_value=domain_value,
         kind=kind,
         confidence=confidence,
         source_ref=source_ref,
@@ -686,6 +964,8 @@ def _semantic_type_for_field(field_path: str) -> IntentValueType:
         "poi.must_candidates": IntentValueType.MUST_CANDIDATE,
         "time.fixed_events": IntentValueType.FIXED_EVENT,
         "preferences.general": IntentValueType.GENERAL_PREFERENCE,
+        "budget": IntentValueType.BUDGET,
+        "travelers.needs": IntentValueType.TRAVELER_NEED,
     }.get(field_path, IntentValueType.UNKNOWN)
 
 
@@ -795,6 +1075,47 @@ def _fields_from_payload(payload: dict[str, Any], source_type: IntentSourceType)
                 explanation=f"{label} supplied a fixed event.",
             )
         )
+    budget = payload.get("budget")
+    if isinstance(budget, dict) and any(value not in (None, "", []) for value in budget.values()):
+        field_path = "budget"
+        fields.append(
+            _candidate(
+                field_path,
+                budget,
+                kind=IntentFieldKind.SOFT,
+                confidence=1.0 if confirmed else 0.5,
+                source_ref=_source_ref(
+                    source_type,
+                    field_path=field_path,
+                    label=label,
+                    source_id=f"{source_type.value}:budget",
+                    priority=priority,
+                    confirmed=confirmed,
+                    value=budget,
+                ),
+                explanation=f"{label} supplied a budget preference.",
+            )
+        )
+    for value in unique_texts(payload.get("traveler_needs") or []):
+        field_path = "travelers.needs"
+        fields.append(
+            _candidate(
+                field_path,
+                value,
+                kind=IntentFieldKind.HARD if confirmed else IntentFieldKind.ASSUMPTION,
+                confidence=1.0 if confirmed else 0.5,
+                source_ref=_source_ref(
+                    source_type,
+                    field_path=field_path,
+                    label=label,
+                    source_id=f"{source_type.value}:traveler_need",
+                    priority=priority,
+                    confirmed=confirmed,
+                    value=value,
+                ),
+                explanation=f"{label} supplied a traveler need.",
+            )
+        )
     return fields
 
 
@@ -853,7 +1174,7 @@ def _fields_from_candidates(candidates: list[TripCandidateRecord], states: dict[
         fields.append(
             _candidate(
                 "poi.must_candidates",
-                candidate.id,
+                {"candidate_id": candidate.id, "display_name": candidate.display_name},
                 kind=IntentFieldKind.HARD,
                 confidence=0.9 if candidate.confidence in {"high", "medium"} else 0.7,
                 source_ref=ref,
@@ -887,7 +1208,7 @@ def _fields_from_existing_intent_revision(snapshot: dict[str, Any]) -> list[_Can
         fields.append(
             _candidate(
                 field_path,
-                field.get("value"),
+                field.get("semantic_value", field.get("value")),
                 kind=IntentFieldKind(field.get("kind") or IntentFieldKind.ASSUMPTION.value),
                 confidence=min(float(field.get("confidence") or 0.6), 0.75),
                 source_ref=_source_ref(
@@ -992,7 +1313,7 @@ def _select_singleton(field_path: str, items: list[_CandidateField]) -> tuple[_C
         max_loser_priority = max(item.source_ref.priority for item in losers)
         requires_clarification = max_loser_priority == winner.source_ref.priority
         conflict = IntentConflict(
-            conflict_id=f"conf_{sha256_digest({'field_path': field_path, 'winner': winner.value, 'losers': [item.value for item in losers]})[:16]}",
+            conflict_id=f"conf_{sha256_digest({'field_path': field_path, 'winner': _domain_value_dump(winner.value), 'losers': [_domain_value_dump(item.value) for item in losers]})[:16]}",
             field_path=field_path,
             severity="blocking" if requires_clarification else "non_blocking",
             winner_field_id=_field_id(winner),
@@ -1028,11 +1349,11 @@ def _to_field(item: _CandidateField, status: IntentFieldStatus) -> IntentField:
 
 
 def _field_id(item: _CandidateField) -> str:
-    return f"field_{sha256_digest({'field_path': item.field_path, 'value': item.value, 'source': item.source_ref.ref_id})[:16]}"
+    return f"field_{sha256_digest({'field_path': item.field_path, 'value': _domain_value_dump(item.value), 'source': item.source_ref.ref_id})[:16]}"
 
 
-def _value_key(value: Any) -> str:
-    return sha256_digest(value)
+def _value_key(value: IntentFieldValue) -> str:
+    return sha256_digest(_domain_value_dump(value))
 
 
 def _build_planner_ready(fields: list[IntentField]) -> PlannerReadyIntentPreview:
@@ -1041,24 +1362,26 @@ def _build_planner_ready(fields: list[IntentField]) -> PlannerReadyIntentPreview
         if field.status != IntentFieldStatus.SELECTED:
             continue
         if field.field_path == "trip.city":
-            preview.city = str(field.value)
+            preview.city = str(_domain_raw_value(field.value))
         elif field.field_path == "trip.trip_days":
-            preview.trip_days = int(field.value)
+            preview.trip_days = int(_domain_raw_value(field.value))
         elif field.field_path == "trip.pace":
-            preview.pace = str(field.value)
+            preview.pace = str(_domain_raw_value(field.value))
         elif field.field_path == "poi.must_candidates":
-            value = str(field.value)
+            value = str(_domain_raw_value(field.value))
             if value not in preview.must_place_candidate_ids:
                 preview.must_place_candidate_ids.append(value)
             label = field.source_refs[0].label
             if label not in preview.must_place_names:
                 preview.must_place_names.append(label)
         elif field.field_path == "preferences.transport":
-            value = str(field.value)
+            value = str(_domain_raw_value(field.value))
             if value not in preview.transport_preferences:
                 preview.transport_preferences.append(value)
         elif field.field_path == "time.fixed_events":
-            preview.fixed_events.append(field.value)
+            fixed_event = _domain_raw_value(field.value)
+            if isinstance(fixed_event, dict):
+                preview.fixed_events.append(fixed_event)
     return preview
 
 
@@ -1089,6 +1412,10 @@ def _build_typed_intent(
             typed.pace = value
         elif field.field_path == "preferences.transport":
             typed.transport_preferences.append(value)
+        elif field.field_path == "budget":
+            typed.budget = value
+        elif field.field_path == "travelers.needs":
+            typed.travelers.append(value)
     return typed
 
 
@@ -1155,6 +1482,10 @@ def _typed_section_names(typed: TypedTripIntent) -> list[str]:
         names.append("pace")
     if typed.transport_preferences:
         names.append("transport_preferences")
+    if typed.budget:
+        names.append("budget")
+    if typed.travelers:
+        names.append("travelers")
     if typed.assumptions:
         names.append("assumptions")
     if typed.unresolved_questions:
@@ -1172,8 +1503,7 @@ def _validate_selected_fields(
     for field in fields:
         if field.field_path != "time.fixed_events" or field.status != IntentFieldStatus.SELECTED:
             continue
-        event = field.value if isinstance(field.value, dict) else {}
-        fixed_day = event.get("fixed_day")
+        fixed_day = field.value.fixed_day if isinstance(field.value, IntentFixedEventValue) else None
         if fixed_day is None:
             continue
         try:
@@ -1250,7 +1580,20 @@ def _build_parser_result(request: CompileTripIntentRequest, fields: list[IntentF
     input_digests: list[str] = []
     warnings: list[str] = []
     parser_name = "intent_contract_compiler"
-    status: Literal["not_run", "parsed", "validated"] = "not_run"
+    status: Literal["not_run", "parsed", "validated", "unavailable", "timeout", "invalid", "provider_error"] = "not_run"
+    if request.parser_error_status is not None:
+        if request.direct_user_text and request.direct_user_text.strip():
+            input_digests.append(f"direct_user_text:{sha256_digest(request.direct_user_text.strip())[:16]}")
+        if request.parser_error_code:
+            warnings.append(request.parser_error_code)
+        return IntentParserResult(
+            parser_name="llm_intent_proposal_adapter",
+            parser_version=TRIP_INTENT_COMPILER_VERSION,
+            status=request.parser_error_status,
+            input_digests=input_digests,
+            extracted_field_paths=[],
+            warnings=warnings,
+        )
     if request.direct_user_text and request.direct_user_text.strip():
         input_digests.append(f"direct_user_text:{sha256_digest(request.direct_user_text.strip())[:16]}")
         parser_name = "deterministic_text_fallback"
@@ -1325,7 +1668,7 @@ def _build_provenance_graph(
                 {
                     "field_path": field.field_path,
                     "semantic_type": field.semantic_type.value,
-                    "semantic_value": field.semantic_value,
+                    "semantic_value": _domain_value_dump(field.semantic_value),
                     "kind": field.kind.value,
                 }
             ),
@@ -1359,6 +1702,15 @@ def _build_provenance_graph(
                     relation=ProvenanceEdgeType.SUPPORTS,
                 )
             )
+            for evidence_node_id, evidence_node, relation in _nodes_from_evidence_ref(ref):
+                nodes[evidence_node_id] = evidence_node
+                edges.append(
+                    IntentProvenanceEdge(
+                        from_node_id=evidence_node_id,
+                        to_node_id=source_node_id,
+                        relation=relation,
+                    )
+                )
     for assumption in assumptions:
         assumption_node_id = f"assumption:{assumption.assumption_id}"
         nodes[assumption_node_id] = IntentProvenanceNode(
@@ -1383,6 +1735,180 @@ def _build_provenance_graph(
     )
 
 
+def _nodes_from_evidence_ref(
+    ref: IntentSourceRef,
+) -> list[tuple[str, IntentProvenanceNode, ProvenanceEdgeType]]:
+    nodes: list[tuple[str, IntentProvenanceNode, ProvenanceEdgeType]] = []
+    if ref.source_type == IntentSourceType.TRIP_CANDIDATE and ref.source_id:
+        candidate_node_id = f"trip_candidate:{ref.source_id}"
+        nodes.append(
+            (
+                candidate_node_id,
+                IntentProvenanceNode(
+                    node_id=candidate_node_id,
+                    node_type=ProvenanceNodeType.TRIP_CANDIDATE,
+                    label=ref.label,
+                    field_path=ref.field_path,
+                    source_type=ref.source_type,
+                    source_id=ref.source_id,
+                    candidate_id=ref.source_id,
+                    authority=IntentAuthority.REVIEWED_SOURCE,
+                    confirmed=ref.confirmed,
+                    digest=ref.evidence_digest,
+                ),
+                ProvenanceEdgeType.DERIVED_FROM,
+            )
+        )
+    for evidence in ref.evidence_refs:
+        parsed = _parse_evidence_ref(evidence)
+        if parsed.get("artifact_id"):
+            artifact_id = str(parsed["artifact_id"])
+            artifact_node_id = f"source_artifact:{artifact_id}"
+            nodes.append(
+                (
+                    artifact_node_id,
+                    IntentProvenanceNode(
+                        node_id=artifact_node_id,
+                        node_type=ProvenanceNodeType.SOURCE_ARTIFACT,
+                        label=f"SourceArtifact {artifact_id}",
+                        source_id=artifact_id,
+                        artifact_id=artifact_id,
+                        authority=ref.authority,
+                        confirmed=ref.confirmed,
+                        digest=sha256_digest({"artifact_id": artifact_id}),
+                    ),
+                    ProvenanceEdgeType.EVIDENCES,
+                )
+            )
+        if parsed.get("mention_id"):
+            mention_id = str(parsed["mention_id"])
+            mention_node_id = f"extracted_mention:{mention_id}"
+            nodes.append(
+                (
+                    mention_node_id,
+                    IntentProvenanceNode(
+                        node_id=mention_node_id,
+                        node_type=ProvenanceNodeType.EXTRACTED_MENTION,
+                        label=f"ExtractedMention {mention_id}",
+                        source_id=mention_id,
+                        artifact_id=str(parsed["artifact_id"]) if parsed.get("artifact_id") else None,
+                        mention_id=mention_id,
+                        authority=ref.authority,
+                        confirmed=ref.confirmed,
+                        digest=sha256_digest(parsed),
+                    ),
+                    ProvenanceEdgeType.EVIDENCES,
+                )
+            )
+        if parsed.get("review_decision_id"):
+            decision_id = str(parsed["review_decision_id"])
+            decision_node_id = f"review_decision:{decision_id}"
+            nodes.append(
+                (
+                    decision_node_id,
+                    IntentProvenanceNode(
+                        node_id=decision_node_id,
+                        node_type=ProvenanceNodeType.REVIEW_DECISION,
+                        label=f"ReviewDecision {decision_id}",
+                        source_id=decision_id,
+                        review_decision_id=decision_id,
+                        authority=IntentAuthority.REVIEWED_SOURCE,
+                        confirmed=True,
+                        digest=sha256_digest(parsed),
+                    ),
+                    ProvenanceEdgeType.EVIDENCES,
+                )
+            )
+        if parsed.get("page_number"):
+            page_number = int(parsed["page_number"])
+            page_node_id = f"document_page:{parsed.get('artifact_id') or 'unknown'}:{page_number}"
+            nodes.append(
+                (
+                    page_node_id,
+                    IntentProvenanceNode(
+                        node_id=page_node_id,
+                        node_type=ProvenanceNodeType.DOCUMENT_PAGE,
+                        label=f"Document page {page_number}",
+                        artifact_id=str(parsed["artifact_id"]) if parsed.get("artifact_id") else None,
+                        page_number=page_number,
+                        authority=ref.authority,
+                        confirmed=ref.confirmed,
+                        digest=sha256_digest(parsed),
+                    ),
+                    ProvenanceEdgeType.EVIDENCES,
+                )
+            )
+        if parsed.get("bbox"):
+            bbox_node_id = f"bbox:{sha256_digest(parsed)[:16]}"
+            nodes.append(
+                (
+                    bbox_node_id,
+                    IntentProvenanceNode(
+                        node_id=bbox_node_id,
+                        node_type=ProvenanceNodeType.BOUNDING_BOX,
+                        label="Bounding box evidence",
+                        artifact_id=str(parsed["artifact_id"]) if parsed.get("artifact_id") else None,
+                        mention_id=str(parsed["mention_id"]) if parsed.get("mention_id") else None,
+                        page_number=int(parsed["page_number"]) if parsed.get("page_number") else None,
+                        bbox=parsed["bbox"],
+                        authority=ref.authority,
+                        confirmed=ref.confirmed,
+                        digest=sha256_digest(parsed),
+                    ),
+                    ProvenanceEdgeType.EVIDENCES,
+                )
+            )
+        if not parsed:
+            evidence_node_id = f"source:{sha256_digest(evidence)[:16]}"
+            nodes.append(
+                (
+                    evidence_node_id,
+                    IntentProvenanceNode(
+                        node_id=evidence_node_id,
+                        node_type=ProvenanceNodeType.SOURCE,
+                        label=evidence,
+                        source_id=evidence,
+                        authority=ref.authority,
+                        confirmed=ref.confirmed,
+                        digest=sha256_digest(evidence),
+                    ),
+                    ProvenanceEdgeType.EVIDENCES,
+                )
+            )
+    return nodes
+
+
+def _parse_evidence_ref(evidence: str) -> dict[str, Any]:
+    if not evidence:
+        return {}
+    artifact_match = re.search(r"artifact:([^#|]+)", evidence)
+    mention_match = re.search(r"mention:([^#|]+)", evidence)
+    decision_match = re.search(r"(?:review_decision|decision):([^#|]+)", evidence)
+    page_match = re.search(r"page:(\d+)", evidence)
+    bbox_match = re.search(
+        r"bbox:([0-9.]+),([0-9.]+),([0-9.]+),([0-9.]+)",
+        evidence,
+    )
+    parsed: dict[str, Any] = {}
+    if artifact_match:
+        parsed["artifact_id"] = artifact_match.group(1)
+    if mention_match:
+        parsed["mention_id"] = mention_match.group(1)
+    if decision_match:
+        parsed["review_decision_id"] = decision_match.group(1)
+    if page_match:
+        parsed["page_number"] = int(page_match.group(1))
+    if bbox_match:
+        parsed["bbox"] = {
+            "x": float(bbox_match.group(1)),
+            "y": float(bbox_match.group(2)),
+            "width": float(bbox_match.group(3)),
+            "height": float(bbox_match.group(4)),
+            "unit": "normalized",
+        }
+    return parsed
+
+
 def _strongest_authority(refs: list[IntentSourceRef]) -> IntentAuthority:
     rank = {
         IntentAuthority.USER_CONFIRMED: 5,
@@ -1404,14 +1930,14 @@ def _build_semantic_digest(
 ) -> str:
     return sha256_digest(
         {
-            "compiler_version": TRIP_INTENT_COMPILER_VERSION,
+            "semantic_digest_schema": "intent-semantic-v1",
             "planner_ready_status": planner_ready_status.value,
             "selected_fields": sorted(
                 [
                     {
                         "field_path": field.field_path,
                         "semantic_type": field.semantic_type.value,
-                        "semantic_value": field.semantic_value,
+                        "semantic_value": _domain_value_dump(field.semantic_value),
                         "kind": field.kind.value,
                         "confirmed_by_user": field.confirmed_by_user,
                         "authority": _strongest_authority(field.source_refs).value,
@@ -1446,7 +1972,7 @@ def _build_semantic_digest(
                         "has_assumed_value": assumption.has_assumed_value,
                         "blocks_planner_ready": assumption.blocks_planner_ready,
                         "reason_code": assumption.reason_code,
-                        "value": assumption.value,
+                        "value": _assumption_value_digest_payload(assumption.value),
                     }
                     for assumption in assumptions
                 ],
@@ -1454,6 +1980,34 @@ def _build_semantic_digest(
             ),
         }
     )
+
+
+def _build_intent_lineage_digest(
+    *,
+    trip_id: str,
+    base_revision_id: str,
+    parent_intent_revision_id: str | None,
+    revision_number: int,
+) -> str:
+    return sha256_digest(
+        {
+            "lineage_digest_schema": "intent-lineage-v1",
+            "trip_id": trip_id,
+            "base_trip_revision_id": base_revision_id,
+            "parent_intent_revision_id": parent_intent_revision_id,
+            "revision_number": revision_number,
+        }
+    )
+
+
+def _assumption_value_digest_payload(
+    value: IntentFieldValue | list[IntentFieldValue] | None,
+) -> Any:
+    if isinstance(value, list):
+        return [_domain_value_dump(item) for item in value]
+    if value is None:
+        return None
+    return _domain_value_dump(value)
 
 
 def unique_texts(values: list[str]) -> list[str]:

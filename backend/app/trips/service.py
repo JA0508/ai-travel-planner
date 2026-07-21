@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from app.api.routes.itinerary import (
@@ -297,13 +297,39 @@ class TripPersistenceService:
                 provided_base_revision_id=payload.base_revision_id,
                 current_revision_id=current_revision.id,
             )
-        if payload.use_llm_proposal_adapter and payload.llm_proposal is None and payload.direct_user_text:
-            payload = payload.model_copy(
-                update={
-                    "llm_proposal": build_untrusted_llm_intent_proposal(payload.direct_user_text)
-                }
-            )
+        if (
+            payload.use_llm_proposal_adapter
+            and payload.llm_proposal is None
+            and payload.direct_user_text
+            and payload.parser_error_status is None
+        ):
+            try:
+                payload = payload.model_copy(
+                    update={
+                        "llm_proposal": build_untrusted_llm_intent_proposal(payload.direct_user_text)
+                    }
+                )
+            except TimeoutError:
+                payload = payload.model_copy(
+                    update={"parser_error_status": "timeout", "parser_error_code": "llm_adapter_timeout"}
+                )
+            except ValueError:
+                payload = payload.model_copy(
+                    update={"parser_error_status": "invalid", "parser_error_code": "llm_adapter_invalid_output"}
+                )
+            except RuntimeError:
+                payload = payload.model_copy(
+                    update={"parser_error_status": "provider_error", "parser_error_code": "llm_adapter_provider_error"}
+                )
         latest_intent_revision = self.repository.get_latest_intent_revision(trip_id=trip_id)
+        if payload.base_intent_revision_id is not None:
+            latest_id = latest_intent_revision.id if latest_intent_revision else None
+            if latest_id != payload.base_intent_revision_id:
+                raise StaleIntentRevisionError(
+                    trip_id=trip_id,
+                    provided_intent_revision_id=payload.base_intent_revision_id,
+                    current_intent_revision_id=latest_id or "",
+                )
         return self._create_intent_revision_from_request(
             trip_id=trip_id,
             current_revision=current_revision,
@@ -415,12 +441,23 @@ class TripPersistenceService:
             )
         target = self.repository.get_intent_revision(trip_id=trip_id, revision_id=revision_id)
         latest = self.repository.get_latest_intent_revision(trip_id=trip_id)
+        if payload.base_intent_revision_id is not None:
+            latest_id = latest.id if latest else None
+            if latest_id != payload.base_intent_revision_id:
+                raise StaleIntentRevisionError(
+                    trip_id=trip_id,
+                    provided_intent_revision_id=payload.base_intent_revision_id,
+                    current_intent_revision_id=latest_id or "",
+                )
         return self._create_intent_revision_from_request(
             trip_id=trip_id,
             current_revision=current_revision,
             parent_intent_revision=latest,
             parent_intent_snapshot=target.envelope,
-            payload=CompileTripIntentRequest(base_revision_id=payload.base_revision_id),
+            payload=CompileTripIntentRequest(
+                base_revision_id=payload.base_revision_id,
+                base_intent_revision_id=payload.base_intent_revision_id,
+            ),
             idempotency_key=idempotency_key,
             operation="restore_trip_intent_envelope",
             require_latest_parent=latest is not None,
@@ -518,6 +555,7 @@ class TripPersistenceService:
             idempotency_key_hash=idempotency_key_hash,
             expected_parent_intent_revision_id=parent_intent_revision.id if parent_intent_revision else None,
             require_latest_parent=require_latest_parent,
+            expected_base_revision_id=current_revision.id,
         )
         stored_envelope = SourceLinkedTripIntentEnvelope.model_validate(result.revision.envelope)
         return CompileTripIntentResponse(
@@ -1554,29 +1592,51 @@ def _field_updates_from_clarification(
     answer: Any,
 ) -> IntentStructuredOverrides:
     field_path = question.answer_field_path or (question.field_paths[0] if question.field_paths else "")
-    if field_path == "trip.city":
-        value = str(answer).strip() if answer is not None else ""
-        if not value:
-            raise InvalidRevisionOperationError("Clarification answer is required.")
-        return IntentStructuredOverrides(city=value)
-    if field_path == "trip.trip_days":
-        try:
-            value = int(answer)
-        except (TypeError, ValueError):
-            raise InvalidRevisionOperationError("Trip days clarification must be an integer.") from None
-        return IntentStructuredOverrides(trip_days=value)
-    if field_path == "trip.pace":
-        value = str(answer).strip()
-        if value not in {"relaxed", "balanced", "intensive"}:
-            raise InvalidRevisionOperationError("Pace clarification must be relaxed, balanced, or intensive.")
-        return IntentStructuredOverrides(pace=value)  # type: ignore[arg-type]
-    if field_path == "preferences.transport":
-        values = answer if isinstance(answer, list) else [answer]
-        normalized = unique_preserve_order([str(value) for value in values])
-        if not normalized:
-            raise InvalidRevisionOperationError("Transport clarification answer is required.")
-        return IntentStructuredOverrides(transport_preferences=normalized)
-    raise InvalidRevisionOperationError("Unsupported clarification target field.")
+    handler = CLARIFICATION_FIELD_HANDLERS.get(field_path)
+    if handler is None:
+        raise InvalidRevisionOperationError("Unsupported clarification target field.")
+    return handler(answer)
+
+
+ClarificationHandler = Callable[[Any], IntentStructuredOverrides]
+
+
+def _clarify_city(answer: Any) -> IntentStructuredOverrides:
+    value = str(answer).strip() if answer is not None else ""
+    if not value:
+        raise InvalidRevisionOperationError("Clarification answer is required.")
+    return IntentStructuredOverrides(city=value)
+
+
+def _clarify_trip_days(answer: Any) -> IntentStructuredOverrides:
+    try:
+        value = int(answer)
+    except (TypeError, ValueError):
+        raise InvalidRevisionOperationError("Trip days clarification must be an integer.") from None
+    return IntentStructuredOverrides(trip_days=value)
+
+
+def _clarify_pace(answer: Any) -> IntentStructuredOverrides:
+    value = str(answer).strip()
+    if value not in {"relaxed", "balanced", "intensive"}:
+        raise InvalidRevisionOperationError("Pace clarification must be relaxed, balanced, or intensive.")
+    return IntentStructuredOverrides(pace=value)  # type: ignore[arg-type]
+
+
+def _clarify_transport(answer: Any) -> IntentStructuredOverrides:
+    values = answer if isinstance(answer, list) else [answer]
+    normalized = unique_preserve_order([str(value) for value in values])
+    if not normalized:
+        raise InvalidRevisionOperationError("Transport clarification answer is required.")
+    return IntentStructuredOverrides(transport_preferences=normalized)
+
+
+CLARIFICATION_FIELD_HANDLERS: dict[str, ClarificationHandler] = {
+    "trip.city": _clarify_city,
+    "trip.trip_days": _clarify_trip_days,
+    "trip.pace": _clarify_pace,
+    "preferences.transport": _clarify_transport,
+}
 
 
 def candidate_assumption_codes(candidate) -> list[str]:

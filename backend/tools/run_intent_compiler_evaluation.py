@@ -26,9 +26,11 @@ class IntentCompilerFixture:
     expected_provenance_field: str | None = None
     expected_semantic_type: str | None = None
     expected_blocking_reason: str | None = None
+    expected_graph_node_type: str | None = None
+    expected_domain_value_type: str | None = None
 
 
-MIN_FIXTURE_COUNT = 10
+MIN_FIXTURE_COUNT = 15
 
 
 FIXTURES = [
@@ -38,6 +40,7 @@ FIXTURES = [
         expected_status="ready",
         expected_typed_section="destinations",
         expected_provenance_field="trip.city",
+        expected_domain_value_type="destination_city",
     ),
     IntentCompilerFixture(
         name="manual_override_beats_llm",
@@ -48,6 +51,7 @@ FIXTURES = [
         expected_status="ready",
         expected_conflict="higher_priority_source_selected",
         expected_typed_section="date_policy",
+        expected_domain_value_type="destination_city",
     ),
     IntentCompilerFixture(
         name="missing_destination_clarification",
@@ -75,6 +79,7 @@ FIXTURES = [
         expected_status="blocked",
         expected_conflict="fixed_event_outside_trip_dates",
         expected_typed_section="fixed_events",
+        expected_domain_value_type="fixed_event",
     ),
     IntentCompilerFixture(
         name="llm_proposal_only_is_assumption_weighted",
@@ -82,6 +87,7 @@ FIXTURES = [
         expected_status="ready",
         expected_typed_section="destinations",
         expected_semantic_type="destination_city",
+        expected_domain_value_type="destination_city",
     ),
     IntentCompilerFixture(
         name="transport_preference_is_typed_soft_field",
@@ -90,6 +96,7 @@ FIXTURES = [
         expected_typed_section="transport_preferences",
         expected_provenance_field="preferences.transport",
         expected_semantic_type="transport_preference",
+        expected_domain_value_type="transport_preference",
     ),
     IntentCompilerFixture(
         name="manual_pace_is_semantic_soft_field",
@@ -97,6 +104,7 @@ FIXTURES = [
         expected_status="ready",
         expected_typed_section="pace",
         expected_semantic_type="pace",
+        expected_domain_value_type="pace",
     ),
     IntentCompilerFixture(
         name="reviewed_candidate_absence_is_allowed_typed_assumption",
@@ -111,6 +119,57 @@ FIXTURES = [
         expected_typed_section="destinations",
         expected_provenance_field="trip.city",
         expected_semantic_type="destination_city",
+        expected_domain_value_type="destination_city",
+    ),
+    IntentCompilerFixture(
+        name="manual_budget_is_domain_native_soft_value",
+        payload={"structured_overrides": {"city": "上海", "trip_days": 2, "budget": {"budget_level": "medium", "currency": "CNY"}}},
+        expected_status="ready",
+        expected_typed_section="budget",
+        expected_semantic_type="budget",
+        expected_domain_value_type="budget",
+    ),
+    IntentCompilerFixture(
+        name="traveler_need_is_typed_hard_value",
+        payload={"structured_overrides": {"city": "上海", "trip_days": 2, "traveler_needs": ["轮椅可达"]}},
+        expected_status="ready",
+        expected_typed_section="travelers",
+        expected_semantic_type="traveler_need",
+        expected_domain_value_type="traveler_need",
+    ),
+    IntentCompilerFixture(
+        name="llm_parser_error_status_is_explicit",
+        payload={
+            "direct_user_text": "城市：上海\n天数：2",
+            "use_llm_proposal_adapter": True,
+            "parser_error_status": "timeout",
+            "parser_error_code": "llm_adapter_timeout",
+        },
+        expected_status="ready",
+        expected_provenance_field="trip.city",
+        expected_domain_value_type="destination_city",
+    ),
+    IntentCompilerFixture(
+        name="fixed_event_same_day_is_planner_ready",
+        payload={
+            "structured_overrides": {
+                "city": "上海",
+                "trip_days": 2,
+                "fixed_events": [{"name": "博物馆预约", "fixed_day": 2, "fixed_time_start": "14:00"}],
+            }
+        },
+        expected_status="ready",
+        expected_typed_section="fixed_events",
+        expected_semantic_type="fixed_event",
+        expected_domain_value_type="fixed_event",
+    ),
+    IntentCompilerFixture(
+        name="manual_transport_deduplicates_into_single_domain_values",
+        payload={"structured_overrides": {"city": "上海", "trip_days": 2, "transport_preferences": ["地铁", "地铁", "步行"]}},
+        expected_status="ready",
+        expected_typed_section="transport_preferences",
+        expected_semantic_type="transport_preference",
+        expected_domain_value_type="transport_preference",
     ),
 ]
 
@@ -200,6 +259,8 @@ def evaluate_response(fixture: IntentCompilerFixture, response) -> tuple[bool, d
     typed_sections = envelope["validation_report"].get("typed_intent_sections", [])
     provenance_fields = [item["field_path"] for item in envelope.get("provenance_summary", [])]
     semantic_types = [field["semantic_type"] for field in envelope["fields"]]
+    domain_value_types = [field["value"].get("type") for field in envelope["fields"] if isinstance(field.get("value"), dict)]
+    graph_node_types = [node["node_type"] for node in envelope.get("provenance_graph", {}).get("nodes", [])]
     blocking_reasons = envelope.get("readiness_policy", {}).get("blocking_reason_codes", [])
     if fixture.expected_typed_section:
         passed = passed and fixture.expected_typed_section in typed_sections
@@ -207,9 +268,15 @@ def evaluate_response(fixture: IntentCompilerFixture, response) -> tuple[bool, d
         passed = passed and fixture.expected_provenance_field in provenance_fields
     if fixture.expected_semantic_type:
         passed = passed and fixture.expected_semantic_type in semantic_types
+    if fixture.expected_domain_value_type:
+        passed = passed and fixture.expected_domain_value_type in domain_value_types
+    if fixture.expected_graph_node_type:
+        passed = passed and fixture.expected_graph_node_type in graph_node_types
     if fixture.expected_blocking_reason:
         passed = passed and fixture.expected_blocking_reason in blocking_reasons
     passed = passed and bool(envelope.get("semantic_digest"))
+    passed = passed and bool(envelope.get("lineage_digest"))
+    passed = passed and envelope.get("semantic_digest") != envelope.get("lineage_digest")
     passed = passed and envelope["validation_report"].get("provenance_graph_node_count", 0) > 0
     passed = passed and "typed_assumptions" in envelope
     passed = passed and "parser_result" in envelope
@@ -220,6 +287,8 @@ def evaluate_response(fixture: IntentCompilerFixture, response) -> tuple[bool, d
         "typed_sections": typed_sections,
         "provenance_fields": provenance_fields,
         "semantic_types": semantic_types,
+        "domain_value_types": domain_value_types,
+        "graph_node_types": graph_node_types,
         "blocking_reasons": blocking_reasons,
         "semantic_digest": envelope.get("semantic_digest"),
         "provenance_graph_node_count": envelope["validation_report"].get("provenance_graph_node_count", 0),
