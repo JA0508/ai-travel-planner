@@ -76,15 +76,18 @@ from .errors import (
     RevisionNotUndoableError,
     SnapshotSchemaUnsupportedError,
     StaleBaseRevisionError,
+    StaleIntentRevisionError,
     StaleMutationProposalError,
     TripAccessDeniedError,
     UndoTargetNotCurrentError,
 )
 from .intent_contracts import (
     AnswerIntentClarificationRequest,
+    ClarificationQuestion,
     CompileTripIntentRequest,
     CompileTripIntentResponse,
     EditTripIntentEnvelopeRequest,
+    IntentStructuredOverrides,
     SourceLinkedTripIntentEnvelope,
     TRIP_INTENT_COMPILER_VERSION,
     TRIP_INTENT_ENVELOPE_SCHEMA_VERSION,
@@ -355,6 +358,7 @@ class TripPersistenceService:
             payload=request,
             idempotency_key=idempotency_key,
             operation="edit_trip_intent_envelope",
+            require_latest_parent=True,
         )
 
     def answer_intent_clarification(
@@ -367,11 +371,15 @@ class TripPersistenceService:
         idempotency_key: str | None,
         payload: AnswerIntentClarificationRequest,
     ) -> CompileTripIntentResponse:
-        if question_id != "clarify_trip_city":
+        parent = self.repository.get_intent_revision(trip_id=trip_id, revision_id=revision_id)
+        parent_envelope = SourceLinkedTripIntentEnvelope.model_validate(parent.envelope)
+        question = next(
+            (item for item in parent_envelope.clarification_queue if item.question_id == question_id),
+            None,
+        )
+        if question is None:
             raise InvalidRevisionOperationError("Unsupported clarification question.")
-        answer = str(payload.answer).strip() if payload.answer is not None else ""
-        if not answer:
-            raise InvalidRevisionOperationError("Clarification answer is required.")
+        field_updates = _field_updates_from_clarification(question, payload.answer)
         return self.edit_intent_envelope(
             trip_id=trip_id,
             capability=capability,
@@ -379,7 +387,7 @@ class TripPersistenceService:
             idempotency_key=idempotency_key,
             payload=EditTripIntentEnvelopeRequest(
                 base_revision_id=payload.base_revision_id,
-                field_updates={"city": answer},  # type: ignore[arg-type]
+                field_updates=field_updates,
             ),
         )
 
@@ -393,11 +401,42 @@ class TripPersistenceService:
         payload: CompileTripIntentRequest,
         idempotency_key: str,
         operation: str,
+        require_latest_parent: bool = False,
     ) -> CompileTripIntentResponse:
         candidates, candidate_workflow_states = self._intent_candidate_context(trip_id, payload)
         latest_for_number = parent_intent_revision or self.repository.get_latest_intent_revision(trip_id=trip_id)
         next_revision_number = 1 if latest_for_number is None else latest_for_number.revision_number + 1
         now = format_utc(self.clock())
+        req_digest = request_digest(
+            {
+                "operation": operation,
+                "trip_id": trip_id,
+                "base_revision_id": current_revision.id,
+                "parent_intent_revision_id": parent_intent_revision.id if parent_intent_revision else None,
+                "payload": payload.model_dump(mode="json"),
+            }
+        )
+        idempotency_key_hash = hash_idempotency_key(idempotency_key.strip())
+        replay = self.repository.get_intent_revision_by_idempotency(
+            trip_id=trip_id,
+            request_digest=req_digest,
+            idempotency_key_hash=idempotency_key_hash,
+        )
+        if replay is not None:
+            return CompileTripIntentResponse(
+                envelope=SourceLinkedTripIntentEnvelope.model_validate(replay.revision.envelope),
+                revision=intent_revision_metadata(replay.revision),
+                idempotent_replay=True,
+            )
+        if require_latest_parent and parent_intent_revision is not None:
+            latest = self.repository.get_latest_intent_revision(trip_id=trip_id)
+            if latest is not None and latest.id != parent_intent_revision.id:
+                raise StaleIntentRevisionError(
+                    trip_id=trip_id,
+                    provided_intent_revision_id=parent_intent_revision.id,
+                    current_intent_revision_id=latest.id,
+                )
+            next_revision_number = 1 if latest is None else latest.revision_number + 1
         envelope = compile_source_linked_intent(
             trip_id=trip_id,
             base_revision_id=current_revision.id,
@@ -409,15 +448,6 @@ class TripPersistenceService:
             parent_intent_snapshot=parent_intent_snapshot,
             candidates=candidates,
             candidate_workflow_states=candidate_workflow_states,
-        )
-        req_digest = request_digest(
-            {
-                "operation": operation,
-                "trip_id": trip_id,
-                "base_revision_id": current_revision.id,
-                "parent_intent_revision_id": parent_intent_revision.id if parent_intent_revision else None,
-                "payload": payload.model_dump(mode="json"),
-            }
         )
         record = TripIntentRevisionRecord(
             id=envelope.id,
@@ -436,7 +466,7 @@ class TripPersistenceService:
         result = self.repository.create_intent_revision(
             revision=record,
             request_digest=req_digest,
-            idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+            idempotency_key_hash=idempotency_key_hash,
         )
         stored_envelope = SourceLinkedTripIntentEnvelope.model_validate(result.revision.envelope)
         return CompileTripIntentResponse(
@@ -1466,6 +1496,36 @@ def first_value_from_impact(impact: dict[str, Any] | None, key: str) -> Any:
     if isinstance(values, list) and values:
         return values[0]
     return None
+
+
+def _field_updates_from_clarification(
+    question: ClarificationQuestion,
+    answer: Any,
+) -> IntentStructuredOverrides:
+    field_path = question.answer_field_path or (question.field_paths[0] if question.field_paths else "")
+    if field_path == "trip.city":
+        value = str(answer).strip() if answer is not None else ""
+        if not value:
+            raise InvalidRevisionOperationError("Clarification answer is required.")
+        return IntentStructuredOverrides(city=value)
+    if field_path == "trip.trip_days":
+        try:
+            value = int(answer)
+        except (TypeError, ValueError):
+            raise InvalidRevisionOperationError("Trip days clarification must be an integer.") from None
+        return IntentStructuredOverrides(trip_days=value)
+    if field_path == "trip.pace":
+        value = str(answer).strip()
+        if value not in {"relaxed", "balanced", "intensive"}:
+            raise InvalidRevisionOperationError("Pace clarification must be relaxed, balanced, or intensive.")
+        return IntentStructuredOverrides(pace=value)  # type: ignore[arg-type]
+    if field_path == "preferences.transport":
+        values = answer if isinstance(answer, list) else [answer]
+        normalized = unique_preserve_order([str(value) for value in values])
+        if not normalized:
+            raise InvalidRevisionOperationError("Transport clarification answer is required.")
+        return IntentStructuredOverrides(transport_preferences=normalized)
+    raise InvalidRevisionOperationError("Unsupported clarification target field.")
 
 
 def candidate_assumption_codes(candidate) -> list[str]:

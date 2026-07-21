@@ -12,6 +12,47 @@ export type IntentSourceRef = {
   evidence_refs: string[];
 };
 
+export type TypedIntentValue = {
+  field_path: string;
+  field_id: string | null;
+  value: unknown;
+  kind: "hard" | "soft" | "assumption";
+  confidence: number;
+  confirmed_by_user: boolean;
+  source_refs: IntentSourceRef[];
+  validation_codes: string[];
+};
+
+export type TypedTripIntent = {
+  destinations: TypedIntentValue[];
+  date_policy: {
+    trip_days: TypedIntentValue | null;
+    availability_windows: TypedIntentValue[];
+  };
+  fixed_events: TypedIntentValue[];
+  poi_preferences: {
+    must_candidates: TypedIntentValue[];
+    optional_candidates: TypedIntentValue[];
+    exclusions: TypedIntentValue[];
+  };
+  pace: TypedIntentValue | null;
+  transport_preferences: TypedIntentValue[];
+  budget: TypedIntentValue | null;
+  travelers: TypedIntentValue[];
+  assumptions: string[];
+  unresolved_questions: IntentClarification[];
+};
+
+export type IntentProvenanceSummary = {
+  field_path: string;
+  selected_field_ids: string[];
+  shadowed_field_ids: string[];
+  source_types: string[];
+  evidence_refs: string[];
+  confirmed: boolean;
+  max_confidence: number;
+};
+
 export type IntentField = {
   field_id: string;
   field_path: string;
@@ -39,9 +80,12 @@ export type IntentConflict = {
 export type IntentClarification = {
   question_id: string;
   field_paths: string[];
+  answer_field_path: string | null;
+  answer_value_type: "string" | "integer" | "pace" | "string_list";
   question: string;
   priority: number;
   blocking: boolean;
+  impact: "planner_blocking" | "planner_quality" | "evidence_quality";
   reason_code: string;
   options: unknown[];
 };
@@ -56,6 +100,8 @@ export type SourceLinkedTripIntentEnvelope = {
   conflicts: IntentConflict[];
   assumptions: string[];
   clarification_queue: IntentClarification[];
+  typed_intent: TypedTripIntent;
+  provenance_summary: IntentProvenanceSummary[];
   planner_ready_status: IntentPlannerReadyStatus;
   planner_ready_intent: {
     city: string | null;

@@ -59,6 +59,15 @@ class TripRepository(Protocol):
     ) -> CreateIntentRevisionResult:
         ...
 
+    def get_intent_revision_by_idempotency(
+        self,
+        *,
+        trip_id: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CreateIntentRevisionResult | None:
+        ...
+
     def list_intent_revisions(self, *, trip_id: str) -> list[TripIntentRevisionRecord]:
         ...
 

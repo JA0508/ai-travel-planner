@@ -186,6 +186,24 @@ class MemoryTripRepository:
         self.intent_idempotency_records[key] = (request_digest, revision.id)
         return CreateIntentRevisionResult(revision=copy.deepcopy(revision))
 
+    def get_intent_revision_by_idempotency(
+        self,
+        *,
+        trip_id: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> CreateIntentRevisionResult | None:
+        existing = self.intent_idempotency_records.get((trip_id, idempotency_key_hash))
+        if existing is None:
+            return None
+        stored_digest, revision_id = existing
+        if stored_digest != request_digest:
+            raise IdempotencyConflictError()
+        return CreateIntentRevisionResult(
+            revision=copy.deepcopy(self.intent_revisions[revision_id]),
+            idempotent_replay=True,
+        )
+
     def list_intent_revisions(self, *, trip_id: str) -> list[TripIntentRevisionRecord]:
         return sorted(
             [
