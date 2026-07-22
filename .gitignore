@@ -26,6 +26,8 @@ out/
 .amap_geocode_cache.json
 *.log
 coverage/
+frontend/test-results/
+frontend/playwright-report/
 
 # Local TripRevision persistence stores
 backend/data/

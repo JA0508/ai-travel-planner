@@ -36,6 +36,54 @@ jobs:
       - name: Build
         run: npm run build
 
+  browser-intent-acceptance:
+    name: Real Browser — Draft Intent Confirmation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements.txt
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run real browser Draft intent acceptance
+        working-directory: frontend
+        env:
+          TRIP_E2E_PYTHON: python
+        run: npm run test:e2e:intent
+
+      - name: Upload Draft intent browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: draft-intent-browser-evidence
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+          if-no-files-found: ignore
+
   backend:
     name: Backend
     runs-on: ubuntu-latest
