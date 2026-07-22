@@ -11,6 +11,14 @@ export const TRIP_API_ENDPOINTS = {
   previewPoiDetail: buildApiUrl("/preview-poi-detail"),
   planFromText: buildApiUrl("/plan-trip-from-text"),
   planTrip: buildApiUrl("/trips/plan"),
+  createDraftTrip: buildApiUrl("/trips/drafts"),
+  getDraftTrip: (tripId: string) => buildApiUrl(`/trips/${encodeURIComponent(tripId)}/draft`),
+  compilePrePlanIntent: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent/compile`),
+  previewPrePlanHandoff: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-handoff/preview`),
+  applyPrePlanHandoff: (tripId: string, runId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-handoff/runs/${encodeURIComponent(runId)}/apply`),
   getTrip: (tripId: string) => buildApiUrl(`/trips/${encodeURIComponent(tripId)}`),
   listTripRevisions: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/revisions`),

@@ -3,9 +3,10 @@ export const LEGACY_FULL_SESSION_KEY = "travel-planner-saved-session-v1";
 
 export type TripMetadata = {
   id: string;
-  current_revision_id: string;
+  current_revision_id: string | null;
   revision_count: number;
   lifecycle_status: string;
+  planning_phase?: "draft" | "planned";
   created_at: string;
   updated_at: string;
 };
@@ -35,9 +36,18 @@ export type PersistedTripRef = {
   currentRevisionId: string;
 };
 
+export type PersistedDraftTripRef = {
+  schemaVersion: 2;
+  kind: "draft";
+  tripId: string;
+};
+
+export type StoredTripRef = PersistedTripRef | PersistedDraftTripRef;
+
 export type TripPersistenceState =
   | { status: "none" }
   | { status: "creating" }
+  | { status: "draft"; tripId: string }
   | { status: "restoring"; tripId: string }
   | { status: "saved"; tripId: string; currentRevisionId: string; revisionNumber: number }
   | { status: "dirty"; tripId: string; currentRevisionId: string; revisionNumber: number; reason: string }
@@ -61,12 +71,19 @@ export function buildPersistedTripRef(
   };
 }
 
-export function parsePersistedTripRef(raw: string | null): PersistedTripRef | null {
+export function buildPersistedDraftTripRef(tripId: string): PersistedDraftTripRef {
+  return { schemaVersion: 2, kind: "draft", tripId };
+}
+
+export function parsePersistedTripRef(raw: string | null): StoredTripRef | null {
   if (!raw) {
     return null;
   }
   try {
-    const value = JSON.parse(raw) as Partial<PersistedTripRef>;
+    const value = JSON.parse(raw) as Partial<StoredTripRef>;
+    if (value.schemaVersion === 2 && value.kind === "draft" && typeof value.tripId === "string" && value.tripId) {
+      return { schemaVersion: 2, kind: "draft", tripId: value.tripId };
+    }
     if (
       value.schemaVersion !== 1 ||
       typeof value.tripId !== "string" ||
@@ -86,7 +103,7 @@ export function parsePersistedTripRef(raw: string | null): PersistedTripRef | nu
   }
 }
 
-export function serializePersistedTripRef(ref: PersistedTripRef): string {
+export function serializePersistedTripRef(ref: StoredTripRef): string {
   return JSON.stringify(ref);
 }
 
@@ -94,6 +111,8 @@ export function describeTripPersistence(state: TripPersistenceState): string {
   switch (state.status) {
     case "creating":
       return "Saving…";
+    case "draft":
+      return "Draft trip · no itinerary revision";
     case "restoring":
       return "Restoring saved trip…";
     case "saved":

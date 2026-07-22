@@ -110,7 +110,16 @@ from .intent_contracts import (
     intent_revision_metadata,
 )
 from .intent_llm_adapter import build_untrusted_llm_intent_proposal
-from .models import PlannerHandoffRunRecord, ProposalStatus, RevisionSourceType, TripCandidateRecord, TripMutationProposalRecord
+from .models import (
+    DraftIntentRevisionRecord,
+    PlannerHandoffRunRecord,
+    PrePlanHandoffRunRecord,
+    ProposalStatus,
+    RevisionSourceType,
+    TripCandidateRecord,
+    TripMutationProposalRecord,
+    TripPlanningPhase,
+)
 from .planner_handoff import (
     PLANNER_HANDOFF_INPUT_SCHEMA_VERSION,
     attach_handoff_source_links,
@@ -129,6 +138,15 @@ from .schemas import (
     PersistedMutationPreviewRequest,
     PersistedMutationPreviewResponse,
     ApplyPlannerHandoffProposalRequest,
+    DraftTripCreateResponse,
+    DraftTripDetailResponse,
+    DraftIntentRevisionMetadata,
+    PrePlanHandoffApplyRequest,
+    PrePlanHandoffApplyResponse,
+    PrePlanHandoffPreviewRequest,
+    PrePlanHandoffPreviewResponse,
+    PrePlanHandoffRunMetadata,
+    PrePlanIntentCompileResponse,
     PlannerHandoffApplyResponse,
     PlannerHandoffPreviewRequest,
     PlannerHandoffPreviewResponse,
@@ -199,6 +217,150 @@ class TripPersistenceService:
             persistence=TripPersistenceInfo(),
         )
         return CreatedTripResult(response=response, capability=capability)
+
+    def create_draft_trip(self, *, direct_user_text: str, idempotency_key: str | None) -> CreatedTripResult:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        # A Draft Trip has no cookie capability before its first response. Deriving the
+        # one-time anonymous capability from the caller's high-entropy idempotency key
+        # makes a lost-response retry recover the same private draft without duplicating it.
+        capability = f"draft-capability:{idempotency_key.strip()}"
+        trip, replay = self.repository.create_draft_trip(
+            capability_hash=hash_capability(capability),
+            direct_user_text=direct_user_text,
+            source_digest=request_digest({"direct_user_text": direct_user_text}),
+            request_digest=request_digest({"operation": "create_draft_trip", "source_digest": request_digest({"direct_user_text": direct_user_text}), "schema": "f001c-v1"}),
+            idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+        )
+        return CreatedTripResult(
+            response=DraftTripCreateResponse(
+                trip=TripMetadata.from_record(trip),
+                persistence=TripPersistenceInfo(idempotent_replay=replay),
+            ),
+            capability=capability,
+        )
+
+    def get_draft_trip(self, *, trip_id: str, capability: str | None) -> DraftTripDetailResponse:
+        trip = self._require_trip_access(trip_id, capability)
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+            raise InvalidRevisionOperationError("Trip is no longer a draft.")
+        return DraftTripDetailResponse(
+            trip=TripMetadata.from_record(trip),
+            direct_user_text=self.repository.get_draft_source_text(trip_id=trip_id),
+        )
+
+    def compile_draft_intent_envelope(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        idempotency_key: str | None,
+        payload: CompileTripIntentRequest,
+    ) -> PrePlanIntentCompileResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        trip = self._require_trip_access(trip_id, capability)
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+            raise InvalidRevisionOperationError("Pre-plan intent is only available while the trip is a draft.")
+        if payload.base_revision_id is not None:
+            raise StaleBaseRevisionError(trip_id=trip_id, provided_base_revision_id=payload.base_revision_id, current_revision_id="")
+        parent = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+        parent_id = parent.id if parent else None
+        if payload.base_intent_revision_id != parent_id:
+            raise StaleIntentRevisionError(trip_id=trip_id, provided_intent_revision_id=payload.base_intent_revision_id or "", current_intent_revision_id=parent_id or "")
+        candidates, states, preferences = self._intent_candidate_context(trip_id, payload)
+        refs, verification = self._verified_candidate_source_refs(trip_id, candidates)
+        now = format_utc(self.clock())
+        parser_result = self._build_intent_proposal_parse_result(payload)
+        envelope = compile_source_linked_intent(
+            trip_id=trip_id,
+            base_revision_id=None,
+            parent_intent_revision_id=parent_id,
+            next_revision_number=0,
+            created_at=now,
+            request=payload,
+            parser_result=parser_result,
+            existing_trip_snapshot={},
+            parent_intent_snapshot=parent.envelope if parent else None,
+            candidates=candidates,
+            candidate_workflow_states=states,
+            candidate_preferences=preferences,
+            verified_candidate_source_refs=refs,
+            candidate_verification_states=verification,
+        )
+        envelope.validation_report.update({"preplan_contract": True, "base_trip_revision_absent": True})
+        record = DraftIntentRevisionRecord(
+            id=envelope.id,
+            trip_id=trip_id,
+            revision_number=0,
+            parent_draft_intent_revision_id=parent_id,
+            envelope_schema_version=TRIP_INTENT_ENVELOPE_SCHEMA_VERSION,
+            envelope=envelope.model_dump(mode="json"),
+            content_digest=envelope.content_digest,
+            compiler_version=TRIP_INTENT_COMPILER_VERSION,
+            source_digest=envelope.source_digest,
+            validation_report=envelope.validation_report,
+            created_at=now,
+        )
+        req_digest = request_digest({"operation": "compile_draft_trip_intent_envelope", "trip_id": trip_id, "parent": parent_id, "payload": payload.model_dump(mode="json")})
+        stored, replay = self.repository.create_draft_intent_revision(
+            revision=record,
+            request_digest=req_digest,
+            idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+            expected_parent_draft_intent_revision_id=parent_id,
+        )
+        return PrePlanIntentCompileResponse(envelope=stored.envelope, revision=DraftIntentRevisionMetadata.from_record(stored), idempotent_replay=replay)
+
+    def preview_preplan_handoff(self, *, trip_id: str, capability: str | None, payload: PrePlanHandoffPreviewRequest) -> PrePlanHandoffPreviewResponse:
+        trip = self._require_trip_access(trip_id, capability)
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+            raise InvalidRevisionOperationError("Pre-plan handoff is only available for a Draft Trip.")
+        draft = self.repository.get_draft_intent_revision(trip_id=trip_id, revision_id=payload.draft_intent_revision_id)
+        latest = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+        if latest is None or latest.id != draft.id:
+            raise StaleIntentRevisionError(trip_id=trip_id, provided_intent_revision_id=draft.id, current_intent_revision_id=latest.id if latest else "")
+        envelope = SourceLinkedTripIntentEnvelope.model_validate(draft.envelope)
+        handoff = build_planner_handoff_input(envelope=envelope, candidates=self.repository.list_candidates(trip_id=trip_id))
+        run_id = f"preplan_handoff_{uuid4().hex}"
+        collector = PlannerTraceCollector(planner_run_id=run_id, input_summary=build_planner_input_snapshot(handoff.handoff.itinerary_request), strict=True, volatile_metadata={"draft_intent_revision_id": draft.id, "handoff_input_digest": handoff.handoff.digest})
+        record_handoff_trace_context(collector, handoff=handoff.handoff, candidate_links=handoff.field_links_by_candidate_id)
+        itinerary = attach_handoff_source_links(build_itinerary_response(handoff.handoff.itinerary_request, intent_source=TripIntentEnvelopeSource.REGENERATE, trace_collector=collector), candidate_links=handoff.field_links_by_candidate_id, collector=collector)
+        snapshot = ensure_stable_item_ids(serialize_itinerary_snapshot(itinerary))
+        stored_itinerary = deserialize_itinerary_snapshot(snapshot)
+        trace = collector.build_trace(build_planner_result_summary(stored_itinerary))
+        trace = trace.model_copy(update={"trace_digest": planner_trace_digest(trace)})
+        validation = build_mutation_validation_report(itinerary=stored_itinerary, trace=trace)
+        assert_mutation_validation_passed(validation)
+        now = self.clock()
+        run = PrePlanHandoffRunRecord(
+            id=run_id, trip_id=trip_id, draft_intent_revision_id=draft.id,
+            intent_semantic_digest=handoff.handoff.intent_semantic_digest, intent_lineage_digest=handoff.handoff.intent_lineage_digest,
+            input_snapshot=handoff.handoff.model_dump(mode="json"), input_digest=handoff.handoff.digest,
+            planner_version=trace.planner_version, trace_schema_version=trace.schema_version,
+            trace_snapshot=trace.model_dump(mode="json"), trace_digest=trace.trace_digest or "",
+            result_snapshot=snapshot, result_content_digest=itinerary_content_digest(snapshot), validation_report=validation,
+            status="pending", expires_at=format_utc(now + timedelta(seconds=get_trip_replan_proposal_ttl_seconds())),
+            applied_revision_id=None, created_at=format_utc(now), updated_at=format_utc(now),
+        )
+        run = self.repository.create_preplan_handoff_run(run=run)
+        return PrePlanHandoffPreviewResponse(trip=TripMetadata.from_record(trip), draft_intent_revision_id=draft.id, handoff=PrePlanHandoffRunMetadata.from_record(run), itinerary=stored_itinerary, source_links=[item.model_dump(mode="json") for item in handoff.handoff.source_links])
+
+    def apply_preplan_handoff(self, *, trip_id: str, run_id: str, capability: str | None, idempotency_key: str | None, payload: PrePlanHandoffApplyRequest) -> PrePlanHandoffApplyResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        trip = self._require_trip_access(trip_id, capability)
+        run = self.repository.get_preplan_handoff_run(trip_id=trip_id, run_id=run_id)
+        result = self.repository.activate_preplan_handoff(
+            trip_id=trip_id, capability_hash=trip.capability_hash, run_id=run_id,
+            draft_intent_revision_id=payload.draft_intent_revision_id, handoff_digest=payload.handoff_digest,
+            now=format_utc(self.clock()),
+            request_digest=request_digest({"operation": "apply_preplan_handoff", "trip_id": trip_id, "run_id": run_id, "draft_intent_revision_id": payload.draft_intent_revision_id, "handoff_digest": payload.handoff_digest}),
+            idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+            operation_metadata={"operation_type": "apply_preplan_intent_handoff", "preplan_handoff_run_id": run.id, "draft_intent_revision_id": run.draft_intent_revision_id, "intent_semantic_digest": run.intent_semantic_digest, "intent_lineage_digest": run.intent_lineage_digest, "trace_digest": run.trace_digest},
+        )
+        current_trip = self.repository.get_trip(trip_id)
+        applied = self.repository.get_preplan_handoff_run(trip_id=trip_id, run_id=run_id)
+        return PrePlanHandoffApplyResponse(trip=TripMetadata.from_record(current_trip), current_revision=TripRevisionMetadata.from_record(result.revision), draft_intent_revision_id=run.draft_intent_revision_id, handoff=PrePlanHandoffRunMetadata.from_record(applied), itinerary=deserialize_itinerary_snapshot(result.revision.itinerary_snapshot), persistence=TripPersistenceInfo(idempotent_replay=result.idempotent_replay))
 
     def get_current_trip(self, trip_id: str, capability: str | None) -> TripCurrentResponse:
         trip = self._require_trip_access(trip_id, capability)

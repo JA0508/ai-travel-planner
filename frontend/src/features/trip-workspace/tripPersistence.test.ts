@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildPersistedTripRef,
+  buildPersistedDraftTripRef,
   buildReplanProposalIdempotencyKey,
   describeTripPersistence,
   markDirty,
@@ -56,6 +57,15 @@ test("invalid persisted reference schema clears safely", () => {
   assert.equal(parsePersistedTripRef(null), null);
   assert.equal(parsePersistedTripRef("{"), null);
   assert.equal(parsePersistedTripRef(JSON.stringify({ schemaVersion: 2 })), null);
+});
+
+test("draft trip reference keeps only draft identity and never raw trip text", () => {
+  const ref = buildPersistedDraftTripRef("trip_draft_1");
+  const serialized = serializePersistedTripRef(ref);
+
+  assert.deepEqual(JSON.parse(serialized), { schemaVersion: 2, kind: "draft", tripId: "trip_draft_1" });
+  assert.deepEqual(parsePersistedTripRef(serialized), ref);
+  assert.equal(serialized.includes("西安"), false);
 });
 
 test("saved and dirty states have stable user-facing labels", () => {

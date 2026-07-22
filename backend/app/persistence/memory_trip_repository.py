@@ -40,6 +40,7 @@ from app.trips.models import (
     CandidateDecisionResult,
     CandidateRegistrationResult,
     CreateRevisionResult,
+    DraftIntentRevisionRecord,
     ProposalStatus,
     RevisionOperationRecord,
     RevisionSourceType,
@@ -47,8 +48,10 @@ from app.trips.models import (
     TripCandidateRecord,
     TripAggregate,
     TripLifecycleStatus,
+    TripPlanningPhase,
     TripMutationProposalRecord,
     PlannerHandoffRunRecord,
+    PrePlanHandoffRunRecord,
     TripRecord,
     TripRevisionRecord,
 )
@@ -70,6 +73,11 @@ class MemoryTripRepository:
         self.intent_idempotency_records: dict[tuple[str, str], tuple[str, str]] = {}
         self.intent_compile_runs: dict[str, IntentCompileRunDraft] = {}
         self.planner_handoff_runs: dict[str, PlannerHandoffRunRecord] = {}
+        self.draft_trip_idempotency_records: dict[str, tuple[str, str]] = {}
+        self.draft_trip_source_inputs: dict[str, str] = {}
+        self.draft_intent_revisions: dict[str, DraftIntentRevisionRecord] = {}
+        self.draft_intent_idempotency_records: dict[tuple[str, str], tuple[str, str]] = {}
+        self.preplan_handoff_runs: dict[str, PrePlanHandoffRunRecord] = {}
 
     def health_check(self) -> dict[str, Any]:
         return {
@@ -106,6 +114,7 @@ class MemoryTripRepository:
             current_revision_id=revision_id,
             revision_count=1,
             lifecycle_status=TripLifecycleStatus.ACTIVE.value,
+            planning_phase=TripPlanningPhase.PLANNED.value,
             capability_hash=capability_hash,
             created_at=now,
             updated_at=now,
@@ -147,6 +156,125 @@ class MemoryTripRepository:
         self.revisions[revision_id] = revision
         self.operations[operation.id] = operation
         return TripAggregate(trip=copy.deepcopy(trip), current_revision=copy.deepcopy(revision))
+
+    def create_draft_trip(self, *, capability_hash: str, direct_user_text: str, source_digest: str, request_digest: str, idempotency_key_hash: str) -> tuple[TripRecord, bool]:
+        existing = self.draft_trip_idempotency_records.get(idempotency_key_hash)
+        if existing is not None:
+            digest, trip_id = existing
+            if digest != request_digest:
+                raise IdempotencyConflictError()
+            return self.get_trip(trip_id), True
+        trip_id = generate_trip_id()
+        now = utc_now()
+        trip = TripRecord(id=trip_id, current_revision_id=None, revision_count=0,
+            lifecycle_status=TripLifecycleStatus.ACTIVE.value, planning_phase=TripPlanningPhase.DRAFT.value,
+            capability_hash=capability_hash, created_at=now, updated_at=now)
+        self.trips[trip_id] = trip
+        self.draft_trip_source_inputs[trip_id] = direct_user_text
+        self.draft_trip_idempotency_records[idempotency_key_hash] = (request_digest, trip_id)
+        return copy.deepcopy(trip), False
+
+    def get_draft_source_text(self, *, trip_id: str) -> str:
+        try:
+            return self.draft_trip_source_inputs[trip_id]
+        except KeyError as exc:
+            raise TripNotFoundError(trip_id) from exc
+
+    def create_draft_intent_revision(self, *, revision: DraftIntentRevisionRecord, request_digest: str,
+        idempotency_key_hash: str, expected_parent_draft_intent_revision_id: str | None) -> tuple[DraftIntentRevisionRecord, bool]:
+        key = (revision.trip_id, idempotency_key_hash)
+        existing = self.draft_intent_idempotency_records.get(key)
+        if existing is not None:
+            digest, revision_id = existing
+            if digest != request_digest:
+                raise IdempotencyConflictError()
+            return copy.deepcopy(self.draft_intent_revisions[revision_id]), True
+        trip = self.get_trip(revision.trip_id)
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+            raise StaleBaseRevisionError(trip_id=trip.id, provided_base_revision_id="", current_revision_id=trip.current_revision_id or "")
+        latest = self.get_latest_draft_intent_revision(trip_id=trip.id)
+        if (latest.id if latest else None) != expected_parent_draft_intent_revision_id:
+            raise StaleIntentRevisionError(trip_id=trip.id, provided_intent_revision_id=expected_parent_draft_intent_revision_id or "", current_intent_revision_id=latest.id if latest else "")
+        number = latest.revision_number + 1 if latest else 1
+        parent_lineage_digest = latest.envelope.get("lineage_digest") if latest else None
+        finalized = finalize_intent_envelope_for_revision(
+            SourceLinkedTripIntentEnvelope.model_validate(revision.envelope),
+            revision_id=revision.id,
+            revision_number=number,
+            base_trip_revision_id=None,
+            parent_intent_revision_id=expected_parent_draft_intent_revision_id,
+            parent_lineage_digest=parent_lineage_digest if isinstance(parent_lineage_digest, str) else None,
+            operation="compile_draft_trip_intent_envelope",
+            restore_source_revision_id=None,
+            created_at=revision.created_at,
+        )
+        stored = replace(revision, revision_number=number, parent_draft_intent_revision_id=expected_parent_draft_intent_revision_id, envelope=finalized.model_dump(mode="json"), content_digest=finalized.content_digest)
+        self.draft_intent_revisions[stored.id] = copy.deepcopy(stored)
+        self.draft_intent_idempotency_records[key] = (request_digest, stored.id)
+        return copy.deepcopy(stored), False
+
+    def get_draft_intent_revision(self, *, trip_id: str, revision_id: str) -> DraftIntentRevisionRecord:
+        revision = self.draft_intent_revisions.get(revision_id)
+        if revision is None or revision.trip_id != trip_id:
+            raise RevisionNotFoundError(revision_id)
+        return copy.deepcopy(revision)
+
+    def get_latest_draft_intent_revision(self, *, trip_id: str) -> DraftIntentRevisionRecord | None:
+        values = self.list_draft_intent_revisions(trip_id=trip_id)
+        return values[0] if values else None
+
+    def list_draft_intent_revisions(self, *, trip_id: str) -> list[DraftIntentRevisionRecord]:
+        return sorted([copy.deepcopy(item) for item in self.draft_intent_revisions.values() if item.trip_id == trip_id], key=lambda item: item.revision_number, reverse=True)
+
+    def create_preplan_handoff_run(self, *, run: PrePlanHandoffRunRecord) -> PrePlanHandoffRunRecord:
+        self.preplan_handoff_runs[run.id] = copy.deepcopy(run)
+        return copy.deepcopy(run)
+
+    def get_preplan_handoff_run(self, *, trip_id: str, run_id: str) -> PrePlanHandoffRunRecord:
+        run = self.preplan_handoff_runs.get(run_id)
+        if run is None or run.trip_id != trip_id:
+            raise MutationProposalNotFoundError(run_id)
+        return copy.deepcopy(run)
+
+    def activate_preplan_handoff(self, *, trip_id: str, capability_hash: str, run_id: str,
+        draft_intent_revision_id: str, handoff_digest: str, now: str, request_digest: str,
+        idempotency_key_hash: str, operation_metadata: dict[str, Any]) -> CreateRevisionResult:
+        trip = self.get_trip_for_access(trip_id, capability_hash)
+        replay = self.idempotency_records.get((trip_id, idempotency_key_hash))
+        if replay is not None:
+            digest, revision_id = replay
+            if digest != request_digest:
+                raise IdempotencyConflictError()
+            return CreateRevisionResult(self.get_revision(trip_id, revision_id), True)
+        run = self.get_preplan_handoff_run(trip_id=trip_id, run_id=run_id)
+        if run.draft_intent_revision_id != draft_intent_revision_id or run.trace_digest != handoff_digest:
+            raise ProposalDigestMismatchError()
+        if run.status == "applied":
+            return CreateRevisionResult(self.get_revision(trip_id, run.applied_revision_id or ""), True)
+        latest = self.get_latest_draft_intent_revision(trip_id=trip_id)
+        if latest is None or latest.id != draft_intent_revision_id:
+            raise StaleIntentRevisionError(trip_id=trip_id, provided_intent_revision_id=draft_intent_revision_id, current_intent_revision_id=latest.id if latest else "")
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None or run.status != "pending" or now >= run.expires_at:
+            raise StaleBaseRevisionError(trip_id=trip_id, provided_base_revision_id="", current_revision_id=trip.current_revision_id or "")
+        content_digest = itinerary_content_digest(run.result_snapshot)
+        if content_digest != run.result_content_digest:
+            raise ProposalIntegrityViolationError()
+        revision_id = generate_revision_id()
+        revision = TripRevisionRecord(id=revision_id, trip_id=trip_id, revision_number=1, parent_revision_id=None,
+            base_revision_id=None, source_type=RevisionSourceType.PLANNER_INTENT_HANDOFF.value,
+            snapshot_schema_version=TRIP_SNAPSHOT_SCHEMA_VERSION, itinerary_snapshot=copy.deepcopy(run.result_snapshot),
+            content_digest=content_digest, parent_lineage_digest=None,
+            lineage_digest=lineage_digest(parent_lineage_digest=None, source_type=RevisionSourceType.PLANNER_INTENT_HANDOFF.value, operation_metadata=operation_metadata, content_digest=content_digest),
+            planner_run_id=run.id, planner_version=run.planner_version, trace_schema_version=run.trace_schema_version,
+            trace_digest=run.trace_digest, restored_from_revision_id=None, created_at=now)
+        self.revisions[revision_id] = revision
+        operation_id = generate_operation_id()
+        self.operations[operation_id] = RevisionOperationRecord(id=operation_id, trip_id=trip_id, revision_id=revision_id, base_revision_id=None, source_type=RevisionSourceType.PLANNER_INTENT_HANDOFF.value, operation_type="apply_preplan_intent_handoff", request_digest=request_digest, idempotency_key_hash=idempotency_key_hash, actor_type="anonymous", summary="Created Revision 1 from a confirmed pre-plan intent contract.", operation_metadata=copy.deepcopy(operation_metadata), created_at=now)
+        self.idempotency_records[(trip_id, idempotency_key_hash)] = (request_digest, revision_id)
+        run = replace(run, status="applied", applied_revision_id=revision_id, updated_at=now)
+        self.preplan_handoff_runs[run.id] = copy.deepcopy(run)
+        self.trips[trip_id] = replace(trip, current_revision_id=revision_id, revision_count=1, planning_phase=TripPlanningPhase.PLANNED.value, updated_at=now)
+        return CreateRevisionResult(copy.deepcopy(revision))
 
     def get_trip(self, trip_id: str) -> TripRecord:
         trip = self.trips.get(trip_id)
@@ -624,6 +752,7 @@ class MemoryTripRepository:
             current_revision_id=revision_id,
             revision_count=revision.revision_number,
             lifecycle_status=trip.lifecycle_status,
+            planning_phase=TripPlanningPhase.PLANNED.value,
             capability_hash=trip.capability_hash,
             created_at=trip.created_at,
             updated_at=now,
@@ -721,6 +850,7 @@ class MemoryTripRepository:
             current_revision_id=revision_id,
             revision_count=revision.revision_number,
             lifecycle_status=trip.lifecycle_status,
+            planning_phase=TripPlanningPhase.PLANNED.value,
             capability_hash=trip.capability_hash,
             created_at=trip.created_at,
             updated_at=now,

@@ -19,7 +19,14 @@ from app.schemas import (
     TravelMode,
     TripIntentEnvelope,
 )
-from .models import PlannerHandoffRunRecord, TripMutationProposalRecord, TripRecord, TripRevisionRecord
+from .models import (
+    DraftIntentRevisionRecord,
+    PlannerHandoffRunRecord,
+    PrePlanHandoffRunRecord,
+    TripMutationProposalRecord,
+    TripRecord,
+    TripRevisionRecord,
+)
 from .mutation_commands import TripMutationCommandEnvelope
 
 
@@ -39,11 +46,20 @@ class TripPlanRequest(BaseModel):
         return self
 
 
+class DraftTripCreateRequest(BaseModel):
+    """Admission request deliberately contains no itinerary or inferred trip facts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    direct_user_text: str = Field(..., min_length=1, max_length=10000)
+
+
 class TripMetadata(BaseModel):
     id: str
-    current_revision_id: str
+    current_revision_id: str | None = None
     revision_count: int
     lifecycle_status: str
+    planning_phase: str = "planned"
     created_at: str
     updated_at: str
 
@@ -54,6 +70,7 @@ class TripMetadata(BaseModel):
             current_revision_id=record.current_revision_id,
             revision_count=record.revision_count,
             lifecycle_status=record.lifecycle_status,
+            planning_phase=record.planning_phase,
             created_at=record.created_at,
             updated_at=record.updated_at,
         )
@@ -103,6 +120,114 @@ class TripPersistenceInfo(BaseModel):
     status: Literal["saved"] = "saved"
     schema_version: str = "1"
     idempotent_replay: bool = False
+
+
+class DraftTripCreateResponse(BaseModel):
+    trip: TripMetadata
+    persistence: TripPersistenceInfo
+
+
+class DraftTripDetailResponse(BaseModel):
+    trip: TripMetadata
+    direct_user_text: str
+
+
+class DraftIntentRevisionMetadata(BaseModel):
+    id: str
+    trip_id: str
+    revision_number: int
+    parent_draft_intent_revision_id: str | None = None
+    envelope_schema_version: str
+    content_digest: str
+    compiler_version: str
+    source_digest: str
+    created_at: str
+
+    @classmethod
+    def from_record(cls, record: DraftIntentRevisionRecord) -> "DraftIntentRevisionMetadata":
+        return cls(
+            id=record.id,
+            trip_id=record.trip_id,
+            revision_number=record.revision_number,
+            parent_draft_intent_revision_id=record.parent_draft_intent_revision_id,
+            envelope_schema_version=record.envelope_schema_version,
+            content_digest=record.content_digest,
+            compiler_version=record.compiler_version,
+            source_digest=record.source_digest,
+            created_at=record.created_at,
+        )
+
+
+class PrePlanIntentCompileResponse(BaseModel):
+    envelope: dict
+    revision: DraftIntentRevisionMetadata
+    idempotent_replay: bool = False
+
+
+class PrePlanHandoffPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_intent_revision_id: str = Field(..., min_length=1)
+
+
+class PrePlanHandoffApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_intent_revision_id: str = Field(..., min_length=1)
+    handoff_digest: str = Field(..., min_length=1)
+
+
+class PrePlanHandoffRunMetadata(BaseModel):
+    id: str
+    trip_id: str
+    draft_intent_revision_id: str
+    intent_semantic_digest: str
+    intent_lineage_digest: str
+    input_digest: str
+    planner_version: str
+    trace_schema_version: str
+    trace_digest: str
+    result_content_digest: str
+    status: str
+    expires_at: str
+    applied_revision_id: str | None = None
+    created_at: str
+
+    @classmethod
+    def from_record(cls, record: PrePlanHandoffRunRecord) -> "PrePlanHandoffRunMetadata":
+        return cls(
+            id=record.id,
+            trip_id=record.trip_id,
+            draft_intent_revision_id=record.draft_intent_revision_id,
+            intent_semantic_digest=record.intent_semantic_digest,
+            intent_lineage_digest=record.intent_lineage_digest,
+            input_digest=record.input_digest,
+            planner_version=record.planner_version,
+            trace_schema_version=record.trace_schema_version,
+            trace_digest=record.trace_digest,
+            result_content_digest=record.result_content_digest,
+            status=record.status,
+            expires_at=record.expires_at,
+            applied_revision_id=record.applied_revision_id,
+            created_at=record.created_at,
+        )
+
+
+class PrePlanHandoffPreviewResponse(BaseModel):
+    trip: TripMetadata
+    draft_intent_revision_id: str
+    handoff: PrePlanHandoffRunMetadata
+    itinerary: ItineraryResponse
+    source_links: list[dict]
+
+
+class PrePlanHandoffApplyResponse(BaseModel):
+    trip: TripMetadata
+    current_revision: TripRevisionMetadata
+    draft_intent_revision_id: str
+    handoff: PrePlanHandoffRunMetadata
+    itinerary: ItineraryResponse
+    persistence: TripPersistenceInfo
 
 
 class TripPlanResponse(BaseModel):

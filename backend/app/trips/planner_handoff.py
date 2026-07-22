@@ -42,7 +42,8 @@ class PlannerHandoffInput(BaseModel):
     schema_version: str = PLANNER_HANDOFF_INPUT_SCHEMA_VERSION
     policy_version: str = PLANNER_HANDOFF_POLICY_VERSION
     trip_id: str
-    base_trip_revision_id: str
+    # A Draft Trip is deliberately not attached to an itinerary revision yet.
+    base_trip_revision_id: str | None = None
     intent_revision_id: str
     intent_semantic_digest: str
     intent_lineage_digest: str

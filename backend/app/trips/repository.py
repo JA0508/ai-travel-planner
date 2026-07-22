@@ -7,6 +7,8 @@ from .models import (
     CandidateDecisionResult,
     CandidateRegistrationResult,
     CreateRevisionResult,
+    DraftIntentRevisionRecord,
+    PrePlanHandoffRunRecord,
     TripAggregate,
     TripCandidateDecisionRecord,
     TripCandidateRecord,
@@ -27,6 +29,8 @@ class TripRepository(Protocol):
         *,
         itinerary_snapshot: dict[str, Any],
         capability_hash: str,
+        direct_user_text: str,
+        source_digest: str,
         operation_type: str,
         operation_summary: str,
         request_digest: str,
@@ -35,6 +39,58 @@ class TripRepository(Protocol):
         trace_schema_version: str | None,
         trace_digest: str | None,
     ) -> TripAggregate:
+        ...
+
+    def create_draft_trip(
+        self,
+        *,
+        capability_hash: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> tuple[TripRecord, bool]:
+        ...
+
+    def get_draft_source_text(self, *, trip_id: str) -> str:
+        ...
+
+    def create_draft_intent_revision(
+        self,
+        *,
+        revision: DraftIntentRevisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+        expected_parent_draft_intent_revision_id: str | None,
+    ) -> tuple[DraftIntentRevisionRecord, bool]:
+        ...
+
+    def get_draft_intent_revision(self, *, trip_id: str, revision_id: str) -> DraftIntentRevisionRecord:
+        ...
+
+    def get_latest_draft_intent_revision(self, *, trip_id: str) -> DraftIntentRevisionRecord | None:
+        ...
+
+    def list_draft_intent_revisions(self, *, trip_id: str) -> list[DraftIntentRevisionRecord]:
+        ...
+
+    def create_preplan_handoff_run(self, *, run: PrePlanHandoffRunRecord) -> PrePlanHandoffRunRecord:
+        ...
+
+    def get_preplan_handoff_run(self, *, trip_id: str, run_id: str) -> PrePlanHandoffRunRecord:
+        ...
+
+    def activate_preplan_handoff(
+        self,
+        *,
+        trip_id: str,
+        capability_hash: str,
+        run_id: str,
+        draft_intent_revision_id: str,
+        handoff_digest: str,
+        now: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+        operation_metadata: dict[str, Any],
+    ) -> CreateRevisionResult:
         ...
 
     def get_trip(self, trip_id: str) -> TripRecord:
