@@ -43,6 +43,279 @@ body {
   color: var(--ec-ink);
 }
 
+.uc-intent-shell {
+  width: min(920px, calc(100% - 32px));
+  margin: 32px auto 96px;
+  display: grid;
+  gap: 14px;
+}
+
+.uc-intent-header {
+  display: grid;
+  gap: 8px;
+  padding: 8px 2px 6px;
+}
+
+.uc-intent-header h1,
+.uc-intent-header h2,
+.uc-intent-card h2 {
+  margin: 0;
+  color: var(--ec-ink);
+}
+
+.uc-intent-header h1 {
+  font-family: "Iowan Old Style", Georgia, "Times New Roman", serif;
+  font-size: 42px;
+  line-height: 1;
+}
+
+.uc-intent-header > p:last-child,
+.uc-intent-muted,
+.uc-intent-card article span,
+.uc-intent-feedback,
+.uc-intent-actions p {
+  margin: 0;
+  color: var(--ec-slate);
+  line-height: 1.55;
+}
+
+.uc-intent-eyebrow,
+.uc-intent-section-heading p {
+  margin: 0;
+  color: var(--ec-ochre);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.uc-intent-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--ec-line);
+  border-radius: 8px;
+  background: rgba(255, 253, 249, 0.9);
+  box-shadow: var(--ec-shadow-1);
+}
+
+.uc-intent-card--attention {
+  border-color: rgba(166, 76, 61, 0.34);
+  background: rgba(255, 246, 243, 0.92);
+}
+
+.uc-intent-section-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.uc-intent-section-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.uc-intent-section-heading h2 {
+  font-size: 20px;
+}
+
+.uc-intent-status {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.uc-intent-status--ready {
+  color: #3f633c;
+  background: rgba(231, 236, 232, 0.9);
+}
+
+.uc-intent-status--blocked {
+  color: #963d32;
+  background: rgba(255, 228, 223, 0.9);
+}
+
+.uc-intent-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.uc-intent-summary > div,
+.uc-intent-preview-days article {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid var(--ec-line-soft);
+  background: rgba(247, 244, 238, 0.66);
+}
+
+.uc-intent-summary span,
+.uc-intent-preview-days span {
+  color: var(--ec-slate);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.uc-intent-summary strong {
+  overflow-wrap: anywhere;
+  color: var(--ec-ink);
+  font-size: 14px;
+}
+
+.uc-intent-list,
+.uc-intent-place-list,
+.uc-intent-preview-days,
+.uc-intent-details-body,
+.uc-intent-source-list,
+.uc-intent-candidate-list {
+  display: grid;
+  gap: 10px;
+}
+
+.uc-intent-list article,
+.uc-intent-place-list > div {
+  display: grid;
+  gap: 4px;
+  padding: 11px 0;
+  border-top: 1px solid var(--ec-line-soft);
+}
+
+.uc-intent-list article:first-child,
+.uc-intent-place-list > div:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.uc-intent-place-list span,
+.uc-intent-source-list span {
+  color: var(--ec-slate);
+  font-size: 13px;
+}
+
+.uc-intent-details {
+  box-shadow: none;
+}
+
+.uc-intent-details > summary,
+.uc-intent-details-body > details > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  color: var(--ec-ink);
+}
+
+.uc-intent-details summary span,
+.uc-intent-details summary small {
+  display: grid;
+  gap: 2px;
+}
+
+.uc-intent-details summary small {
+  color: var(--ec-slate);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.uc-intent-details-body {
+  padding-top: 14px;
+}
+
+.uc-intent-details-body > details {
+  padding-top: 10px;
+  border-top: 1px solid var(--ec-line-soft);
+}
+
+.uc-intent-source-list p {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--ec-line-soft);
+}
+
+.uc-intent-raw-text {
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  color: var(--ec-slate);
+  line-height: 1.6;
+}
+
+.uc-intent-candidate-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.uc-intent-preview-days {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.uc-intent-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-end;
+  padding: 14px 0 max(8px, env(safe-area-inset-bottom));
+}
+
+.uc-intent-actions > div {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.uc-intent-actions p {
+  max-width: 420px;
+  font-size: 13px;
+  text-align: right;
+}
+
+.uc-intent-primary,
+.uc-intent-secondary {
+  min-height: 44px;
+  padding: 10px 15px;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.uc-intent-primary {
+  border: 1px solid var(--ec-night);
+  background: var(--ec-night);
+  color: #fffdf9;
+}
+
+.uc-intent-secondary {
+  border: 1px solid var(--ec-line);
+  background: transparent;
+  color: var(--ec-ink);
+}
+
+.uc-intent-primary:disabled,
+.uc-intent-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.uc-intent-feedback {
+  padding: 10px 12px;
+  border-left: 3px solid var(--ec-ochre);
+  background: rgba(247, 244, 238, 0.78);
+}
+
+.uc-intent-feedback--error {
+  border-left-color: #9d302a;
+  background: rgba(255, 240, 238, 0.78);
+  color: #7c2f28;
+}
+
 .ec-home-grid {
   display: grid;
   grid-template-columns: minmax(420px, 0.92fr) 96px minmax(540px, 1.08fr);
@@ -309,6 +582,62 @@ textarea {
   .ec-route-stop-card,
   .ec-field {
     transition: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .uc-intent-shell {
+    width: min(100% - 24px, 620px);
+    margin: 18px auto 112px;
+    gap: 12px;
+  }
+
+  .uc-intent-card {
+    padding: 15px;
+  }
+
+  .uc-intent-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .uc-intent-summary > div:last-child {
+    grid-column: span 2;
+  }
+
+  .uc-intent-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    display: grid;
+    grid-template-columns: 1fr;
+    padding: 12px 0 max(10px, env(safe-area-inset-bottom));
+    background: var(--ec-canvas);
+  }
+
+  .uc-intent-header h1 {
+    font-size: 32px;
+  }
+
+  .uc-intent-actions > div {
+    justify-items: stretch;
+  }
+
+  .uc-intent-actions p {
+    max-width: none;
+    text-align: left;
+  }
+
+  .uc-intent-primary,
+  .uc-intent-secondary {
+    width: 100%;
+  }
+
+  .uc-intent-section-heading {
+    gap: 10px;
+  }
+
+  .uc-intent-section-heading h2 {
+    font-size: 18px;
   }
 }
 
