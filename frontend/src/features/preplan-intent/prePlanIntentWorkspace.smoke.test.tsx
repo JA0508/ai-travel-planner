@@ -25,10 +25,13 @@ test("pre-plan workspace starts with a plain-language confirmation surface", () 
   assert.doesNotMatch(html, /provenance graph/i);
 });
 
-test("pre-plan bootstrap guards automatic compile against duplicate renders", () => {
+test("pre-plan bootstrap restores an existing intent before compiling a new Draft revision", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /autoCompileTripRef/);
   assert.match(source, /compileInFlightRef/);
+  assert.match(source, /void bootstrapIntent\(\)/);
+  assert.match(source, /if \(result\.ok\) \{[\s\S]*hydrateLatestIntent\(result\.data\)/);
+  assert.match(source, /if \(result\.code === "intent_edit_no_longer_applicable"\) \{[\s\S]*await compileIntent\(\)/);
   assert.match(source, /void compileIntent\(\)/);
   assert.doesNotMatch(source, /编译意图合同/);
   assert.doesNotMatch(source, /field\.field_path/);
@@ -52,6 +55,8 @@ test("pre-plan workspace connects critical edits and clarification answers to se
   assert.match(source, /网络连接失败，你的修改还在这里/);
   assert.match(source, /行程信息已经在其他页面更新/);
   assert.match(source, /重新应用我的修改/);
+  assert.match(source, /restoreFocusAfterSuccess/);
+  assert.match(source, /preplan-primary-action/);
   assert.match(source, /getLatestPrePlanIntent/);
   assert.doesNotMatch(source, /localStorage/);
 });

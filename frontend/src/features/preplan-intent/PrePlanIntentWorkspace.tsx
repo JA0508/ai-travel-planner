@@ -56,6 +56,7 @@ type PendingDraftIntentRequest = {
   operation: DraftIntentEditOperation;
   formDraft: CriticalIntentFormDraft;
   clarificationId?: string;
+  restoreFocusAfterSuccess?: boolean;
 };
 type DraftIntentStaleConflict = {
   attempted: PendingDraftIntentRequest;
@@ -88,6 +89,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
   const [retryableRequest, setRetryableRequest] = useState<PendingDraftIntentRequest | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [staleConflict, setStaleConflict] = useState<DraftIntentStaleConflict | null>(null);
+  const [restorePrimaryFocus, setRestorePrimaryFocus] = useState(false);
   const autoCompileTripRef = useRef<string | null>(null);
   const compileInFlightRef = useRef(false);
 
@@ -106,8 +108,14 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
   useEffect(() => {
     if (autoCompileTripRef.current === tripId || compileInFlightRef.current) return;
     autoCompileTripRef.current = tripId;
-    void compileIntent();
+    void bootstrapIntent();
   }, [tripId]);
+
+  useEffect(() => {
+    if (!restorePrimaryFocus) return;
+    document.getElementById("preplan-primary-action")?.focus();
+    setRestorePrimaryFocus(false);
+  }, [restorePrimaryFocus]);
 
   async function refreshCandidates() {
     const result = await getTripJson<CandidateListResponse>(
@@ -154,6 +162,28 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     setFeedback(null);
   }
 
+  async function bootstrapIntent() {
+    setBootstrap("compiling");
+    setFeedback({ tone: "info", message: "正在整理你的旅行需求……" });
+    const result = await getTripJson<LatestPrePlanIntentResponse>(
+      TRIP_API_ENDPOINTS.getLatestPrePlanIntent(tripId),
+      "暂时无法获取最新行程信息。",
+      "服务暂时不可用，你的输入不会丢失。",
+    );
+    if (result.ok) {
+      hydrateLatestIntent(result.data);
+      setBootstrap("ready");
+      setFeedback(null);
+      return;
+    }
+    if (result.code === "intent_edit_no_longer_applicable") {
+      await compileIntent();
+      return;
+    }
+    setBootstrap("failed");
+    setFeedback({ tone: "error", message: userFacingRequestError(result.code) });
+  }
+
   async function refreshLatestIntent(): Promise<LatestPrePlanIntentResponse | null> {
     const result = await getTripJson<LatestPrePlanIntentResponse>(
       TRIP_API_ENDPOINTS.getLatestPrePlanIntent(tripId),
@@ -161,12 +191,16 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       "服务暂时不可用，你的修改还在这里。",
     );
     if (!result.ok) return null;
-    setIntent({ envelope: result.data.envelope, revision: result.data.revision });
-    setLatestIntentRevisionId(result.data.revision.id);
-    setDraftVersion(result.data.trip.draft_version);
+    hydrateLatestIntent(result.data);
+    return result.data;
+  }
+
+  function hydrateLatestIntent(latest: LatestPrePlanIntentResponse) {
+    setIntent({ envelope: latest.envelope, revision: latest.revision });
+    setLatestIntentRevisionId(latest.revision.id);
+    setDraftVersion(latest.trip.draft_version);
     setPreview(null);
     setSourcesChanged(false);
-    return result.data;
   }
 
   function openEditor(editor: CriticalEditor) {
@@ -218,7 +252,15 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       setActiveEditor(null);
       setFormDraft(null);
       setStaleConflict(null);
-      setFeedback({ tone: "info", message: result.data.changed ? "已更新行程信息。" : "最新信息已经包含这项修改。" });
+      setFeedback({
+        tone: "info",
+        message: result.data.idempotent_replay
+          ? "已确认这项修改已经保存。"
+          : result.data.changed
+            ? "已更新行程信息。"
+            : "最新信息已经包含这项修改。",
+      });
+      if (request.restoreFocusAfterSuccess) setRestorePrimaryFocus(true);
       return;
     }
     if (result.code === "stale_draft_revision" || result.code === "stale_intent_revision") {
@@ -289,6 +331,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       ...staleConflict.attempted,
       idempotencyKey: createIdempotencyKey("draft-reapply"),
       payload: withLatestBase(staleConflict.attempted.payload, current),
+      restoreFocusAfterSuccess: true,
     };
     void submitPending(retry);
   }
@@ -374,12 +417,12 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
 
       {preview ? <RoutePreviewSummary preview={preview} /> : null}
 
-      {staleConflict ? <StaleConflictPanel conflict={staleConflict} onViewLatest={() => { setStaleConflict(null); setFeedback({ tone: "info", message: "已切换到最新行程信息。" }); }} onReapply={reapplyStaleEdit} onDiscard={() => { setStaleConflict(null); setActiveEditor(null); setFormDraft(null); setEditorError(null); }} disabled={Boolean(pendingEdit)} /> : null}
+      {staleConflict ? <StaleConflictPanel conflict={staleConflict} onViewLatest={() => { setFeedback({ tone: "info", message: "已显示最新行程信息；你的修改仍保留，可以重新应用。" }); }} onReapply={reapplyStaleEdit} onDiscard={() => { setStaleConflict(null); setActiveEditor(null); setFormDraft(null); setEditorError(null); setRestorePrimaryFocus(true); }} disabled={Boolean(pendingEdit)} /> : null}
 
       {feedback ? <p role={feedback.tone === "error" ? "alert" : "status"} className={feedback.tone === "error" ? "uc-intent-feedback uc-intent-feedback--error" : "uc-intent-feedback"}>{feedback.message}</p> : null}
       {retryableRequest && editorError ? <button type="button" className="uc-intent-secondary" onClick={retryNetworkRequest} disabled={Boolean(pendingEdit)}>重新提交</button> : null}
 
-      {view ? <footer className="uc-intent-actions"><button type="button" className="uc-intent-secondary" onClick={onCancel} disabled={busy}>返回修改需求</button><div><p>{primaryHint}</p><button type="button" className="uc-intent-primary" onClick={() => { if (preview) void apply(); else void buildPreview(); }} disabled={primaryDisabled}>{operation === "previewing" ? "正在生成预览……" : operation === "applying" ? "正在保存行程……" : primaryLabel}</button></div></footer> : null}
+      {view ? <footer className="uc-intent-actions"><button type="button" className="uc-intent-secondary" onClick={onCancel} disabled={busy}>返回修改需求</button><div><p>{primaryHint}</p><button id="preplan-primary-action" type="button" className="uc-intent-primary" onClick={() => { if (preview) void apply(); else void buildPreview(); }} disabled={primaryDisabled}>{operation === "previewing" ? "正在生成预览……" : operation === "applying" ? "正在保存行程……" : primaryLabel}</button></div></footer> : null}
     </main>
   );
 }
@@ -428,7 +471,7 @@ function summaryEditor(label: string): CriticalEditor | null {
 }
 
 function EditableSummaryItem({ label, value, editable, onEdit, disabled }: { label: string; value: string; editable: CriticalEditor | null; onEdit: (editor: CriticalEditor) => void; disabled: boolean }) {
-  return <div><span>{label}</span><strong>{value}</strong>{editable ? <button type="button" className="uc-intent-text-action" onClick={() => onEdit(editable)} disabled={disabled}>修改</button> : null}</div>;
+  return <div><span>{label}</span><strong>{value}</strong>{editable ? <button type="button" aria-label={`修改${label}`} className="uc-intent-text-action" onClick={() => onEdit(editable)} disabled={disabled}>修改</button> : null}</div>;
 }
 
 function CriticalEditorForm({ editor, draft, pending, error, onChange, onSave, onCancel }: { editor: CriticalEditor; draft: CriticalIntentFormDraft; pending: boolean; error: string | null; onChange: (value: CriticalIntentFormDraft) => void; onSave: () => void; onCancel: () => void }) {
@@ -465,9 +508,11 @@ function ClarificationCard({ question, pending, onResolve }: { question: IntentC
 }
 
 function StaleConflictPanel({ conflict, onViewLatest, onReapply, onDiscard, disabled }: { conflict: DraftIntentStaleConflict; onViewLatest: () => void; onReapply: () => void; onDiscard: () => void; disabled: boolean }) {
+  const panelRef = useRef<HTMLElement>(null);
+  useEffect(() => { panelRef.current?.focus(); }, []);
   const latest = semanticSummary(conflict.latest.envelope);
   const yours = attemptedSummary(conflict.attempted);
-  return <section className="uc-intent-card uc-intent-card--attention" role="alert"><strong>行程信息已经在其他页面更新</strong><span>我们没有自动覆盖最新内容。请先比较，再决定是否重新应用你的修改。</span><div className="uc-intent-stale-diff"><p><b>最新内容</b>{latest}</p><p><b>你的修改</b>{yours}</p></div><div className="uc-intent-editor-actions"><button type="button" className="uc-intent-secondary" onClick={onViewLatest} disabled={disabled}>查看最新内容</button><button type="button" className="uc-intent-secondary" onClick={onDiscard} disabled={disabled}>放弃本次修改</button><button type="button" className="uc-intent-primary" onClick={onReapply} disabled={disabled}>重新应用我的修改</button></div></section>;
+  return <section ref={panelRef} className="uc-intent-card uc-intent-card--attention" role="dialog" aria-modal="true" aria-labelledby="draft-stale-conflict-title" tabIndex={-1}><h2 id="draft-stale-conflict-title">行程信息已经在其他页面更新</h2><span>我们没有自动覆盖最新内容。请先比较，再决定是否重新应用你的修改。</span><div className="uc-intent-stale-diff"><p><b>最新内容</b>{latest}</p><p><b>你的修改</b>{yours}</p></div><div className="uc-intent-editor-actions"><button type="button" className="uc-intent-secondary" onClick={onViewLatest} disabled={disabled}>查看最新内容</button><button type="button" className="uc-intent-secondary" onClick={onDiscard} disabled={disabled}>放弃本次修改</button><button type="button" className="uc-intent-primary" onClick={onReapply} disabled={disabled}>重新应用我的修改</button></div></section>;
 }
 
 function operationForEditor(editor: CriticalEditor, draft: CriticalIntentFormDraft): DraftIntentEditOperation | null {
