@@ -80,7 +80,9 @@ from .errors import (
     RevisionNotUndoableError,
     SnapshotSchemaUnsupportedError,
     StaleBaseRevisionError,
+    ClarificationAlreadyResolvedError,
     DraftIntentEditError,
+    StaleDraftRevisionError,
     StaleIntentRevisionError,
     StaleMutationProposalError,
     TripAccessDeniedError,
@@ -110,7 +112,13 @@ from .intent_contracts import (
     finalize_intent_envelope_for_revision,
     intent_revision_metadata,
 )
-from .draft_intent_edits import DraftIntentEditRequest, DraftIntentEditValidationError, apply_operations_to_overrides
+from .draft_intent_edits import (
+    DraftClarificationResolveRequest,
+    DraftIntentEditRequest,
+    DraftIntentEditValidationError,
+    apply_operations_to_overrides,
+    clarification_answer_to_operation,
+)
 from .intent_llm_adapter import build_untrusted_llm_intent_proposal
 from .models import (
     DraftIntentRevisionRecord,
@@ -144,6 +152,7 @@ from .schemas import (
     DraftTripDetailResponse,
     DraftIntentRevisionMetadata,
     DraftIntentEditResponse,
+    PrePlanIntentLatestResponse,
     PrePlanHandoffApplyRequest,
     PrePlanHandoffApplyResponse,
     PrePlanHandoffPreviewRequest,
@@ -388,6 +397,11 @@ class TripPersistenceService:
             "trip_revision_created": 0,
             "itinerary_mutations": 0,
         })
+        if payload.clarification_resolution_id:
+            envelope.validation_report["clarification_resolution"] = {
+                "question_id": payload.clarification_resolution_id,
+                "resolved_from_draft_intent_revision_id": parent.id,
+            }
         record = DraftIntentRevisionRecord(
             id=envelope.id,
             trip_id=trip_id,
@@ -409,11 +423,16 @@ class TripPersistenceService:
                 "base_intent_revision_id": payload.base_intent_revision_id,
                 "base_draft_version": payload.base_draft_version,
                 "operations": [operation.model_dump(mode="json") for operation in payload.operations],
+                "clarification_resolution_id": payload.clarification_resolution_id,
             }),
             idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
             expected_parent_draft_intent_revision_id=payload.base_intent_revision_id,
             expected_draft_version=payload.base_draft_version,
-            operation="draft_intent_edit:" + ",".join(operation_names),
+            operation=(
+                f"draft_intent_clarification:{payload.clarification_resolution_id}:"
+                if payload.clarification_resolution_id
+                else "draft_intent_edit:"
+            ) + ",".join(operation_names),
         )
         stored_envelope = SourceLinkedTripIntentEnvelope.model_validate(result.revision.envelope)
         issue_summary = list(stored_envelope.readiness_policy.blocking_reason_codes) if stored_envelope.readiness_policy else []
@@ -430,6 +449,62 @@ class TripPersistenceService:
             envelope=result.revision.envelope,
             revision=DraftIntentRevisionMetadata.from_record(result.revision),
         )
+
+    def get_latest_preplan_intent(self, *, trip_id: str, capability: str | None) -> PrePlanIntentLatestResponse:
+        trip = self._require_trip_access(trip_id, capability)
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+            raise InvalidRevisionOperationError("Pre-plan intent is only available while the trip is a draft.")
+        revision = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+        if revision is None:
+            raise DraftIntentEditError("intent_edit_no_longer_applicable")
+        return PrePlanIntentLatestResponse(
+            trip=TripMetadata.from_record(trip),
+            envelope=revision.envelope,
+            revision=DraftIntentRevisionMetadata.from_record(revision),
+        )
+
+    def resolve_draft_intent_clarification(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        question_id: str,
+        idempotency_key: str | None,
+        payload: DraftClarificationResolveRequest,
+    ) -> DraftIntentEditResponse:
+        self._require_trip_access(trip_id, capability)
+        # Resolve against the requested immutable revision. The shared edit
+        # transaction checks idempotency before stale state, preserving safe retries.
+        parent = self.repository.get_draft_intent_revision(
+            trip_id=trip_id,
+            revision_id=payload.base_intent_revision_id,
+        )
+        envelope = SourceLinkedTripIntentEnvelope.model_validate(parent.envelope)
+        question = next((item for item in envelope.clarification_queue if item.question_id == question_id), None)
+        if question is None:
+            raise ClarificationAlreadyResolvedError()
+        if not question.blocking or question.resolution_kind.value not in {"inline_answer", "edit_contract"}:
+            raise DraftIntentEditError("clarification_not_editable")
+        operation = clarification_answer_to_operation(payload.answer)
+        try:
+            return self.edit_draft_intent(
+                trip_id=trip_id,
+                capability=capability,
+                idempotency_key=idempotency_key,
+                payload=DraftIntentEditRequest(
+                    base_intent_revision_id=payload.base_intent_revision_id,
+                    base_draft_version=payload.base_draft_version,
+                    operations=[operation],
+                    clarification_resolution_id=question_id,
+                ),
+            )
+        except (StaleIntentRevisionError, StaleDraftRevisionError):
+            latest = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+            if latest is not None:
+                latest_envelope = SourceLinkedTripIntentEnvelope.model_validate(latest.envelope)
+                if not any(item.question_id == question_id for item in latest_envelope.clarification_queue):
+                    raise ClarificationAlreadyResolvedError() from None
+            raise
 
     def _validate_draft_edit_candidates(self, candidate_ids: list[str], states: dict[str, str], verification: dict[str, str]) -> None:
         for candidate_id in candidate_ids:

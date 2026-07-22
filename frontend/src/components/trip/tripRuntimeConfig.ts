@@ -17,6 +17,10 @@ export const TRIP_API_ENDPOINTS = {
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent/compile`),
   editPrePlanIntent: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent/edits`),
+  getLatestPrePlanIntent: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent`),
+  resolvePrePlanIntentClarification: (tripId: string, clarificationId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent/clarifications/${encodeURIComponent(clarificationId)}/resolve`),
   previewPrePlanHandoff: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-handoff/preview`),
   applyPrePlanHandoff: (tripId: string, runId: string) =>

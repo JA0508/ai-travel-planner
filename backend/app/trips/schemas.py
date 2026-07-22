@@ -180,6 +180,12 @@ class DraftIntentEditResponse(BaseModel):
     revision: DraftIntentRevisionMetadata
 
 
+class PrePlanIntentLatestResponse(BaseModel):
+    trip: TripMetadata
+    envelope: dict
+    revision: DraftIntentRevisionMetadata
+
+
 class PrePlanHandoffPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

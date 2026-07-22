@@ -134,6 +134,97 @@ class DraftIntentEditRequest(BaseModel):
     base_intent_revision_id: str = Field(..., min_length=1, max_length=120)
     base_draft_version: int = Field(..., ge=0)
     operations: list[DraftIntentEditOperation] = Field(..., min_length=1, max_length=20)
+    # Only the clarification endpoint sets this. It becomes immutable audit metadata
+    # on the resulting revision rather than a second mutation path.
+    clarification_resolution_id: str | None = Field(default=None, min_length=1, max_length=180)
+
+
+class _ClarificationAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class DestinationClarificationAnswer(_ClarificationAnswer):
+    answer_type: Literal["destination"]
+    city: str = Field(..., min_length=1, max_length=160)
+    timezone: str | None = Field(default=None, max_length=80)
+
+
+class TripDaysClarificationAnswer(_ClarificationAnswer):
+    answer_type: Literal["trip_days"]
+    trip_days: int = Field(..., ge=1, le=60)
+
+
+class DateRangeClarificationAnswer(_ClarificationAnswer):
+    answer_type: Literal["date_range"]
+    start_date: date
+    end_date: date
+    timezone: str | None = Field(default=None, max_length=80)
+
+    @model_validator(mode="after")
+    def validates_range(self) -> "DateRangeClarificationAnswer":
+        if self.end_date < self.start_date:
+            raise ValueError("date_range_invalid")
+        return self
+
+
+class DatePolicyChoiceClarificationAnswer(_ClarificationAnswer):
+    answer_type: Literal["date_policy_choice"]
+    policy: Literal["trip_days", "date_range"]
+    trip_days: int | None = Field(default=None, ge=1, le=60)
+    start_date: date | None = None
+    end_date: date | None = None
+    timezone: str | None = Field(default=None, max_length=80)
+
+    @model_validator(mode="after")
+    def validates_choice(self) -> "DatePolicyChoiceClarificationAnswer":
+        if self.policy == "trip_days" and self.trip_days is not None:
+            return self
+        if self.policy == "date_range" and self.start_date and self.end_date and self.end_date >= self.start_date:
+            return self
+        raise ValueError("date_policy_choice_invalid")
+
+
+DraftClarificationAnswer = Annotated[
+    DestinationClarificationAnswer
+    | TripDaysClarificationAnswer
+    | DateRangeClarificationAnswer
+    | DatePolicyChoiceClarificationAnswer,
+    Field(discriminator="answer_type"),
+]
+
+
+class DraftClarificationResolveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_intent_revision_id: str = Field(..., min_length=1, max_length=120)
+    base_draft_version: int = Field(..., ge=0)
+    answer: DraftClarificationAnswer
+
+
+def clarification_answer_to_operation(
+    answer: DraftClarificationAnswer,
+) -> DraftIntentEditOperation:
+    """Translate a typed answer into the one authoritative Draft edit command."""
+
+    if isinstance(answer, DestinationClarificationAnswer):
+        return UpdateDestinationOperation(operation="update_destination", city=answer.city, timezone=answer.timezone)
+    if isinstance(answer, TripDaysClarificationAnswer):
+        return UpdateTripDaysOperation(operation="update_trip_days", trip_days=answer.trip_days)
+    if isinstance(answer, DateRangeClarificationAnswer):
+        return UpdateDatePolicyOperation(
+            operation="update_date_policy",
+            start_date=answer.start_date,
+            end_date=answer.end_date,
+            timezone=answer.timezone,
+        )
+    if answer.policy == "trip_days":
+        return UpdateTripDaysOperation(operation="update_trip_days", trip_days=answer.trip_days or 1)
+    return UpdateDatePolicyOperation(
+        operation="update_date_policy",
+        start_date=answer.start_date,
+        end_date=answer.end_date,
+        timezone=answer.timezone,
+    )
 
 
 class DraftIntentEditValidationError(ValueError):
@@ -185,6 +276,10 @@ def apply_operations_to_overrides(
             end_date = operation.end_date if operation.end_date is not None else end_date
             timezone = operation.timezone or timezone
             reference_date = operation.reference_date if operation.reference_date is not None else reference_date
+            if operation.start_date is not None and operation.end_date is not None:
+                # A user-selected date range authoritatively determines its inclusive
+                # trip length; retaining an older day count would manufacture a conflict.
+                trip_days = (operation.end_date - operation.start_date).days + 1
         elif isinstance(operation, UpdateTripDaysOperation):
             trip_days = operation.trip_days
         elif isinstance(operation, UpdatePaceOperation):

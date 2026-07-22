@@ -166,6 +166,98 @@ body {
   font-size: 14px;
 }
 
+.uc-intent-text-action {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ec-clay);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.uc-intent-editor,
+.uc-intent-clarification {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ec-line-soft);
+}
+
+.uc-intent-editor label,
+.uc-intent-clarification label {
+  display: grid;
+  gap: 6px;
+  color: var(--ec-ink-soft);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.uc-intent-editor input,
+.uc-intent-editor select,
+.uc-intent-clarification input,
+.uc-intent-clarification select {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--ec-line);
+  border-radius: 5px;
+  background: var(--ec-paper-strong);
+  color: var(--ec-ink);
+  font: inherit;
+  padding: 8px 10px;
+}
+
+.uc-intent-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.uc-intent-editor-actions,
+.uc-intent-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.uc-intent-choice button {
+  min-height: 36px;
+  border: 1px solid var(--ec-line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ec-ink-soft);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 7px 10px;
+}
+
+.uc-intent-choice button.is-selected {
+  border-color: var(--ec-night);
+  background: var(--ec-night);
+  color: var(--ec-paper-strong);
+}
+
+.uc-intent-stale-diff {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.uc-intent-stale-diff p {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 10px;
+  background: rgba(255, 253, 249, 0.62);
+  color: var(--ec-slate);
+  overflow-wrap: anywhere;
+}
+
+.uc-intent-stale-diff b { color: var(--ec-ink); }
+
 .uc-intent-list,
 .uc-intent-place-list,
 .uc-intent-preview-days,
@@ -638,6 +730,11 @@ textarea {
 
   .uc-intent-section-heading h2 {
     font-size: 18px;
+  }
+
+  .uc-intent-editor-grid,
+  .uc-intent-stale-diff {
+    grid-template-columns: 1fr;
   }
 }
 

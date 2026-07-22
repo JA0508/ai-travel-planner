@@ -4,9 +4,17 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
-import type { SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
+import type { IntentClarification, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
+import type {
+  DraftClarificationAnswer,
+  DraftClarificationResolveRequest,
+  DraftIntentEditOperation,
+  DraftIntentEditRequest,
+  DraftIntentEditResponse,
+  LatestPrePlanIntentResponse,
+} from "./draftIntentEditApi";
 
 type ItineraryResponse = any;
 
@@ -32,6 +40,29 @@ type CandidateListResponse = {
 
 type BootstrapState = "idle" | "compiling" | "ready" | "failed";
 type Feedback = { tone: "info" | "error"; message: string } | null;
+type CriticalEditor = "destination" | "date_policy" | "trip_days" | "pace";
+type CriticalIntentFormDraft = {
+  city?: string;
+  startDate?: string;
+  endDate?: string;
+  tripDays?: string;
+  timeMode?: "dates" | "days";
+  pace?: "relaxed" | "balanced" | "intensive";
+};
+type PendingDraftIntentRequest = {
+  endpoint: string;
+  payload: DraftIntentEditRequest | DraftClarificationResolveRequest;
+  idempotencyKey: string;
+  operation: DraftIntentEditOperation;
+  formDraft: CriticalIntentFormDraft;
+  clarificationId?: string;
+};
+type DraftIntentStaleConflict = {
+  attempted: PendingDraftIntentRequest;
+  originalBaseDraftVersion: number;
+  originalBaseIntentRevisionId: string;
+  latest: LatestPrePlanIntentResponse;
+};
 
 type Props = {
   tripId: string;
@@ -49,7 +80,14 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
   const [candidates, setCandidates] = useState<CandidateListResponse["candidates"]>([]);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
   const [latestIntentRevisionId, setLatestIntentRevisionId] = useState<string | null>(null);
+  const [draftVersion, setDraftVersion] = useState<number | null>(null);
   const [sourcesChanged, setSourcesChanged] = useState(false);
+  const [activeEditor, setActiveEditor] = useState<CriticalEditor | null>(null);
+  const [formDraft, setFormDraft] = useState<CriticalIntentFormDraft | null>(null);
+  const [pendingEdit, setPendingEdit] = useState<PendingDraftIntentRequest | null>(null);
+  const [retryableRequest, setRetryableRequest] = useState<PendingDraftIntentRequest | null>(null);
+  const [editorError, setEditorError] = useState<string | null>(null);
+  const [staleConflict, setStaleConflict] = useState<DraftIntentStaleConflict | null>(null);
   const autoCompileTripRef = useRef<string | null>(null);
   const compileInFlightRef = useRef(false);
 
@@ -57,7 +95,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     () => (intent ? buildPrePlanConfirmationViewModel(intent.envelope) : null),
     [intent],
   );
-  const busy = bootstrap === "compiling" || operation !== "idle";
+  const busy = bootstrap === "compiling" || operation !== "idle" || pendingEdit !== null;
   const canGeneratePreview = Boolean(view?.canGeneratePreview && !sourcesChanged && !preview);
   const canApplyPreview = Boolean(preview && intent && !sourcesChanged);
 
@@ -109,10 +147,150 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     }
     setIntent(result.data);
     setLatestIntentRevisionId(result.data.revision.id);
+    void refreshLatestIntent();
     setPreview(null);
     setSourcesChanged(false);
     setBootstrap("ready");
     setFeedback(null);
+  }
+
+  async function refreshLatestIntent(): Promise<LatestPrePlanIntentResponse | null> {
+    const result = await getTripJson<LatestPrePlanIntentResponse>(
+      TRIP_API_ENDPOINTS.getLatestPrePlanIntent(tripId),
+      "暂时无法获取最新行程信息。",
+      "服务暂时不可用，你的修改还在这里。",
+    );
+    if (!result.ok) return null;
+    setIntent({ envelope: result.data.envelope, revision: result.data.revision });
+    setLatestIntentRevisionId(result.data.revision.id);
+    setDraftVersion(result.data.trip.draft_version);
+    setPreview(null);
+    setSourcesChanged(false);
+    return result.data;
+  }
+
+  function openEditor(editor: CriticalEditor) {
+    if (!intent) return;
+    const datePolicy = intent.envelope.formal_contract.date_policy;
+    const formal = intent.envelope.formal_contract;
+    setEditorError(null);
+    setActiveEditor(editor);
+    setFormDraft({
+      city: formal.destinations[0]?.city_name ?? "",
+      startDate: datePolicy?.start_date ?? "",
+      endDate: datePolicy?.end_date ?? "",
+      tripDays: datePolicy?.trip_days ? String(datePolicy.trip_days) : "",
+      timeMode: datePolicy?.start_date && datePolicy?.end_date ? "dates" : "days",
+      pace: formal.pace?.value ?? "relaxed",
+    });
+  }
+
+  function closeEditor() {
+    if (pendingEdit) return;
+    setActiveEditor(null);
+    setFormDraft(null);
+    setEditorError(null);
+  }
+
+  function currentBase() {
+    if (!intent || draftVersion === null) return null;
+    return { base_intent_revision_id: intent.revision.id, base_draft_version: draftVersion };
+  }
+
+  async function submitPending(request: PendingDraftIntentRequest) {
+    setPendingEdit(request);
+    setEditorError(null);
+    const result = await postTripJson<DraftIntentEditResponse>(
+      request.endpoint,
+      request.payload,
+      "暂时无法保存这项修改。",
+      "网络连接失败，你的修改还在这里。",
+      { headers: { "X-Idempotency-Key": request.idempotencyKey } },
+    );
+    if (result.ok) {
+      setIntent({ envelope: result.data.envelope, revision: result.data.revision });
+      setLatestIntentRevisionId(result.data.revision.id);
+      setDraftVersion(result.data.draft_version);
+      setPreview(null);
+      setSourcesChanged(false);
+      setPendingEdit(null);
+      setRetryableRequest(null);
+      setActiveEditor(null);
+      setFormDraft(null);
+      setStaleConflict(null);
+      setFeedback({ tone: "info", message: result.data.changed ? "已更新行程信息。" : "最新信息已经包含这项修改。" });
+      return;
+    }
+    if (result.code === "stale_draft_revision" || result.code === "stale_intent_revision") {
+      const latest = await refreshLatestIntent();
+      if (latest) {
+        setStaleConflict({
+          attempted: request,
+          originalBaseDraftVersion: request.payload.base_draft_version,
+          originalBaseIntentRevisionId: request.payload.base_intent_revision_id,
+          latest,
+        });
+      }
+      setPendingEdit(null);
+      setRetryableRequest(null);
+      setEditorError("行程信息已经在其他页面更新。你的修改仍保留在这里。");
+      return;
+    }
+    setPendingEdit(null);
+    setRetryableRequest(result.code ? null : request);
+    setEditorError(result.code ? userFacingEditError(result.code) : "网络连接失败，你的修改还在这里。");
+  }
+
+  function saveEditor() {
+    const base = currentBase();
+    if (!base || !activeEditor || !formDraft) return;
+    const operation = operationForEditor(activeEditor, formDraft);
+    if (!operation) {
+      setEditorError("请完整填写这项信息后再保存。");
+      return;
+    }
+    void submitPending({
+      endpoint: TRIP_API_ENDPOINTS.editPrePlanIntent(tripId),
+      payload: { ...base, operations: [operation] },
+      idempotencyKey: createIdempotencyKey("draft-edit"),
+      operation,
+      formDraft,
+    });
+  }
+
+  function resolveClarification(questionId: string, answer: DraftClarificationAnswer, draft: CriticalIntentFormDraft) {
+    const base = currentBase();
+    if (!base) return;
+    const operation = operationForClarification(answer);
+    void submitPending({
+      endpoint: TRIP_API_ENDPOINTS.resolvePrePlanIntentClarification(tripId, questionId),
+      payload: { ...base, answer },
+      idempotencyKey: createIdempotencyKey("draft-clarification"),
+      operation,
+      formDraft: draft,
+      clarificationId: questionId,
+    });
+  }
+
+  function retryNetworkRequest() {
+    if (pendingEdit || !retryableRequest) return;
+    void submitPending(retryableRequest);
+  }
+
+  function reapplyStaleEdit() {
+    if (!staleConflict) return;
+    const current = staleConflict.latest;
+    if (operationAlreadyApplied(current.envelope, staleConflict.attempted.operation)) {
+      setStaleConflict(null);
+      setFeedback({ tone: "info", message: "最新内容已经包含这项修改。" });
+      return;
+    }
+    const retry = {
+      ...staleConflict.attempted,
+      idempotencyKey: createIdempotencyKey("draft-reapply"),
+      payload: withLatestBase(staleConflict.attempted.payload, current),
+    };
+    void submitPending(retry);
   }
 
   async function buildPreview() {
@@ -180,10 +358,11 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       {view && intent ? <>
         <section className="uc-intent-card" aria-label="行程概览">
           <div className="uc-intent-section-heading"><div><p>行程概览</p><h2>{view.heading}</h2></div><span className={view.canGeneratePreview ? "uc-intent-status uc-intent-status--ready" : "uc-intent-status uc-intent-status--blocked"}>{view.canGeneratePreview ? "可以开始规划" : "还需要补充"}</span></div>
-          <div className="uc-intent-summary">{view.summary.map((item) => <div key={item.label}><span>{item.label}</span><strong>{item.value}</strong></div>)}</div>
+          <div className="uc-intent-summary">{view.summary.map((item) => <EditableSummaryItem key={item.label} label={item.label} value={item.value} editable={summaryEditor(item.label)} onEdit={openEditor} disabled={busy || draftVersion === null} />)}</div>
+          {activeEditor && formDraft ? <CriticalEditorForm editor={activeEditor} draft={formDraft} pending={Boolean(pendingEdit)} error={editorError} onChange={setFormDraft} onSave={saveEditor} onCancel={closeEditor} /> : null}
         </section>
 
-        {view.blockers.length ? <section className="uc-intent-card uc-intent-card--attention" aria-label="还需要你补充"><div className="uc-intent-section-heading"><div><p>还需要你补充</p><h2>确认后才能生成路线</h2></div></div><div className="uc-intent-list">{view.blockers.map((item) => <article key={item.title}><strong>{item.title}</strong><span>{item.detail}</span></article>)}</div></section> : null}
+        {intent.envelope.clarification_queue.filter((question) => question.blocking).length ? <section className="uc-intent-card uc-intent-card--attention" aria-label="还需要你补充"><div className="uc-intent-section-heading"><div><p>还需要你补充</p><h2>确认后才能生成路线</h2></div></div><div className="uc-intent-list">{intent.envelope.clarification_queue.filter((question) => question.blocking).map((question) => <ClarificationCard key={question.question_id} question={question} pending={Boolean(pendingEdit)} onResolve={resolveClarification} />)}</div></section> : null}
 
         <FixedArrangementSummary arrangements={view.fixedArrangements} />
         <PlacePreferenceSummary envelope={intent.envelope} sourceLines={view.sourceLines} />
@@ -195,7 +374,10 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
 
       {preview ? <RoutePreviewSummary preview={preview} /> : null}
 
+      {staleConflict ? <StaleConflictPanel conflict={staleConflict} onViewLatest={() => { setStaleConflict(null); setFeedback({ tone: "info", message: "已切换到最新行程信息。" }); }} onReapply={reapplyStaleEdit} onDiscard={() => { setStaleConflict(null); setActiveEditor(null); setFormDraft(null); setEditorError(null); }} disabled={Boolean(pendingEdit)} /> : null}
+
       {feedback ? <p role={feedback.tone === "error" ? "alert" : "status"} className={feedback.tone === "error" ? "uc-intent-feedback uc-intent-feedback--error" : "uc-intent-feedback"}>{feedback.message}</p> : null}
+      {retryableRequest && editorError ? <button type="button" className="uc-intent-secondary" onClick={retryNetworkRequest} disabled={Boolean(pendingEdit)}>重新提交</button> : null}
 
       {view ? <footer className="uc-intent-actions"><button type="button" className="uc-intent-secondary" onClick={onCancel} disabled={busy}>返回修改需求</button><div><p>{primaryHint}</p><button type="button" className="uc-intent-primary" onClick={() => { if (preview) void apply(); else void buildPreview(); }} disabled={primaryDisabled}>{operation === "previewing" ? "正在生成预览……" : operation === "applying" ? "正在保存行程……" : primaryLabel}</button></div></footer> : null}
     </main>
@@ -237,3 +419,92 @@ function userFacingRequestError(code?: string, fallback = "暂时无法整理旅
   if (code === "intent_parser_unavailable" || code === "intent_parser_timeout" || code === "intent_parser_invalid_output") return "部分内容未能自动识别，请检查关键信息。";
   return fallback;
 }
+
+function summaryEditor(label: string): CriticalEditor | null {
+  if (label === "目的地") return "destination";
+  if (label === "旅行时间") return "date_policy";
+  if (label === "旅行节奏") return "pace";
+  return null;
+}
+
+function EditableSummaryItem({ label, value, editable, onEdit, disabled }: { label: string; value: string; editable: CriticalEditor | null; onEdit: (editor: CriticalEditor) => void; disabled: boolean }) {
+  return <div><span>{label}</span><strong>{value}</strong>{editable ? <button type="button" className="uc-intent-text-action" onClick={() => onEdit(editable)} disabled={disabled}>修改</button> : null}</div>;
+}
+
+function CriticalEditorForm({ editor, draft, pending, error, onChange, onSave, onCancel }: { editor: CriticalEditor; draft: CriticalIntentFormDraft; pending: boolean; error: string | null; onChange: (value: CriticalIntentFormDraft) => void; onSave: () => void; onCancel: () => void }) {
+  const title = { destination: "修改目的地", date_policy: "修改旅行日期", trip_days: "修改旅行天数", pace: "修改旅行节奏" }[editor];
+  return <form className="uc-intent-editor" onSubmit={(event) => { event.preventDefault(); onSave(); }}><strong>{title}</strong>
+    {editor === "destination" ? <label>目的地<input autoFocus value={draft.city ?? ""} onChange={(event) => onChange({ ...draft, city: event.target.value })} placeholder="例如：杭州" disabled={pending} /></label> : null}
+    {editor === "date_policy" ? <><div className="uc-intent-choice"><button type="button" className={draft.timeMode === "dates" ? "is-selected" : ""} onClick={() => onChange({ ...draft, timeMode: "dates" })} disabled={pending}>按具体日期</button><button type="button" className={draft.timeMode === "days" ? "is-selected" : ""} onClick={() => onChange({ ...draft, timeMode: "days" })} disabled={pending}>按旅行天数</button></div>{draft.timeMode === "days" ? <label>旅行天数<input inputMode="numeric" type="number" min="1" max="60" value={draft.tripDays ?? ""} onChange={(event) => onChange({ ...draft, tripDays: event.target.value })} disabled={pending} /></label> : <div className="uc-intent-editor-grid"><label>开始日期<input type="date" value={draft.startDate ?? ""} onChange={(event) => onChange({ ...draft, startDate: event.target.value })} disabled={pending} /></label><label>结束日期<input type="date" value={draft.endDate ?? ""} onChange={(event) => onChange({ ...draft, endDate: event.target.value })} disabled={pending} /></label></div>}</> : null}
+    {editor === "trip_days" ? <label>旅行天数<input autoFocus inputMode="numeric" type="number" min="1" max="60" value={draft.tripDays ?? ""} onChange={(event) => onChange({ ...draft, tripDays: event.target.value })} disabled={pending} /></label> : null}
+    {editor === "pace" ? <label>旅行节奏<select value={draft.pace ?? "relaxed"} onChange={(event) => onChange({ ...draft, pace: event.target.value as CriticalIntentFormDraft["pace"] })} disabled={pending}><option value="relaxed">轻松</option><option value="balanced">适中</option><option value="intensive">紧凑</option></select></label> : null}
+    {error ? <p className="uc-intent-feedback uc-intent-feedback--error" role="alert">{error}</p> : null}
+    <div className="uc-intent-editor-actions"><button type="button" className="uc-intent-secondary" onClick={onCancel} disabled={pending}>取消</button><button type="submit" className="uc-intent-primary" disabled={pending}>{pending ? "正在保存……" : "保存修改"}</button></div>
+  </form>;
+}
+
+function ClarificationCard({ question, pending, onResolve }: { question: IntentClarification; pending: boolean; onResolve: (id: string, answer: DraftClarificationAnswer, draft: CriticalIntentFormDraft) => void }) {
+  const [draft, setDraft] = useState<CriticalIntentFormDraft>({});
+  const [error, setError] = useState<string | null>(null);
+  const kind = clarificationInputKind(question.reason_code);
+  if (!kind) return <article><strong>还需要确认一项信息</strong><span>{question.question}</span><button type="button" className="uc-intent-secondary">返回修改需求</button></article>;
+  const submit = () => {
+    const answer = clarificationAnswerForKind(kind, draft);
+    if (!answer) { setError("请完整填写这项信息后再确认。"); return; }
+    setError(null);
+    onResolve(question.question_id, answer, draft);
+  };
+  return <article className="uc-intent-clarification"><strong>{clarificationTitle(kind)}</strong><span>{clarificationDetail(kind)}</span>
+    {kind === "destination" ? <label>目的地<input value={draft.city ?? ""} onChange={(event) => setDraft({ ...draft, city: event.target.value })} placeholder="例如：杭州" disabled={pending} /></label> : null}
+    {kind === "trip_days" ? <><label>旅行天数<input inputMode="numeric" type="number" min="1" max="60" value={draft.tripDays ?? ""} onChange={(event) => setDraft({ ...draft, tripDays: event.target.value })} disabled={pending} /></label><span>也可以改为填写具体日期。</span></> : null}
+    {kind === "date_range" ? <div className="uc-intent-editor-grid"><label>开始日期<input type="date" value={draft.startDate ?? ""} onChange={(event) => setDraft({ ...draft, startDate: event.target.value })} disabled={pending} /></label><label>结束日期<input type="date" value={draft.endDate ?? ""} onChange={(event) => setDraft({ ...draft, endDate: event.target.value })} disabled={pending} /></label></div> : null}
+    {kind === "date_choice" ? <><label>以什么为准<select value={draft.startDate ? "date_range" : "trip_days"} onChange={(event) => setDraft({ ...draft, startDate: event.target.value === "date_range" ? draft.startDate : "" })} disabled={pending}><option value="trip_days">旅行天数</option><option value="date_range">具体日期</option></select></label>{draft.startDate !== "" ? <div className="uc-intent-editor-grid"><label>开始日期<input type="date" value={draft.startDate ?? ""} onChange={(event) => setDraft({ ...draft, startDate: event.target.value })} disabled={pending} /></label><label>结束日期<input type="date" value={draft.endDate ?? ""} onChange={(event) => setDraft({ ...draft, endDate: event.target.value })} disabled={pending} /></label></div> : <label>旅行天数<input type="number" min="1" max="60" value={draft.tripDays ?? ""} onChange={(event) => setDraft({ ...draft, tripDays: event.target.value })} disabled={pending} /></label>}</> : null}
+    {error ? <p className="uc-intent-feedback uc-intent-feedback--error" role="alert">{error}</p> : null}
+    <button type="button" className="uc-intent-secondary" onClick={submit} disabled={pending}>{pending ? "正在保存……" : "确认"}</button>
+  </article>;
+}
+
+function StaleConflictPanel({ conflict, onViewLatest, onReapply, onDiscard, disabled }: { conflict: DraftIntentStaleConflict; onViewLatest: () => void; onReapply: () => void; onDiscard: () => void; disabled: boolean }) {
+  const latest = semanticSummary(conflict.latest.envelope);
+  const yours = attemptedSummary(conflict.attempted);
+  return <section className="uc-intent-card uc-intent-card--attention" role="alert"><strong>行程信息已经在其他页面更新</strong><span>我们没有自动覆盖最新内容。请先比较，再决定是否重新应用你的修改。</span><div className="uc-intent-stale-diff"><p><b>最新内容</b>{latest}</p><p><b>你的修改</b>{yours}</p></div><div className="uc-intent-editor-actions"><button type="button" className="uc-intent-secondary" onClick={onViewLatest} disabled={disabled}>查看最新内容</button><button type="button" className="uc-intent-secondary" onClick={onDiscard} disabled={disabled}>放弃本次修改</button><button type="button" className="uc-intent-primary" onClick={onReapply} disabled={disabled}>重新应用我的修改</button></div></section>;
+}
+
+function operationForEditor(editor: CriticalEditor, draft: CriticalIntentFormDraft): DraftIntentEditOperation | null {
+  if (editor === "destination") return draft.city?.trim() ? { operation: "update_destination", city: draft.city.trim() } : null;
+  if (editor === "date_policy") { if (draft.timeMode === "days") { const trip_days = Number(draft.tripDays); return Number.isInteger(trip_days) && trip_days > 0 ? { operation: "update_trip_days", trip_days } : null; } return draft.startDate && draft.endDate ? { operation: "update_date_policy", start_date: draft.startDate, end_date: draft.endDate, timezone: "Asia/Shanghai" } : null; }
+  if (editor === "trip_days") { const trip_days = Number(draft.tripDays); return Number.isInteger(trip_days) && trip_days > 0 ? { operation: "update_trip_days", trip_days } : null; }
+  return draft.pace ? { operation: "update_pace", pace: draft.pace } : null;
+}
+
+function clarificationInputKind(code: string): "destination" | "trip_days" | "date_range" | "date_choice" | null {
+  if (["destination_missing", "missing_destination", "destination_conflict"].includes(code)) return "destination";
+  if (["trip_length_missing", "missing_trip_length", "trip_dates_missing"].includes(code)) return "trip_days";
+  if (code === "relative_date_requires_anchor") return "date_range";
+  if (code === "date_conflict") return "date_choice";
+  return null;
+}
+
+function clarificationTitle(kind: NonNullable<ReturnType<typeof clarificationInputKind>>): string { return { destination: "请填写这次旅行的目的地", trip_days: "请填写旅行日期或天数", date_range: "请确认具体出发日期", date_choice: "请确认旅行日期或天数" }[kind]; }
+function clarificationDetail(kind: NonNullable<ReturnType<typeof clarificationInputKind>>): string { return { destination: "目的地决定路线范围和可安排的地点。", trip_days: "我们需要知道可用于安排行程的时间。", date_range: "相对日期需要一个明确的日历参考。", date_choice: "日期和天数目前不一致，需要你指定一个安排依据。" }[kind]; }
+function clarificationAnswerForKind(kind: NonNullable<ReturnType<typeof clarificationInputKind>>, draft: CriticalIntentFormDraft): DraftClarificationAnswer | null {
+  if (kind === "destination" && draft.city?.trim()) return { answer_type: "destination", city: draft.city.trim() };
+  if (kind === "trip_days") { const trip_days = Number(draft.tripDays); return Number.isInteger(trip_days) && trip_days > 0 ? { answer_type: "trip_days", trip_days } : null; }
+  if (kind === "date_range" && draft.startDate && draft.endDate) return { answer_type: "date_range", start_date: draft.startDate, end_date: draft.endDate, timezone: "Asia/Shanghai" };
+  if (kind === "date_choice") { if (draft.startDate && draft.endDate) return { answer_type: "date_policy_choice", policy: "date_range", start_date: draft.startDate, end_date: draft.endDate, timezone: "Asia/Shanghai" }; const trip_days = Number(draft.tripDays); return Number.isInteger(trip_days) && trip_days > 0 ? { answer_type: "date_policy_choice", policy: "trip_days", trip_days } : null; }
+  return null;
+}
+
+function operationForClarification(answer: DraftClarificationAnswer): DraftIntentEditOperation {
+  if (answer.answer_type === "destination") return { operation: "update_destination", city: answer.city, timezone: answer.timezone };
+  if (answer.answer_type === "trip_days") return { operation: "update_trip_days", trip_days: answer.trip_days };
+  if (answer.answer_type === "date_range") return { operation: "update_date_policy", start_date: answer.start_date, end_date: answer.end_date, timezone: answer.timezone };
+  return answer.policy === "trip_days" ? { operation: "update_trip_days", trip_days: answer.trip_days } : { operation: "update_date_policy", start_date: answer.start_date, end_date: answer.end_date, timezone: answer.timezone };
+}
+
+function withLatestBase(payload: DraftIntentEditRequest | DraftClarificationResolveRequest, latest: LatestPrePlanIntentResponse): DraftIntentEditRequest | DraftClarificationResolveRequest { return { ...payload, base_intent_revision_id: latest.revision.id, base_draft_version: latest.trip.draft_version }; }
+function operationAlreadyApplied(envelope: SourceLinkedTripIntentEnvelope, operation: DraftIntentEditOperation): boolean { const date = envelope.formal_contract.date_policy; if (operation.operation === "update_destination") return envelope.formal_contract.destinations[0]?.city_name === operation.city; if (operation.operation === "update_trip_days") return date?.trip_days === operation.trip_days; if (operation.operation === "update_date_policy") return date?.start_date === operation.start_date && date?.end_date === operation.end_date; if (operation.operation === "update_pace") return envelope.formal_contract.pace?.value === operation.pace; return false; }
+function semanticSummary(envelope: SourceLinkedTripIntentEnvelope): string { const date = envelope.formal_contract.date_policy; return [envelope.formal_contract.destinations[0]?.city_name, date?.start_date && date.end_date ? `${date.start_date} 至 ${date.end_date}` : date?.trip_days ? `${date.trip_days} 天` : null, envelope.formal_contract.pace?.value === "relaxed" ? "轻松" : envelope.formal_contract.pace?.value === "balanced" ? "适中" : envelope.formal_contract.pace?.value === "intensive" ? "紧凑" : null].filter(Boolean).join("，") || "尚未补全"; }
+function attemptedSummary(request: PendingDraftIntentRequest): string { const operation = request.operation; if (operation.operation === "update_destination") return `目的地：${operation.city}`; if (operation.operation === "update_trip_days") return `旅行天数：${operation.trip_days} 天`; if (operation.operation === "update_date_policy") return `旅行日期：${operation.start_date ?? ""} 至 ${operation.end_date ?? ""}`; if (operation.operation === "update_pace") return `旅行节奏：${operation.pace === "relaxed" ? "轻松" : operation.pace === "balanced" ? "适中" : "紧凑"}`; return "你刚才的修改"; }
+function userFacingEditError(code: string): string { if (code === "invalid_intent_edit") return "日期和天数不一致，请检查后再保存。"; if (code === "clarification_already_resolved") return "这项信息已经在其他页面完成确认。"; return "暂时无法保存这项修改，请检查输入后再试。"; }
+function createIdempotencyKey(prefix: string): string { return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? `${prefix}:${crypto.randomUUID()}` : `${prefix}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`; }

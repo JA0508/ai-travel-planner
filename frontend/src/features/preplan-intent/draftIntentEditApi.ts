@@ -1,4 +1,5 @@
 import type { SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
+import type { TripMetadata } from "@/features/trip-workspace/tripPersistence";
 
 type PlacePolicy = "must" | "optional" | "avoid";
 type Pace = "relaxed" | "balanced" | "intensive";
@@ -49,4 +50,23 @@ export type DraftIntentEditResponse = {
     parent_draft_intent_revision_id: string | null;
     content_digest: string;
   };
+};
+
+export type LatestPrePlanIntentResponse = {
+  trip: TripMetadata & { draft_version: number };
+  envelope: SourceLinkedTripIntentEnvelope;
+  revision: DraftIntentEditResponse["revision"];
+};
+
+export type DraftClarificationAnswer =
+  | { answer_type: "destination"; city: string; timezone?: string | null }
+  | { answer_type: "trip_days"; trip_days: number }
+  | { answer_type: "date_range"; start_date: string; end_date: string; timezone?: string | null }
+  | { answer_type: "date_policy_choice"; policy: "trip_days"; trip_days: number }
+  | { answer_type: "date_policy_choice"; policy: "date_range"; start_date: string; end_date: string; timezone?: string | null };
+
+export type DraftClarificationResolveRequest = {
+  base_intent_revision_id: string;
+  base_draft_version: number;
+  answer: DraftClarificationAnswer;
 };

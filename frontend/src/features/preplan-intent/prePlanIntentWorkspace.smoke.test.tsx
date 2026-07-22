@@ -39,3 +39,19 @@ test("pre-plan bootstrap guards automatic compile against duplicate renders", ()
   assert.match(source, /查看依据/);
   assert.match(source, /重新识别/);
 });
+
+test("pre-plan workspace connects critical edits and clarification answers to server state", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /update_destination/);
+  assert.match(source, /update_date_policy/);
+  assert.match(source, /update_trip_days/);
+  assert.match(source, /update_pace/);
+  assert.match(source, /resolvePrePlanIntentClarification/);
+  assert.match(source, /base_draft_version/);
+  assert.match(source, /X-Idempotency-Key/);
+  assert.match(source, /网络连接失败，你的修改还在这里/);
+  assert.match(source, /行程信息已经在其他页面更新/);
+  assert.match(source, /重新应用我的修改/);
+  assert.match(source, /getLatestPrePlanIntent/);
+  assert.doesNotMatch(source, /localStorage/);
+});

@@ -116,6 +116,15 @@ class DraftIntentEditError(TripError):
         super().__init__(code=code, message="The draft intent edit is not valid for the current draft.", status_code=422)
 
 
+class ClarificationAlreadyResolvedError(TripError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="clarification_already_resolved",
+            message="This clarification has already been resolved in a newer draft revision.",
+            status_code=409,
+        )
+
+
 class IdempotencyConflictError(TripError):
     def __init__(self) -> None:
         super().__init__(

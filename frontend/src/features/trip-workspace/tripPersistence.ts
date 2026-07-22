@@ -7,6 +7,7 @@ export type TripMetadata = {
   revision_count: number;
   lifecycle_status: string;
   planning_phase?: "draft" | "planned";
+  draft_version?: number;
   created_at: string;
   updated_at: string;
 };

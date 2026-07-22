@@ -12,7 +12,7 @@ from app.main import app
 from app.persistence.database import SQLiteConnectionFactory
 from app.persistence.sqlite_trip_repository import SQLiteTripRepository
 from app.persistence.memory_trip_repository import MemoryTripRepository
-from app.trips.draft_intent_edits import DraftIntentEditRequest
+from app.trips.draft_intent_edits import DraftClarificationResolveRequest, DraftIntentEditRequest
 from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
 from app.trips.errors import StaleDraftRevisionError, StaleIntentRevisionError
 from app.trips.service import TripPersistenceService
@@ -67,7 +67,7 @@ class DraftIntentEditingApiTests(unittest.TestCase):
             "base_draft_version": self.draft_version,
             "operations": [
                 {"operation": "update_destination", "city": "上海", "timezone": "Asia/Shanghai"},
-                {"operation": "update_date_policy", "start_date": "2026-10-01", "end_date": "2026-10-02", "timezone": "Asia/Shanghai"},
+                {"operation": "update_date_policy", "start_date": "2026-10-01", "end_date": "2026-10-03", "timezone": "Asia/Shanghai"},
                 {"operation": "update_pace", "pace": "balanced"},
             ],
         })
@@ -75,6 +75,7 @@ class DraftIntentEditingApiTests(unittest.TestCase):
         formal = response.json()["envelope"]["formal_contract"]
         self.assertEqual(formal["destinations"][0]["city_name"], "上海")
         self.assertEqual(formal["date_policy"]["start_date"], "2026-10-01")
+        self.assertEqual(formal["date_policy"]["trip_days"], 3)
         self.assertEqual(formal["pace"]["value"], "balanced")
         selected = [field for field in response.json()["envelope"]["fields"] if field["status"] == "selected"]
         self.assertTrue(any(field["field_path"] == "trip.city" and field["confirmed_by_user"] for field in selected))
@@ -205,6 +206,83 @@ class DraftIntentEditingApiTests(unittest.TestCase):
         )
         self.assertFalse(no_op.changed)
         self.assertEqual(len(repository.list_draft_intent_revisions(trip_id=trip_id)), 2)
+
+    def test_typed_destination_clarification_reuses_draft_revision_transaction(self) -> None:
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": "周末玩两天，轻松一点。"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "clarification-create"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        trip_id = created.json()["trip"]["id"]
+        compiled = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/compile",
+            json={"base_intent_revision_id": None, "direct_user_text": "周末玩两天，轻松一点。", "use_llm_proposal_adapter": False},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "clarification-compile"},
+        )
+        self.assertEqual(compiled.status_code, 201, compiled.text)
+        original_id = compiled.json()["revision"]["id"]
+        question = next(item for item in compiled.json()["envelope"]["clarification_queue"] if item["reason_code"] in {"missing_destination", "destination_missing"})
+        latest = self.client.get(f"/trips/{trip_id}/preplan-intent")
+        self.assertEqual(latest.status_code, 200, latest.text)
+        payload = {
+            "base_intent_revision_id": original_id,
+            "base_draft_version": latest.json()["trip"]["draft_version"],
+            "answer": {"answer_type": "destination", "city": "杭州"},
+        }
+        with patch("app.trips.service.build_untrusted_llm_intent_proposal", side_effect=AssertionError("LLM must not run")), patch(
+            "app.trips.service.build_itinerary_response", side_effect=AssertionError("planner must not run")
+        ):
+            resolved = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/clarifications/{question['question_id']}/resolve",
+                json=payload,
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "clarification-destination"},
+            )
+        self.assertEqual(resolved.status_code, 201, resolved.text)
+        body = resolved.json()
+        self.assertEqual(body["envelope"]["formal_contract"]["destinations"][0]["city_name"], "杭州")
+        self.assertEqual(body["revision"]["parent_draft_intent_revision_id"], original_id)
+        self.assertEqual(body["envelope"]["validation_report"]["clarification_resolution"]["question_id"], question["question_id"])
+        self.assertFalse(any(item["question_id"] == question["question_id"] for item in body["envelope"]["clarification_queue"]))
+        self.assertEqual(get_trip_repository().get_trip(trip_id).revision_count, 0)
+
+        replay = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/clarifications/{question['question_id']}/resolve",
+            json=payload,
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "clarification-destination"},
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        duplicate = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/clarifications/{question['question_id']}/resolve",
+            json=payload,
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "clarification-destination-new-key"},
+        )
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        self.assertEqual(duplicate.json()["error"]["code"], "clarification_already_resolved")
+
+    def test_clarification_schema_rejects_untyped_answer_and_stale_base(self) -> None:
+        latest = self.client.get(f"/trips/{self.trip_id}/preplan-intent")
+        self.assertEqual(latest.status_code, 200, latest.text)
+        invalid = self.client.post(
+            f"/trips/{self.trip_id}/preplan-intent/clarifications/unknown/resolve",
+            json={"base_intent_revision_id": self.intent_id, "base_draft_version": latest.json()["trip"]["draft_version"], "answer": {"answer": "杭州"}},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "clarification-invalid"},
+        )
+        self.assertEqual(invalid.status_code, 422, invalid.text)
+
+    def test_typed_clarification_answers_have_no_free_form_payload(self) -> None:
+        base = {"base_intent_revision_id": "intent_1", "base_draft_version": 2}
+        for answer in [
+            {"answer_type": "destination", "city": "杭州"},
+            {"answer_type": "trip_days", "trip_days": 3},
+            {"answer_type": "date_range", "start_date": "2026-10-01", "end_date": "2026-10-03"},
+            {"answer_type": "date_policy_choice", "policy": "trip_days", "trip_days": 3},
+            {"answer_type": "date_policy_choice", "policy": "date_range", "start_date": "2026-10-01", "end_date": "2026-10-03"},
+        ]:
+            DraftClarificationResolveRequest.model_validate({**base, "answer": answer})
+        with self.assertRaises(Exception):
+            DraftClarificationResolveRequest.model_validate({**base, "answer": {"answer": "杭州"}})
 
     def edit(self, key: str, payload: dict) -> object:
         return self.client.post(
