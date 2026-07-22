@@ -41,12 +41,14 @@ from app.trips.intent_contracts import (
     TripIntentRevisionDetailResponse,
     TripIntentRevisionListResponse,
 )
+from app.trips.draft_intent_edits import DraftIntentEditRequest
 from app.trips.schemas import (
     ApplyPersistedMutationProposalRequest,
     ApplyPlannerHandoffProposalRequest,
     DraftTripCreateRequest,
     DraftTripCreateResponse,
     DraftTripDetailResponse,
+    DraftIntentEditResponse,
     PrePlanHandoffApplyRequest,
     PrePlanHandoffApplyResponse,
     PrePlanHandoffPreviewRequest,
@@ -246,6 +248,31 @@ def compile_preplan_intent_envelope(
         return origin_error
     try:
         return get_trip_persistence_service().compile_draft_intent_envelope(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/preplan-intent/edits",
+    response_model=DraftIntentEditResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def edit_preplan_intent(
+    trip_id: str,
+    payload: DraftIntentEditRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> DraftIntentEditResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().edit_draft_intent(
             trip_id=trip_id,
             capability=get_trip_capability_from_request(request, trip_id),
             idempotency_key=x_idempotency_key,

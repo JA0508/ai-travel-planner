@@ -15,6 +15,8 @@ export const TRIP_API_ENDPOINTS = {
   getDraftTrip: (tripId: string) => buildApiUrl(`/trips/${encodeURIComponent(tripId)}/draft`),
   compilePrePlanIntent: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent/compile`),
+  editPrePlanIntent: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent/edits`),
   previewPrePlanHandoff: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-handoff/preview`),
   applyPrePlanHandoff: (tripId: string, runId: string) =>

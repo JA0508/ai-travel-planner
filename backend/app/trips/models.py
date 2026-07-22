@@ -51,6 +51,7 @@ class TripRecord:
     capability_hash: str
     created_at: str
     updated_at: str
+    draft_version: int = 0
 
 
 @dataclass(slots=True)
@@ -171,6 +172,15 @@ class DraftIntentRevisionRecord:
     source_digest: str
     validation_report: dict[str, Any]
     created_at: str
+
+
+@dataclass(slots=True)
+class DraftIntentEditResult:
+    revision: DraftIntentRevisionRecord
+    previous_intent_revision_id: str
+    draft_version: int
+    changed: bool
+    idempotent_replay: bool = False
 
 
 @dataclass(slots=True)

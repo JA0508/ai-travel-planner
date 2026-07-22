@@ -101,6 +101,21 @@ class StaleIntentRevisionError(TripError):
         )
 
 
+class StaleDraftRevisionError(TripError):
+    def __init__(self, *, trip_id: str, provided_draft_version: int, current_draft_version: int) -> None:
+        super().__init__(
+            code="stale_draft_revision",
+            message="The draft was updated before this edit could be applied.",
+            status_code=409,
+            context={"trip_id": trip_id, "provided_draft_version": provided_draft_version, "current_draft_version": current_draft_version},
+        )
+
+
+class DraftIntentEditError(TripError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code=code, message="The draft intent edit is not valid for the current draft.", status_code=422)
+
+
 class IdempotencyConflictError(TripError):
     def __init__(self) -> None:
         super().__init__(

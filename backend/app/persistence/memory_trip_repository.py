@@ -30,6 +30,7 @@ from app.trips.errors import (
     ProposalIntegrityViolationError,
     RevisionNotFoundError,
     StaleBaseRevisionError,
+    StaleDraftRevisionError,
     StaleIntentRevisionError,
     StaleMutationProposalError,
     TripAccessDeniedError,
@@ -41,6 +42,7 @@ from app.trips.models import (
     CandidateRegistrationResult,
     CreateRevisionResult,
     DraftIntentRevisionRecord,
+    DraftIntentEditResult,
     ProposalStatus,
     RevisionOperationRecord,
     RevisionSourceType,
@@ -76,7 +78,7 @@ class MemoryTripRepository:
         self.draft_trip_idempotency_records: dict[str, tuple[str, str]] = {}
         self.draft_trip_source_inputs: dict[str, str] = {}
         self.draft_intent_revisions: dict[str, DraftIntentRevisionRecord] = {}
-        self.draft_intent_idempotency_records: dict[tuple[str, str], tuple[str, str]] = {}
+        self.draft_intent_idempotency_records: dict[tuple[str, str], tuple[str, str, bool, int]] = {}
         self.preplan_handoff_runs: dict[str, PrePlanHandoffRunRecord] = {}
 
     def health_check(self) -> dict[str, Any]:
@@ -185,7 +187,7 @@ class MemoryTripRepository:
         key = (revision.trip_id, idempotency_key_hash)
         existing = self.draft_intent_idempotency_records.get(key)
         if existing is not None:
-            digest, revision_id = existing
+            digest, revision_id, _changed, _draft_version = existing
             if digest != request_digest:
                 raise IdempotencyConflictError()
             return copy.deepcopy(self.draft_intent_revisions[revision_id]), True
@@ -210,8 +212,46 @@ class MemoryTripRepository:
         )
         stored = replace(revision, revision_number=number, parent_draft_intent_revision_id=expected_parent_draft_intent_revision_id, envelope=finalized.model_dump(mode="json"), content_digest=finalized.content_digest)
         self.draft_intent_revisions[stored.id] = copy.deepcopy(stored)
-        self.draft_intent_idempotency_records[key] = (request_digest, stored.id)
+        self.trips[trip.id] = replace(trip, draft_version=trip.draft_version + 1, updated_at=revision.created_at)
+        self.draft_intent_idempotency_records[key] = (request_digest, stored.id, True, trip.draft_version + 1)
         return copy.deepcopy(stored), False
+
+    def edit_draft_intent_revision(self, *, revision: DraftIntentRevisionRecord, request_digest: str,
+        idempotency_key_hash: str, expected_parent_draft_intent_revision_id: str, expected_draft_version: int,
+        operation: str) -> DraftIntentEditResult:
+        key = (revision.trip_id, idempotency_key_hash)
+        existing = self.draft_intent_idempotency_records.get(key)
+        if existing is not None:
+            digest, revision_id, changed, draft_version = existing
+            if digest != request_digest:
+                raise IdempotencyConflictError()
+            stored = self.get_draft_intent_revision(trip_id=revision.trip_id, revision_id=revision_id)
+            return DraftIntentEditResult(stored, stored.parent_draft_intent_revision_id or stored.id, draft_version, changed, True)
+        trip = self.get_trip(revision.trip_id)
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+            raise StaleBaseRevisionError(trip_id=trip.id, provided_base_revision_id="", current_revision_id=trip.current_revision_id or "")
+        if trip.draft_version != expected_draft_version:
+            raise StaleDraftRevisionError(trip_id=trip.id, provided_draft_version=expected_draft_version, current_draft_version=trip.draft_version)
+        parent = self.get_latest_draft_intent_revision(trip_id=trip.id)
+        if parent is None or parent.id != expected_parent_draft_intent_revision_id:
+            raise StaleIntentRevisionError(trip_id=trip.id, provided_intent_revision_id=expected_parent_draft_intent_revision_id, current_intent_revision_id=parent.id if parent else "")
+        parent_envelope = SourceLinkedTripIntentEnvelope.model_validate(parent.envelope)
+        finalized = finalize_intent_envelope_for_revision(
+            SourceLinkedTripIntentEnvelope.model_validate(revision.envelope), revision_id=revision.id,
+            revision_number=parent.revision_number + 1, base_trip_revision_id=None,
+            parent_intent_revision_id=parent.id, parent_lineage_digest=parent_envelope.lineage_digest,
+            operation=operation, restore_source_revision_id=None, created_at=revision.created_at,
+        )
+        if finalized.semantic_digest == parent_envelope.semantic_digest:
+            self.draft_intent_idempotency_records[key] = (request_digest, parent.id, False, trip.draft_version)
+            return DraftIntentEditResult(parent, parent.id, trip.draft_version, False)
+        stored = replace(revision, revision_number=finalized.revision_number, parent_draft_intent_revision_id=parent.id,
+            envelope=finalized.model_dump(mode="json"), content_digest=finalized.content_digest, validation_report=finalized.validation_report)
+        self.draft_intent_revisions[stored.id] = copy.deepcopy(stored)
+        next_version = trip.draft_version + 1
+        self.trips[trip.id] = replace(trip, draft_version=next_version, updated_at=revision.created_at)
+        self.draft_intent_idempotency_records[key] = (request_digest, stored.id, True, next_version)
+        return DraftIntentEditResult(copy.deepcopy(stored), parent.id, next_version, True)
 
     def get_draft_intent_revision(self, *, trip_id: str, revision_id: str) -> DraftIntentRevisionRecord:
         revision = self.draft_intent_revisions.get(revision_id)
