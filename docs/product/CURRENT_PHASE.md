@@ -109,10 +109,15 @@ Current F-001c work includes:
 - private source-text recovery after browser reload using the existing capability
   boundary
 - frozen pre-plan planner runs with stale-intent rejection and idempotent apply
+- both quick-language and structured first-plan entry paths route through the
+  same labelled Draft Trip input and pre-plan contract boundary
+- a pre-plan review surface that makes selected fields, source authority,
+  assumptions, conflicts, clarifications, and frozen-preview state explicit
 
-F-001c does not yet replace all legacy structured-form generation paths or add
-full draft editing/history UX. Those remain explicit follow-up work; they must
-not silently bypass the pre-plan contract boundary.
+F-001c does not yet provide full draft editing/history UX or inline resolution
+for every clarification type. Those remain explicit follow-up work; unresolved
+requirements continue to block a frozen preview rather than being silently
+assumed away.
 
 F-004b remains the post-revision handoff for an already saved itinerary and
 continues to hand the confirmed `TripIntentEnvelope` to planner input preparation

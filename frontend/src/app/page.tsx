@@ -52,6 +52,7 @@ import {
 import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
 import { IntentConfirmationWorkspace } from "@/features/intent-confirmation/IntentConfirmationWorkspace";
 import { PrePlanIntentWorkspace } from "@/features/preplan-intent/PrePlanIntentWorkspace";
+import { buildPrePlanDraftText } from "@/features/preplan-intent/prePlanDraftInput";
 import { ConversationalReplanPanel } from "@/components/trip/replanning/ConversationalReplanPanel";
 import type {
   ReplanExecutionResult,
@@ -2621,12 +2622,12 @@ function buildRegenerationSemanticsViewModel(
     return result.data;
   }
 
-  async function createDraftTrip(): Promise<string | null> {
+  async function createDraftTrip(directUserText: string = tripText): Promise<string | null> {
     setTripPersistence({ status: "creating" });
     const idempotencyKey = `draft-trip:${crypto.randomUUID()}`;
     const result = await postTripJson<{ trip: TripMetadata }>(
       TRIP_API_ENDPOINTS.createDraftTrip,
-      { direct_user_text: tripText },
+      { direct_user_text: directUserText },
       "创建行程草稿失败",
       undefined,
       { headers: { "X-Idempotency-Key": idempotencyKey } },
@@ -4072,45 +4073,33 @@ function buildRegenerationSemanticsViewModel(
       return;
     }
 
+    const structuredDraftText = buildPrePlanDraftText({
+      directText: tripText,
+      tripDays,
+      scenicSpots: splitLines(scenicSpots),
+      restaurants: splitLines(restaurants),
+      fixedEventsText,
+      availabilityWindowsText,
+      arrivalAnchor,
+      departureAnchor,
+      hotel,
+      preferences: splitLines(preferencesText),
+      pacingLabel: formatPacingProfileLabel(pacingProfile),
+      travelMode,
+    });
+
     setLoading(true);
     setError(null);
-    scheduleResultReveal();
     setResult(null);
     setCompletionTaskEdits([]);
     setCompletionCandidateHistory([]);
     setActiveSwapTarget(null);
 
     try {
-      if (activeTripIntent) {
-        await generateItineraryFromTripIntent(activeTripIntent);
-        return;
-      }
-      const regenerateValues = buildRegenerateValuesFromCurrentState({
-        result,
-        generationContext,
-        userIntentState,
-        regenerationIntentOverride: effectiveRegenerationIntentForNextGenerate,
-        parsedIntent,
-        planningState,
-        scenicSpots,
-        restaurants,
-        hotel,
-        arrivalAnchor,
-        departureAnchor,
-        availabilityWindowsText,
-        preferencesText,
-        tripDays,
-        fixedEventsText,
-        travelMode,
-        splitLines,
-        parseFixedEventLines,
-        parseAvailabilityWindowLines,
-        schedulerEstimatedTripDaysSource: "scheduler_estimated" as TripDaysSource,
-        explicitTripDaysSource: "explicit" as TripDaysSource,
-      });
-      await generateItineraryFromValues(regenerateValues);
+      setTripText(structuredDraftText);
+      await createDraftTrip(structuredDraftText);
     } catch {
-      setError("无法连接后端生成接口。");
+      setError("无法创建行程草稿。");
     } finally {
       setLoading(false);
     }
@@ -4765,7 +4754,7 @@ function buildRegenerationSemanticsViewModel(
                   </p>
                 </div>
                 <button type="submit" disabled={loading} style={floatingPrimaryButtonStyle}>
-                  {loading ? "骨架缓冲中…" : "开始生成骨架"}
+                  {loading ? "正在创建草稿…" : "进入意图确认"}
                 </button>
               </div>
               {!readiness.ready ? (
