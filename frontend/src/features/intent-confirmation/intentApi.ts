@@ -4,6 +4,8 @@ import type {
   CompileTripIntentResponse,
   IntentDomainValue,
   IntentStructuredOverrides,
+  PlannerHandoffApplyResponse,
+  PlannerHandoffPreviewResponse,
   TripIntentRevisionDetailResponse,
   TripIntentRevisionListResponse,
 } from "./intentTypes";
@@ -86,6 +88,32 @@ export function answerIntentClarification(
     TRIP_API_ENDPOINTS.answerTripIntentClarification(tripId, intentRevisionId, questionId),
     payload,
     "保存澄清答案失败",
+    undefined,
+    { headers: { "X-Idempotency-Key": idempotencyKey } },
+  );
+}
+
+export function previewPlannerHandoff(
+  tripId: string,
+  payload: { base_revision_id: string; intent_revision_id: string },
+) {
+  return postTripJson<PlannerHandoffPreviewResponse>(
+    TRIP_API_ENDPOINTS.previewPlannerHandoff(tripId),
+    payload,
+    "生成执行方案预览失败",
+  );
+}
+
+export function applyPlannerHandoffProposal(
+  tripId: string,
+  proposalId: string,
+  payload: { base_revision_id: string; intent_revision_id: string; proposal_digest: string },
+  idempotencyKey: string,
+) {
+  return postTripJson<PlannerHandoffApplyResponse>(
+    TRIP_API_ENDPOINTS.applyPlannerHandoffProposal(tripId, proposalId),
+    payload,
+    "应用执行方案失败",
     undefined,
     { headers: { "X-Idempotency-Key": idempotencyKey } },
   );

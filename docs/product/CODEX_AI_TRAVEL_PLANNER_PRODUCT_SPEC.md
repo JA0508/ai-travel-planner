@@ -918,11 +918,11 @@ LLM 输出必须通过 Pydantic/schema validation；冲突检测、日期计算�
 
 - 复用现有 parseTripIntent、parsePlanningState、tripFormSync、tripIntentPayload；把 page.tsx 中状态搬到 feature store/hook。
 
-#### 当前实现状态（F-004a.3）
+#### 当前实现状态（F-004a 已完成；F-004b in review）
 
-> Integrity repair is in review. PR #20 established the foundation; the following
-> describes the repaired branch and must not be read as a merged-completion claim
-> until CI and review have accepted it.
+> F-004a.3 Completion Integrity Repair has merged through PR #21. The F-004b
+> handoff described below remains in review and must not be read as a full
+> Planner Trace review or multi-city planning completion claim.
 
 - 已建立 `SourceLinkedTripIntentEnvelope` 的 domain-native formal contract：
   destination、date policy、fixed event、place preference、pace、transport、
@@ -955,14 +955,21 @@ LLM 输出必须通过 Pydantic/schema validation；冲突检测、日期计算�
   provenance evidence nodes；带 import/page identity 的节点会复用现有私有
   Import Review workspace。历史 revision 不能直接编辑，只能 restore 成新
   revision；stale edit 保留 draft，必须显式 reapply 到 latest revision。
-- Intent compiler evaluation 现有 62 个 fixtures，按 semantic、provenance、
+- Intent compiler evaluation 现有 63 个 fixtures，按 semantic、provenance、
   parser、revision、concurrency、clarification 分类，并在 CI 下 gate fixture
   数量与 deterministic invariants。
-- 当前仍不调用 planner、scheduler、provider lookup，不创建 TripRevision，
+- F-004a 本身不调用 planner、scheduler、provider lookup，不创建 TripRevision，
   不修改 itinerary。
+- F-004b consumes only the latest verified formal contract. It produces an
+  immutable `PlannerHandoffInput`, deterministic preview, planner trace and
+  pending proposal; explicit apply creates exactly one `TripRevision` from the
+  frozen snapshot after atomic TripRevision and IntentRevision checks. A
+  scheduled confirmed candidate retains its candidate ID and field/provenance
+  links in the persisted snapshot.
 - 已知限制：provenance graph 不是完整 Planner Trace；部分 page/bbox 证据受
-  上游 Import Review evidence 完整度限制；F-004b 才会消费 confirmed
-  contract 进入 planner handoff。
+  上游 Import Review evidence 完整度限制；F-004b currently supports one
+  destination and requires a verified canonical candidate for fixed-event
+  placement. It does not silently geocode free-form fixed-event locations.
 
 ### F-005 Explainable Plan Compiler v2
 

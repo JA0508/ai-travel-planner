@@ -431,6 +431,7 @@ class Scheduler:
                     travel_from_name=None,
                     travel_distance_m=None,
                     travel_duration_s=None,
+                    candidate_id=poi.candidate_id,
                 )
             )
             if trace_collector is not None:
@@ -710,6 +711,7 @@ class Scheduler:
                         travel_duration_s=travel_info["duration_s"] if travel_info else None,
                         selection_top_candidates=selection_top_candidates,
                         selection_rejected_candidates=selection_rejected_candidates,
+                        candidate_id=next_poi.candidate_id,
                     )
                 )
                 if trace_collector is not None:

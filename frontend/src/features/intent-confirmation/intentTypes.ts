@@ -371,6 +371,7 @@ export type IntentStructuredOverrides = {
     end_at: string | null;
     timezone: string | null;
     fixed_day: number | null;
+    place_candidate_id: string | null;
     location_text: string | null;
     flexibility: "fixed" | "movable_with_confirmation";
   }>;
@@ -491,4 +492,52 @@ export type TripIntentRevisionDetailResponse = {
 
 export type TripIntentRevisionListResponse = {
   revisions: TripIntentRevisionMetadata[];
+};
+
+export type PlannerHandoffRunMetadata = {
+  id: string;
+  trip_id: string;
+  base_trip_revision_id: string;
+  intent_revision_id: string;
+  intent_semantic_digest: string;
+  intent_lineage_digest: string;
+  input_schema_version: string;
+  input_digest: string;
+  planner_version: string;
+  trace_schema_version: string;
+  trace_digest: string;
+  result_content_digest: string;
+  status: "pending" | "applied" | "invalidated";
+  proposal_id: string | null;
+  applied_revision_id: string | null;
+  created_at: string;
+};
+
+export type PlannerHandoffProposal = {
+  id: string;
+  base_revision_id: string;
+  proposal_digest: string;
+  execution_kind: "planner_handoff_snapshot";
+  status: "pending" | "applied" | "cancelled" | "expired" | "invalidated";
+  expires_at: string;
+};
+
+export type PlannerHandoffPreviewResponse = {
+  intent_revision_id: string;
+  planner_run: PlannerHandoffRunMetadata;
+  proposal: PlannerHandoffProposal;
+  itinerary: { trip_days: number; days: unknown[] };
+  source_links: Array<{
+    field_id: string;
+    field_path: string;
+    provenance_node_ids: string[];
+    authority: string;
+    confirmed: boolean;
+  }>;
+};
+
+export type PlannerHandoffApplyResponse = {
+  intent_revision_id: string;
+  planner_run: PlannerHandoffRunMetadata;
+  persistence: { status: "saved"; idempotent_replay: boolean };
 };

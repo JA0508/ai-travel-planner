@@ -11,6 +11,7 @@ from .models import (
     TripCandidateDecisionRecord,
     TripCandidateRecord,
     TripMutationProposalRecord,
+    PlannerHandoffRunRecord,
     TripRecord,
     TripRevisionRecord,
 )
@@ -143,6 +144,22 @@ class TripRepository(Protocol):
     ) -> TripMutationProposalRecord:
         ...
 
+    def create_planner_handoff_preview(
+        self,
+        *,
+        run: PlannerHandoffRunRecord,
+        proposal: TripMutationProposalRecord,
+    ) -> tuple[PlannerHandoffRunRecord, TripMutationProposalRecord]:
+        ...
+
+    def get_planner_handoff_run(
+        self,
+        *,
+        trip_id: str,
+        run_id: str,
+    ) -> PlannerHandoffRunRecord:
+        ...
+
     def get_mutation_proposal(
         self,
         *,
@@ -164,6 +181,7 @@ class TripRepository(Protocol):
         operation_metadata: dict[str, Any],
         request_digest: str,
         idempotency_key_hash: str,
+        expected_intent_revision_id: str | None = None,
     ) -> CreateRevisionResult:
         ...
 

@@ -13,6 +13,7 @@ class TripLifecycleStatus(str, Enum):
 class RevisionSourceType(str, Enum):
     PLANNER_GENERATION = "planner_generation"
     PLANNER_REGENERATION = "planner_regeneration"
+    PLANNER_INTENT_HANDOFF = "planner_intent_handoff"
     REPLAN_PATCH = "replan_patch"
     REPLAN_UNDO = "replan_undo"
     COMPLETION_PATCH = "completion_patch"
@@ -110,6 +111,32 @@ class TripMutationProposalRecord:
     invalidated_surfaces: list[str] | None
     status: str
     expires_at: str
+    applied_revision_id: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(slots=True)
+class PlannerHandoffRunRecord:
+    id: str
+    trip_id: str
+    base_trip_revision_id: str
+    intent_revision_id: str
+    intent_semantic_digest: str
+    intent_lineage_digest: str
+    input_schema_version: str
+    input_snapshot: dict[str, Any]
+    input_digest: str
+    planner_version: str
+    trace_schema_version: str
+    trace_snapshot: dict[str, Any]
+    trace_digest: str
+    result_snapshot_schema_version: str
+    result_snapshot: dict[str, Any]
+    result_content_digest: str
+    validation_report: dict[str, Any]
+    proposal_id: str | None
+    status: str
     applied_revision_id: str | None
     created_at: str
     updated_at: str

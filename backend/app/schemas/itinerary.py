@@ -101,6 +101,20 @@ class FixedConstraint(BaseModel):
 
 class RawPOIInput(FixedConstraint):
     name: str = Field(..., min_length=1, description="User-provided place name.")
+    # A formal intent handoff can carry an already reviewed canonical place.  These
+    # fields let the deterministic planner reuse that identity instead of doing a
+    # second name-only provider lookup.
+    candidate_id: str | None = Field(default=None, min_length=1)
+    canonical_place_id: str | None = Field(default=None, min_length=1)
+    resolved_latitude: float | None = Field(default=None, ge=-90, le=90)
+    resolved_longitude: float | None = Field(default=None, ge=-180, le=180)
+    resolved_duration_minutes: int | None = Field(default=None, gt=0, le=1440)
+
+    @model_validator(mode="after")
+    def validate_resolved_coordinates(self) -> "RawPOIInput":
+        if (self.resolved_latitude is None) != (self.resolved_longitude is None):
+            raise ValueError("resolved_latitude and resolved_longitude must be provided together.")
+        return self
 
 
 class ScenicSpotInput(RawPOIInput):
@@ -199,6 +213,10 @@ class NormalizedPOI(FixedConstraint):
     longitude: float = Field(..., ge=-180, le=180)
     duration_minutes: int = Field(..., gt=0, le=1440)
     profile: POIProfile
+    # These fields are optional for legacy free-text planning. A confirmed
+    # intent handoff supplies them so a scheduled item can retain its source.
+    candidate_id: str | None = Field(default=None, min_length=1)
+    canonical_place_id: str | None = Field(default=None, min_length=1)
 
 
 class HotelStay(BaseModel):

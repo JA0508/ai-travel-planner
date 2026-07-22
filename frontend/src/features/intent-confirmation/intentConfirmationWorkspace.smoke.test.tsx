@@ -8,7 +8,7 @@ import { IntentConfirmationWorkspace } from "./IntentConfirmationWorkspace";
 
 const componentPath = fileURLToPath(new URL("./IntentConfirmationWorkspace.tsx", import.meta.url));
 
-test("browser smoke renders intent confirmation workspace without planner controls", () => {
+test("browser smoke renders intent confirmation workspace with an explicit planner handoff boundary", () => {
   const html = renderToStaticMarkup(
     <IntentConfirmationWorkspace
       tripPersistence={{ status: "saved", tripId: "trip_1", currentRevisionId: "rev_1", revisionNumber: 1 }}
@@ -17,6 +17,7 @@ test("browser smoke renders intent confirmation workspace without planner contro
   );
   assert.match(html, /Intent Confirmation Workspace/);
   assert.match(html, /Source-linked confirmation/);
+  assert.match(readFileSync(componentPath, "utf-8"), /Execution handoff/);
   assert.doesNotMatch(html, /Generate itinerary/);
 });
 
@@ -28,7 +29,7 @@ test("browser smoke keeps unsaved trips at the intent boundary", () => {
     />,
   );
   assert.match(html, /Compile the saved trip inputs/);
-  assert.doesNotMatch(html, /Run scheduler/);
+  assert.doesNotMatch(html, /Apply execution revision/);
   assert.doesNotMatch(html, /Create TripRevision/);
 });
 

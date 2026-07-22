@@ -119,6 +119,21 @@ class InvalidRevisionOperationError(TripError):
         )
 
 
+class PlannerHandoffBlockedError(TripError):
+    def __init__(self, reason_code: str, *, candidate_id: str | None = None, field_id: str | None = None) -> None:
+        context = {"reason_code": reason_code}
+        if candidate_id:
+            context["candidate_id"] = candidate_id
+        if field_id:
+            context["field_id"] = field_id
+        super().__init__(
+            code="planner_handoff_blocked",
+            message="The confirmed intent cannot safely enter the planner.",
+            status_code=422,
+            context=context,
+        )
+
+
 class UnsupportedMutationCommandSchemaError(TripError):
     def __init__(self, schema_version: str) -> None:
         super().__init__(

@@ -2,7 +2,7 @@
 
 ## Current phase
 
-F-004a Completion Integrity Repair — in review.
+F-004b Planner Intent Handoff — in review.
 
 ## Recently completed and merged
 
@@ -12,6 +12,7 @@ F-004a Completion Integrity Repair — in review.
 - F-004a Source-Linked Intent Contract Foundation
 - F-004a.1 Typed Intent, Provenance and Concurrency Hardening
 - F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure
+- F-004a.3 Completion Integrity Repair
 
 The completed document extraction path now supports:
 
@@ -54,6 +55,7 @@ The completed document extraction path now supports:
 - F-004a Source-Linked Intent Contract Foundation
 - F-004a.1 Typed Intent, Provenance and Concurrency Hardening
 - F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure
+- F-004a.3 Completion Integrity Repair
 
 ## Known technical debt
 
@@ -62,18 +64,23 @@ The completed document extraction path now supports:
 - Five-viewport layout-aware browser visual smoke coverage is incomplete.
 - Local OCR behavior is intentionally capability-reported and may vary by
   installed language packs and rendering dependencies.
-- F-004a Completion Integrity Repair is in review. The repair persists verified
+- F-004a.3 Completion Integrity Repair is merged. It persists verified
   candidate-to-import lineage, fails closed for legacy-unverified candidates,
   exercises real immutable revision and SQLite race scenarios, and hands
-  provenance nodes back to the existing private Import Review workspace. It is
-  not marked complete until branch CI and review accept these gates.
-- F-004a intentionally stops at planner-ready intent preview. It still does not
-  create TripRevisions, execute itinerary mutations, call providers, run the
-  scheduler, or auto-admit candidates into an itinerary.
+  provenance nodes back to the existing private Import Review workspace.
+- F-004b is in review. It introduces a narrow, server-authoritative handoff
+  from the latest verified `TripIntentEnvelope` to a frozen deterministic
+  planner preview and an atomic apply operation. It is not a full planner trace
+  review workspace, provider-refresh system, or multi-city planner.
+- A fixed event without a verified canonical TripCandidate is deliberately
+  blocked at handoff rather than geocoded from free-form location text.
+- F-004b currently supports one destination per handoff. Multi-destination
+  intents remain explicit, planner-blocking product work rather than a silent
+  fallback to a single city.
 - Provenance graph navigation opens the existing private Import Review workspace
   for an import job/page when structured evidence supplies that identity. It is
   not yet a full Planner Trace review workspace.
-- The intent compiler evaluation corpus now has 62 fixtures and CI gates fixture
+- The intent compiler evaluation corpus now has 63 fixtures and CI gates fixture
   counts plus deterministic invariants across semantic, provenance, parser,
   revision, concurrency, and clarification categories. It should still expand
   when F-004b introduces planner handoff behavior.
@@ -86,7 +93,7 @@ The completed document extraction path now supports:
 
 1. F-004b Planner Intent Handoff
 
-The next product step is to hand the confirmed `TripIntentEnvelope` to planner
+The active product step hands the confirmed `TripIntentEnvelope` to planner
 input preparation without weakening the contract boundary:
 
 - hard constraints
@@ -98,9 +105,12 @@ input preparation without weakening the contract boundary:
 - confirmed domain-native fields
 - semantic digest and lineage ownership
 
-F-004b may prepare planner handoff inputs from the confirmed intent contract. It
-must not let LLM explanations override user edits, reviewed evidence, fixed
-events, availability windows, or deterministic readiness policy.
+F-004b stores a privacy-safe, immutable planner handoff run and frozen proposal
+before an explicit apply creates the next `TripRevision`. Apply compares both
+the base TripRevision and latest IntentRevision in the same SQLite transaction;
+it never reruns the planner. LLM explanations cannot override user edits,
+reviewed evidence, fixed events, availability windows, or deterministic
+readiness policy.
 
 ## Supporting follow-up
 

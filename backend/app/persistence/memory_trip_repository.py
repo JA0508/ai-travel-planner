@@ -48,6 +48,7 @@ from app.trips.models import (
     TripAggregate,
     TripLifecycleStatus,
     TripMutationProposalRecord,
+    PlannerHandoffRunRecord,
     TripRecord,
     TripRevisionRecord,
 )
@@ -68,6 +69,7 @@ class MemoryTripRepository:
         self.intent_revisions: dict[str, TripIntentRevisionRecord] = {}
         self.intent_idempotency_records: dict[tuple[str, str], tuple[str, str]] = {}
         self.intent_compile_runs: dict[str, IntentCompileRunDraft] = {}
+        self.planner_handoff_runs: dict[str, PlannerHandoffRunRecord] = {}
 
     def health_check(self) -> dict[str, Any]:
         return {
@@ -433,6 +435,29 @@ class MemoryTripRepository:
         self.proposals[proposal.id] = copy.deepcopy(proposal)
         return copy.deepcopy(proposal)
 
+    def create_planner_handoff_preview(
+        self,
+        *,
+        run: PlannerHandoffRunRecord,
+        proposal: TripMutationProposalRecord,
+    ) -> tuple[PlannerHandoffRunRecord, TripMutationProposalRecord]:
+        if proposal.planner_run_id != run.id or proposal.trip_id != run.trip_id:
+            raise ProposalIntegrityViolationError()
+        self.create_mutation_proposal(proposal=proposal)
+        self.planner_handoff_runs[run.id] = copy.deepcopy(run)
+        return copy.deepcopy(run), self.get_mutation_proposal(trip_id=proposal.trip_id, proposal_id=proposal.id)
+
+    def get_planner_handoff_run(
+        self,
+        *,
+        trip_id: str,
+        run_id: str,
+    ) -> PlannerHandoffRunRecord:
+        run = self.planner_handoff_runs.get(run_id)
+        if run is None or run.trip_id != trip_id:
+            raise MutationProposalNotFoundError(run_id)
+        return copy.deepcopy(run)
+
     def get_mutation_proposal(
         self,
         *,
@@ -457,6 +482,7 @@ class MemoryTripRepository:
         operation_metadata: dict[str, Any],
         request_digest: str,
         idempotency_key_hash: str,
+        expected_intent_revision_id: str | None = None,
     ) -> CreateRevisionResult:
         trip = self.get_trip_for_access(trip_id, capability_hash)
         idempotency_record = self.idempotency_records.get((trip_id, idempotency_key_hash))
@@ -499,6 +525,27 @@ class MemoryTripRepository:
                 base_revision_id=proposal.base_revision_id,
                 current_revision_id=current_revision.id,
             )
+        handoff_run: PlannerHandoffRunRecord | None = None
+        if expected_intent_revision_id is not None:
+            if proposal.planner_run_id is None:
+                raise ProposalIntegrityViolationError()
+            handoff_run = self.get_planner_handoff_run(trip_id=trip_id, run_id=proposal.planner_run_id)
+            latest = self.get_latest_intent_revision(trip_id=trip_id)
+            if latest is None or latest.id != expected_intent_revision_id:
+                raise StaleIntentRevisionError(
+                    trip_id=trip_id,
+                    provided_intent_revision_id=expected_intent_revision_id,
+                    current_intent_revision_id=latest.id if latest else "",
+                )
+            if (
+                handoff_run.status != "pending"
+                or handoff_run.intent_revision_id != expected_intent_revision_id
+                or handoff_run.base_trip_revision_id != proposal.base_revision_id
+                or handoff_run.proposal_id != proposal.id
+                or handoff_run.result_content_digest != proposal.preview_content_digest
+                or handoff_run.trace_digest != proposal.trace_digest
+            ):
+                raise ProposalIntegrityViolationError()
         content_digest = itinerary_content_digest(proposal.preview_snapshot)
         if content_digest != proposal.preview_content_digest:
             raise ProposalIntegrityViolationError()
@@ -550,6 +597,11 @@ class MemoryTripRepository:
         proposal.applied_revision_id = revision_id
         proposal.updated_at = now
         self.proposals[proposal_id] = copy.deepcopy(proposal)
+        if handoff_run is not None:
+            handoff_run.status = "applied"
+            handoff_run.applied_revision_id = revision_id
+            handoff_run.updated_at = now
+            self.planner_handoff_runs[handoff_run.id] = copy.deepcopy(handoff_run)
         candidate_admission = operation_metadata.get("candidate_admission")
         if isinstance(candidate_admission, dict):
             candidate_id = str(candidate_admission.get("candidate_id") or "")

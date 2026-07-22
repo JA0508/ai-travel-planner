@@ -1926,7 +1926,29 @@ def normalize_optional_pois(
 
     for raw_poi in raw_pois:
         try:
-            normalized_poi = normalize_poi(raw_poi=raw_poi, poi_type=poi_type, city=city)
+            if raw_poi.resolved_latitude is not None and raw_poi.resolved_longitude is not None:
+                profile = infer_poi_profile(raw_poi.name, poi_type)
+                normalized_poi = NormalizedPOI(
+                    name=raw_poi.name,
+                    type=poi_type,
+                    city=city,
+                    latitude=raw_poi.resolved_latitude,
+                    longitude=raw_poi.resolved_longitude,
+                    duration_minutes=raw_poi.resolved_duration_minutes or profile.typical_duration_minutes,
+                    profile=profile.model_copy(
+                        update={
+                            "signal_source": "reviewed_candidate",
+                            "signal_summary": "Reused the reviewed canonical-place coordinates from the intent handoff.",
+                        }
+                    ),
+                    fixed_day=raw_poi.fixed_day,
+                    fixed_time_start=raw_poi.fixed_time_start,
+                    fixed_time_end=raw_poi.fixed_time_end,
+                    candidate_id=raw_poi.candidate_id,
+                    canonical_place_id=raw_poi.canonical_place_id,
+                )
+            else:
+                normalized_poi = normalize_poi(raw_poi=raw_poi, poi_type=poi_type, city=city)
             normalized_pois.append(normalized_poi)
             if trace_collector is not None:
                 trace_collector.mark_place_known()

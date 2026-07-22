@@ -54,6 +54,7 @@ from app.trips.models import (
     TripAggregate,
     TripLifecycleStatus,
     TripMutationProposalRecord,
+    PlannerHandoffRunRecord,
     TripRecord,
     TripRevisionRecord,
 )
@@ -633,7 +634,35 @@ class SQLiteTripRepository:
         proposal: TripMutationProposalRecord,
     ) -> TripMutationProposalRecord:
         with self._transaction() as connection:
-            connection.execute(
+            self._insert_proposal(connection, proposal)
+        return self.get_mutation_proposal(trip_id=proposal.trip_id, proposal_id=proposal.id)
+
+    def create_planner_handoff_preview(
+        self,
+        *,
+        run: PlannerHandoffRunRecord,
+        proposal: TripMutationProposalRecord,
+    ) -> tuple[PlannerHandoffRunRecord, TripMutationProposalRecord]:
+        if proposal.planner_run_id != run.id or proposal.trip_id != run.trip_id:
+            raise ProposalIntegrityViolationError()
+        with self._transaction() as connection:
+            self._insert_proposal(connection, proposal)
+            self._insert_planner_handoff_run(connection, run)
+            stored_run = self._get_planner_handoff_run_in_connection(connection, run.trip_id, run.id)
+            stored_proposal = self._get_proposal_in_connection(connection, proposal.trip_id, proposal.id)
+        return stored_run, stored_proposal
+
+    def get_planner_handoff_run(
+        self,
+        *,
+        trip_id: str,
+        run_id: str,
+    ) -> PlannerHandoffRunRecord:
+        with closing(self.connection_factory()) as connection:
+            return self._get_planner_handoff_run_in_connection(connection, trip_id, run_id)
+
+    def _insert_proposal(self, connection: sqlite3.Connection, proposal: TripMutationProposalRecord) -> None:
+        connection.execute(
                 """
                 INSERT INTO trip_mutation_proposals(
                   id, trip_id, base_revision_id, proposal_schema_version, source_type,
@@ -683,7 +712,6 @@ class SQLiteTripRepository:
                     proposal.updated_at,
                 ),
             )
-        return self.get_mutation_proposal(trip_id=proposal.trip_id, proposal_id=proposal.id)
 
     def get_mutation_proposal(
         self,
@@ -708,6 +736,7 @@ class SQLiteTripRepository:
         operation_metadata: dict[str, Any],
         request_digest: str,
         idempotency_key_hash: str,
+        expected_intent_revision_id: str | None = None,
     ) -> CreateRevisionResult:
         revision_id = generate_revision_id()
         operation_id = generate_operation_id()
@@ -789,6 +818,39 @@ class SQLiteTripRepository:
                     current_revision_id=current_revision.id,
                 )
 
+            handoff_run: PlannerHandoffRunRecord | None = None
+            if expected_intent_revision_id is not None:
+                if proposal.planner_run_id is None:
+                    raise ProposalIntegrityViolationError()
+                handoff_run = self._get_planner_handoff_run_in_connection(
+                    connection,
+                    trip_id,
+                    proposal.planner_run_id,
+                )
+                if (
+                    handoff_run.status != "pending"
+                    or handoff_run.intent_revision_id != expected_intent_revision_id
+                    or handoff_run.base_trip_revision_id != proposal.base_revision_id
+                    or handoff_run.proposal_id != proposal.id
+                    or handoff_run.result_content_digest != proposal.preview_content_digest
+                    or handoff_run.trace_digest != proposal.trace_digest
+                ):
+                    raise ProposalIntegrityViolationError()
+                latest_intent_row = connection.execute(
+                    """
+                    SELECT id FROM trip_intent_revisions
+                    WHERE trip_id = ? ORDER BY revision_number DESC, created_at DESC LIMIT 1
+                    """,
+                    (trip_id,),
+                ).fetchone()
+                current_intent_revision_id = latest_intent_row["id"] if latest_intent_row is not None else ""
+                if current_intent_revision_id != expected_intent_revision_id:
+                    raise StaleIntentRevisionError(
+                        trip_id=trip_id,
+                        provided_intent_revision_id=expected_intent_revision_id,
+                        current_intent_revision_id=current_intent_revision_id,
+                    )
+
             content_digest = itinerary_content_digest(proposal.preview_snapshot)
             if content_digest != proposal.preview_content_digest:
                 raise ProposalIntegrityViolationError()
@@ -847,6 +909,15 @@ class SQLiteTripRepository:
                 """,
                 (revision_id, now, proposal_id, trip_id),
             )
+            if handoff_run is not None:
+                connection.execute(
+                    """
+                    UPDATE planner_handoff_runs
+                    SET status = 'applied', applied_revision_id = ?, updated_at = ?
+                    WHERE id = ? AND trip_id = ?
+                    """,
+                    (revision_id, now, handoff_run.id, trip_id),
+                )
             candidate_admission = operation_metadata.get("candidate_admission")
             if isinstance(candidate_admission, dict):
                 candidate_id = str(candidate_admission.get("candidate_id") or "")
@@ -1172,6 +1243,33 @@ class SQLiteTripRepository:
             ),
         )
 
+    def _insert_planner_handoff_run(
+        self,
+        connection: sqlite3.Connection,
+        run: PlannerHandoffRunRecord,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO planner_handoff_runs(
+              id, trip_id, base_trip_revision_id, intent_revision_id,
+              intent_semantic_digest, intent_lineage_digest,
+              input_schema_version, input_snapshot_json, input_digest,
+              planner_version, trace_schema_version, trace_snapshot_json, trace_digest,
+              result_snapshot_schema_version, result_snapshot_json, result_content_digest,
+              validation_report_json, proposal_id, status, applied_revision_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run.id, run.trip_id, run.base_trip_revision_id, run.intent_revision_id,
+                run.intent_semantic_digest, run.intent_lineage_digest,
+                run.input_schema_version, canonical_json(run.input_snapshot), run.input_digest,
+                run.planner_version, run.trace_schema_version, canonical_json(run.trace_snapshot), run.trace_digest,
+                run.result_snapshot_schema_version, canonical_json(run.result_snapshot), run.result_content_digest,
+                canonical_json(run.validation_report), run.proposal_id, run.status,
+                run.applied_revision_id, run.created_at, run.updated_at,
+            ),
+        )
+
     def _insert_candidate(
         self,
         connection: sqlite3.Connection,
@@ -1291,6 +1389,20 @@ class SQLiteTripRepository:
         if row is None:
             raise MutationProposalNotFoundError(proposal_id)
         return row_to_proposal(row)
+
+    def _get_planner_handoff_run_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        trip_id: str,
+        run_id: str,
+    ) -> PlannerHandoffRunRecord:
+        row = connection.execute(
+            "SELECT * FROM planner_handoff_runs WHERE id = ? AND trip_id = ?",
+            (run_id, trip_id),
+        ).fetchone()
+        if row is None:
+            raise MutationProposalNotFoundError(run_id)
+        return row_to_planner_handoff_run(row)
 
     def _get_candidate_in_connection(
         self,
@@ -1445,6 +1557,33 @@ def row_to_proposal(row: sqlite3.Row) -> TripMutationProposalRecord:
         else None,
         status=row["status"],
         expires_at=row["expires_at"],
+        applied_revision_id=row["applied_revision_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def row_to_planner_handoff_run(row: sqlite3.Row) -> PlannerHandoffRunRecord:
+    return PlannerHandoffRunRecord(
+        id=row["id"],
+        trip_id=row["trip_id"],
+        base_trip_revision_id=row["base_trip_revision_id"],
+        intent_revision_id=row["intent_revision_id"],
+        intent_semantic_digest=row["intent_semantic_digest"],
+        intent_lineage_digest=row["intent_lineage_digest"],
+        input_schema_version=row["input_schema_version"],
+        input_snapshot=json.loads(row["input_snapshot_json"]),
+        input_digest=row["input_digest"],
+        planner_version=row["planner_version"],
+        trace_schema_version=row["trace_schema_version"],
+        trace_snapshot=json.loads(row["trace_snapshot_json"]),
+        trace_digest=row["trace_digest"],
+        result_snapshot_schema_version=row["result_snapshot_schema_version"],
+        result_snapshot=json.loads(row["result_snapshot_json"]),
+        result_content_digest=row["result_content_digest"],
+        validation_report=json.loads(row["validation_report_json"]),
+        proposal_id=row["proposal_id"],
+        status=row["status"],
         applied_revision_id=row["applied_revision_id"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
