@@ -39,6 +39,7 @@ test("typed intent editor serializes boundaries, windows, events, budget, needs,
     endAt: "2026-08-02T16:00",
     timezone: "Asia/Shanghai",
     fixedDay: "2",
+    placeCandidateId: "cand_booking_place",
     locationText: "人民广场",
     flexibility: "fixed",
   }];
@@ -60,6 +61,7 @@ test("typed intent editor serializes boundaries, windows, events, budget, needs,
     crosses_midnight: false,
   });
   assert.equal(payload.fixed_events[0]?.name, "人民广场预约");
+  assert.equal(payload.fixed_events[0]?.place_candidate_id, "cand_booking_place");
   assert.deepEqual(payload.must_candidate_ids, ["cand_must"]);
   assert.equal(payload.budget?.amount_minor, 250000);
   assert.equal(payload.budget?.currency, "CNY");

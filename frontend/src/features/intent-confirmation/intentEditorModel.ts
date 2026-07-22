@@ -27,6 +27,7 @@ export type FixedEventDraft = {
   endAt: string;
   timezone: string;
   fixedDay: string;
+  placeCandidateId: string;
   locationText: string;
   flexibility: "fixed" | "movable_with_confirmation";
 };
@@ -124,6 +125,7 @@ export function formFromIntentEnvelope(envelope: SourceLinkedTripIntentEnvelope 
       endAt: toDateTimeLocal(item.end_at),
       timezone: item.timezone ?? "",
       fixedDay: item.fixed_day ? String(item.fixed_day) : "",
+      placeCandidateId: item.place_candidate_id ?? "",
       locationText: item.location_text ?? "",
       flexibility: item.flexibility,
     })),
@@ -158,6 +160,7 @@ export function buildIntentStructuredOverrides(form: IntentEditForm): IntentStru
     end_at: event.endAt ? toIsoDateTime(event.endAt) : null,
     timezone: event.timezone.trim() || null,
     fixed_day: parseOptionalPositiveInteger(event.fixedDay, "Fixed event day"),
+    place_candidate_id: event.placeCandidateId || null,
     location_text: event.locationText.trim() || null,
     flexibility: event.flexibility,
   }));

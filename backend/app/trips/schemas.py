@@ -19,7 +19,7 @@ from app.schemas import (
     TravelMode,
     TripIntentEnvelope,
 )
-from .models import TripMutationProposalRecord, TripRecord, TripRevisionRecord
+from .models import PlannerHandoffRunRecord, TripMutationProposalRecord, TripRecord, TripRevisionRecord
 from .mutation_commands import TripMutationCommandEnvelope
 
 
@@ -259,6 +259,80 @@ class PersistedMutationApplyResponse(BaseModel):
     impact_summary: dict | None = None
     invalidated_surfaces: list[str] | None = None
     refresh_targets: list[str] | None = None
+    persistence: TripPersistenceInfo
+
+
+class PlannerHandoffRunMetadata(BaseModel):
+    id: str
+    trip_id: str
+    base_trip_revision_id: str
+    intent_revision_id: str
+    intent_semantic_digest: str
+    intent_lineage_digest: str
+    input_schema_version: str
+    input_digest: str
+    planner_version: str
+    trace_schema_version: str
+    trace_digest: str
+    result_content_digest: str
+    status: str
+    proposal_id: str | None = None
+    applied_revision_id: str | None = None
+    created_at: str
+
+    @classmethod
+    def from_record(cls, record: PlannerHandoffRunRecord) -> "PlannerHandoffRunMetadata":
+        return cls(
+            id=record.id,
+            trip_id=record.trip_id,
+            base_trip_revision_id=record.base_trip_revision_id,
+            intent_revision_id=record.intent_revision_id,
+            intent_semantic_digest=record.intent_semantic_digest,
+            intent_lineage_digest=record.intent_lineage_digest,
+            input_schema_version=record.input_schema_version,
+            input_digest=record.input_digest,
+            planner_version=record.planner_version,
+            trace_schema_version=record.trace_schema_version,
+            trace_digest=record.trace_digest,
+            result_content_digest=record.result_content_digest,
+            status=record.status,
+            proposal_id=record.proposal_id,
+            applied_revision_id=record.applied_revision_id,
+            created_at=record.created_at,
+        )
+
+
+class PlannerHandoffPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision_id: str = Field(..., min_length=1)
+    intent_revision_id: str = Field(..., min_length=1)
+
+
+class ApplyPlannerHandoffProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision_id: str = Field(..., min_length=1)
+    intent_revision_id: str = Field(..., min_length=1)
+    proposal_digest: str = Field(..., min_length=1)
+
+
+class PlannerHandoffPreviewResponse(BaseModel):
+    trip: TripMetadata
+    current_revision: TripRevisionMetadata
+    intent_revision_id: str
+    planner_run: PlannerHandoffRunMetadata
+    proposal: MutationProposalMetadata
+    itinerary: ItineraryResponse
+    source_links: list[dict]
+
+
+class PlannerHandoffApplyResponse(BaseModel):
+    trip: TripMetadata
+    current_revision: TripRevisionMetadata
+    intent_revision_id: str
+    planner_run: PlannerHandoffRunMetadata
+    itinerary: ItineraryResponse
     persistence: TripPersistenceInfo
 
 

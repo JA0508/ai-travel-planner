@@ -110,7 +110,13 @@ from .intent_contracts import (
     intent_revision_metadata,
 )
 from .intent_llm_adapter import build_untrusted_llm_intent_proposal
-from .models import ProposalStatus, RevisionSourceType, TripCandidateRecord, TripMutationProposalRecord
+from .models import PlannerHandoffRunRecord, ProposalStatus, RevisionSourceType, TripCandidateRecord, TripMutationProposalRecord
+from .planner_handoff import (
+    PLANNER_HANDOFF_INPUT_SCHEMA_VERSION,
+    attach_handoff_source_links,
+    build_planner_handoff_input,
+    record_handoff_trace_context,
+)
 from .mutation_commands import TripMutationCommandEnvelope, TripMutationEngine, ensure_stable_item_ids
 from .repository import TripRepository
 from .schemas import (
@@ -122,6 +128,11 @@ from .schemas import (
     PersistedMutationApplyResponse,
     PersistedMutationPreviewRequest,
     PersistedMutationPreviewResponse,
+    ApplyPlannerHandoffProposalRequest,
+    PlannerHandoffApplyResponse,
+    PlannerHandoffPreviewRequest,
+    PlannerHandoffPreviewResponse,
+    PlannerHandoffRunMetadata,
     PersistedReplanRequest,
     PersistedReplanPreviewResponse,
     PersistedReplanResponse,
@@ -1145,6 +1156,232 @@ class TripPersistenceService:
             impact_summary=preview.impact_summary,
             invalidated_surfaces=preview.invalidated_surfaces,
             refresh_targets=preview.refresh_targets,
+        )
+
+    def preview_planner_handoff(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        payload: PlannerHandoffPreviewRequest,
+    ) -> PlannerHandoffPreviewResponse:
+        trip = self._require_trip_access(trip_id, capability)
+        if trip.current_revision_id != payload.base_revision_id:
+            raise StaleBaseRevisionError(
+                trip_id=trip_id,
+                provided_base_revision_id=payload.base_revision_id,
+                current_revision_id=trip.current_revision_id,
+            )
+        intent_revision = self.repository.get_intent_revision(
+            trip_id=trip_id,
+            revision_id=payload.intent_revision_id,
+        )
+        latest_intent_revision = self.repository.get_latest_intent_revision(trip_id=trip_id)
+        if latest_intent_revision is None or latest_intent_revision.id != intent_revision.id:
+            raise StaleIntentRevisionError(
+                trip_id=trip_id,
+                provided_intent_revision_id=payload.intent_revision_id,
+                current_intent_revision_id=latest_intent_revision.id if latest_intent_revision else "",
+            )
+        envelope = SourceLinkedTripIntentEnvelope.model_validate(intent_revision.envelope)
+        if envelope.base_trip_revision_id != payload.base_revision_id:
+            raise StaleBaseRevisionError(
+                trip_id=trip_id,
+                provided_base_revision_id=envelope.base_trip_revision_id,
+                current_revision_id=payload.base_revision_id,
+            )
+        handoff_result = build_planner_handoff_input(
+            envelope=envelope,
+            candidates=self.repository.list_candidates(trip_id=trip_id),
+        )
+        run_id = f"planner_handoff_{uuid4().hex}"
+        trace_collector = PlannerTraceCollector(
+            planner_run_id=run_id,
+            input_summary=build_planner_input_snapshot(handoff_result.handoff.itinerary_request),
+            strict=True,
+            volatile_metadata={
+                "handoff_input_digest": handoff_result.handoff.digest,
+                "intent_revision_id": envelope.id,
+                "intent_semantic_digest": handoff_result.handoff.intent_semantic_digest,
+            },
+        )
+        record_handoff_trace_context(
+            trace_collector,
+            handoff=handoff_result.handoff,
+            candidate_links=handoff_result.field_links_by_candidate_id,
+        )
+        itinerary = build_itinerary_response(
+            handoff_result.handoff.itinerary_request,
+            intent_source=TripIntentEnvelopeSource.REGENERATE,
+            trace_collector=trace_collector,
+        )
+        itinerary = attach_handoff_source_links(
+            itinerary,
+            candidate_links=handoff_result.field_links_by_candidate_id,
+            collector=trace_collector,
+        )
+        snapshot = ensure_stable_item_ids(serialize_itinerary_snapshot(itinerary))
+        stored_itinerary = deserialize_itinerary_snapshot(snapshot)
+        trace = trace_collector.build_trace(build_planner_result_summary(stored_itinerary))
+        trace = trace.model_copy(update={"trace_digest": planner_trace_digest(trace)})
+        validation_report = build_mutation_validation_report(itinerary=stored_itinerary, trace=trace)
+        assert_mutation_validation_passed(validation_report)
+        now = self.clock()
+        expires_at = format_utc(now + timedelta(seconds=get_trip_replan_proposal_ttl_seconds()))
+        req_digest = request_digest(
+            {
+                "operation": "planner_intent_handoff_preview",
+                "base_revision_id": payload.base_revision_id,
+                "intent_revision_id": payload.intent_revision_id,
+                "handoff_input_digest": handoff_result.handoff.digest,
+            }
+        )
+        proposal_digest = mutation_proposal_digest(
+            proposal_schema_version=TRIP_MUTATION_PROPOSAL_SCHEMA_VERSION,
+            trip_id=trip_id,
+            base_revision_id=payload.base_revision_id,
+            source_type=RevisionSourceType.PLANNER_INTENT_HANDOFF.value,
+            operation_type="apply_planner_intent_handoff",
+            request_digest=req_digest,
+            preview_snapshot_schema_version=TRIP_SNAPSHOT_SCHEMA_VERSION,
+            preview_content_digest=itinerary_content_digest(snapshot),
+            planner_run_id=run_id,
+            planner_version=trace.planner_version,
+            trace_schema_version=trace.schema_version,
+            trace_digest=trace.trace_digest,
+            validation_report=validation_report,
+            expires_at=expires_at,
+            execution_kind="planner_handoff_snapshot",
+        )
+        proposal = TripMutationProposalRecord(
+            id=generate_proposal_id(),
+            trip_id=trip_id,
+            base_revision_id=payload.base_revision_id,
+            proposal_schema_version=TRIP_MUTATION_PROPOSAL_SCHEMA_VERSION,
+            source_type=RevisionSourceType.PLANNER_INTENT_HANDOFF.value,
+            operation_type="apply_planner_intent_handoff",
+            request_digest=req_digest,
+            instruction_digest=None,
+            preview_snapshot_schema_version=TRIP_SNAPSHOT_SCHEMA_VERSION,
+            preview_snapshot=snapshot,
+            preview_content_digest=itinerary_content_digest(snapshot),
+            proposal_digest=proposal_digest,
+            planner_run_id=run_id,
+            planner_version=trace.planner_version,
+            trace_schema_version=trace.schema_version,
+            trace_digest=trace.trace_digest,
+            validation_report=validation_report,
+            execution_kind="planner_handoff_snapshot",
+            command_schema_version=None,
+            mutation_engine_version=None,
+            mutation_kind=None,
+            commands=None,
+            command_digest=None,
+            impact_summary={"intent_revision_id": envelope.id, "source_link_count": len(handoff_result.handoff.source_links)},
+            invalidated_surfaces=["route_workspace", "trip_readiness", "planner_trace"],
+            status=ProposalStatus.PENDING.value,
+            expires_at=expires_at,
+            applied_revision_id=None,
+            created_at=format_utc(now),
+            updated_at=format_utc(now),
+        )
+        run = PlannerHandoffRunRecord(
+            id=run_id,
+            trip_id=trip_id,
+            base_trip_revision_id=payload.base_revision_id,
+            intent_revision_id=envelope.id,
+            intent_semantic_digest=handoff_result.handoff.intent_semantic_digest,
+            intent_lineage_digest=handoff_result.handoff.intent_lineage_digest,
+            input_schema_version=PLANNER_HANDOFF_INPUT_SCHEMA_VERSION,
+            input_snapshot=handoff_result.handoff.model_dump(mode="json"),
+            input_digest=handoff_result.handoff.digest,
+            planner_version=trace.planner_version,
+            trace_schema_version=trace.schema_version,
+            trace_snapshot=trace.model_dump(mode="json"),
+            trace_digest=trace.trace_digest or "",
+            result_snapshot_schema_version=TRIP_SNAPSHOT_SCHEMA_VERSION,
+            result_snapshot=snapshot,
+            result_content_digest=itinerary_content_digest(snapshot),
+            validation_report=validation_report,
+            proposal_id=proposal.id,
+            status=ProposalStatus.PENDING.value,
+            applied_revision_id=None,
+            created_at=format_utc(now),
+            updated_at=format_utc(now),
+        )
+        run, proposal = self.repository.create_planner_handoff_preview(run=run, proposal=proposal)
+        return PlannerHandoffPreviewResponse(
+            trip=TripMetadata.from_record(trip),
+            current_revision=TripRevisionMetadata.from_record(self.repository.get_revision(trip_id, payload.base_revision_id)),
+            intent_revision_id=envelope.id,
+            planner_run=PlannerHandoffRunMetadata.from_record(run),
+            proposal=MutationProposalMetadata.from_record(proposal),
+            itinerary=stored_itinerary,
+            source_links=[link.model_dump(mode="json") for link in handoff_result.handoff.source_links],
+        )
+
+    def apply_planner_handoff_proposal(
+        self,
+        *,
+        trip_id: str,
+        proposal_id: str,
+        capability: str | None,
+        idempotency_key: str | None,
+        payload: ApplyPlannerHandoffProposalRequest,
+    ) -> PlannerHandoffApplyResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        trip = self._require_trip_access(trip_id, capability)
+        proposal = self.repository.get_mutation_proposal(trip_id=trip_id, proposal_id=proposal_id)
+        if proposal.execution_kind != "planner_handoff_snapshot":
+            raise InvalidRevisionOperationError("Mutation proposal is not a planner handoff proposal.")
+        if payload.base_revision_id != proposal.base_revision_id or payload.proposal_digest != proposal.proposal_digest:
+            raise ProposalDigestMismatchError()
+        run = self.repository.get_planner_handoff_run(trip_id=trip_id, run_id=proposal.planner_run_id or "")
+        if run.intent_revision_id != payload.intent_revision_id:
+            raise ProposalDigestMismatchError()
+        req_digest = request_digest(
+            {
+                "operation": "apply_planner_intent_handoff",
+                "proposal_id": proposal_id,
+                "base_revision_id": payload.base_revision_id,
+                "intent_revision_id": payload.intent_revision_id,
+                "proposal_digest": payload.proposal_digest,
+            }
+        )
+        result = self.repository.apply_mutation_proposal(
+            trip_id=trip_id,
+            capability_hash=trip.capability_hash,
+            proposal_id=proposal_id,
+            base_revision_id=payload.base_revision_id,
+            proposal_digest=payload.proposal_digest,
+            now=format_utc(self.clock()),
+            operation_summary="Applied a deterministic planner run from a confirmed intent contract.",
+            operation_metadata={
+                "operation_type": "apply_planner_intent_handoff",
+                "planner_handoff_run_id": run.id,
+                "intent_revision_id": run.intent_revision_id,
+                "intent_semantic_digest": run.intent_semantic_digest,
+                "intent_lineage_digest": run.intent_lineage_digest,
+                "planner_input_digest": run.input_digest,
+                "trace_digest": run.trace_digest,
+                "proposal_digest": proposal.proposal_digest,
+            },
+            request_digest=req_digest,
+            idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+            expected_intent_revision_id=payload.intent_revision_id,
+        )
+        if result.revision.content_digest != run.result_content_digest:
+            raise PreviewApplyMismatchError()
+        current_trip = self.repository.get_trip(trip_id)
+        applied_run = self.repository.get_planner_handoff_run(trip_id=trip_id, run_id=run.id)
+        return PlannerHandoffApplyResponse(
+            trip=TripMetadata.from_record(current_trip),
+            current_revision=TripRevisionMetadata.from_record(result.revision),
+            intent_revision_id=run.intent_revision_id,
+            planner_run=PlannerHandoffRunMetadata.from_record(applied_run),
+            itinerary=deserialize_itinerary_snapshot(result.revision.itinerary_snapshot),
+            persistence=TripPersistenceInfo(idempotent_replay=result.idempotent_replay),
         )
 
     def apply_replan_proposal(

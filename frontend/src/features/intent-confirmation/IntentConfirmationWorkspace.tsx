@@ -8,10 +8,12 @@ import type { CandidateListResponse, TripCandidate } from "@/features/trip-works
 import type { TripPersistenceState } from "@/features/trip-workspace/tripPersistence";
 import {
   answerIntentClarification,
+  applyPlannerHandoffProposal,
   compileTripIntentEnvelope,
   editTripIntentEnvelope,
   getTripIntentEnvelope,
   listTripIntentEnvelopes,
+  previewPlannerHandoff,
   restoreTripIntentEnvelope,
 } from "./intentApi";
 import {
@@ -31,7 +33,8 @@ import {
   formFromIntentEnvelope,
   type IntentEditForm,
 } from "./intentEditorModel";
-import type { IntentClarification, SourceLinkedTripIntentEnvelope, TripIntentRevisionMetadata } from "./intentTypes";
+import { buildPlannerHandoffApplyIdempotencyKey, canPreviewPlannerHandoff } from "./plannerHandoffModel";
+import type { IntentClarification, PlannerHandoffPreviewResponse, SourceLinkedTripIntentEnvelope, TripIntentRevisionMetadata } from "./intentTypes";
 
 type Props = {
   tripPersistence: TripPersistenceState;
@@ -51,11 +54,14 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
   const [staleEdit, setStaleEdit] = useState(false);
   const [candidates, setCandidates] = useState<TripCandidate[]>([]);
   const [editForm, setEditForm] = useState<IntentEditForm>(emptyIntentEditForm);
+  const [plannerPreview, setPlannerPreview] = useState<PlannerHandoffPreviewResponse | null>(null);
+  const [plannerOperation, setPlannerOperation] = useState<"idle" | "previewing" | "applying">("idle");
   const editorRef = useRef<HTMLDivElement | null>(null);
   const summary = useMemo(() => summarizeIntentEnvelope(envelope), [envelope]);
   const saved = tripPersistence.status === "saved" ? tripPersistence : null;
   const latestIntentRevisionId = latestIntentRevision?.id ?? latestEnvelope?.id ?? null;
   const loadedLatest = !envelope || !latestIntentRevisionId || loadedIntentRevision?.id === latestIntentRevisionId;
+  const canPreviewHandoff = canPreviewPlannerHandoff(envelope, loadedLatest);
 
   useEffect(() => {
     if (!saved) {
@@ -65,6 +71,7 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
       setLatestIntentRevision(null);
       setLoadedIntentRevision(null);
       setEditingBaseIntentRevision(null);
+      setPlannerPreview(null);
       return;
     }
     void refreshHistory(saved.tripId);
@@ -299,6 +306,61 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
     await refreshHistory(saved.tripId);
   }
 
+  async function handlePreviewPlannerHandoff() {
+    if (!saved || !envelope || !canPreviewHandoff) {
+      return;
+    }
+    setPlannerOperation("previewing");
+    setStatus("Building a deterministic execution preview from the confirmed contract...");
+    const result = await previewPlannerHandoff(saved.tripId, {
+      base_revision_id: saved.currentRevisionId,
+      intent_revision_id: envelope.id,
+    });
+    setPlannerOperation("idle");
+    if (!result.ok) {
+      if (result.code === "stale_intent_revision" || result.code === "stale_base_revision") {
+        await refreshHistory(saved.tripId);
+      }
+      setStatus(result.message);
+      return;
+    }
+    setPlannerPreview(result.data);
+    setStatus("Preview is frozen. Apply it to create the next immutable trip revision.");
+  }
+
+  async function handleApplyPlannerHandoff() {
+    if (!saved || !plannerPreview) {
+      return;
+    }
+    setPlannerOperation("applying");
+    const result = await applyPlannerHandoffProposal(
+      saved.tripId,
+      plannerPreview.proposal.id,
+      {
+        base_revision_id: saved.currentRevisionId,
+        intent_revision_id: plannerPreview.intent_revision_id,
+        proposal_digest: plannerPreview.proposal.proposal_digest,
+      },
+      buildPlannerHandoffApplyIdempotencyKey(
+        plannerPreview.proposal.id,
+        plannerPreview.proposal.proposal_digest,
+      ),
+    );
+    setPlannerOperation("idle");
+    if (!result.ok) {
+      if (result.code === "stale_intent_revision" || result.code === "stale_base_revision" || result.code === "stale_mutation_proposal") {
+        await refreshHistory(saved.tripId);
+        setPlannerPreview(null);
+      }
+      setStatus(result.message);
+      return;
+    }
+    setStatus("Applied the server-authoritative execution revision. Reloading the workspace...");
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => window.location.reload(), 150);
+    }
+  }
+
   return (
     <section className="intent-confirmation-workspace" aria-label="Intent Confirmation Workspace">
       <div className="intent-confirmation-workspace__header">
@@ -321,6 +383,13 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
         <div className="intent-confirmation-workspace__body">
           <TypedIntentPreview envelope={envelope} />
           <ReadinessEvidence envelope={envelope} latestRevision={latestIntentRevision} latestEnvelope={latestEnvelope} />
+          <PlannerHandoffPanel
+            canPreview={canPreviewHandoff}
+            preview={plannerPreview}
+            operation={plannerOperation}
+            onPreview={() => void handlePreviewPlannerHandoff()}
+            onApply={() => void handleApplyPlannerHandoff()}
+          />
           <div ref={editorRef}>
             <IntentEditPanel
               form={editForm}
@@ -566,6 +635,46 @@ export function IntentConfirmationWorkspace({ tripPersistence, directUserText }:
   );
 }
 
+function PlannerHandoffPanel({
+  canPreview,
+  preview,
+  operation,
+  onPreview,
+  onApply,
+}: {
+  canPreview: boolean;
+  preview: PlannerHandoffPreviewResponse | null;
+  operation: "idle" | "previewing" | "applying";
+  onPreview: () => void;
+  onApply: () => void;
+}) {
+  return (
+    <div className="intent-confirmation-workspace__panel" data-planner-handoff="true">
+      <strong>Execution handoff</strong>
+      <p>
+        {preview
+          ? `Frozen planner run ${preview.planner_run.id.slice(-8)} links ${preview.source_links.length} confirmed intent fields to this preview.`
+          : "A planner preview is available only from the latest confirmed intent contract."}
+      </p>
+      <div className="intent-confirmation-workspace__answer">
+        <button type="button" onClick={onPreview} disabled={!canPreview || operation !== "idle"}>
+          {operation === "previewing" ? "Preparing…" : "Preview execution"}
+        </button>
+        {preview ? (
+          <button type="button" onClick={onApply} disabled={operation !== "idle" || preview.proposal.status !== "pending"}>
+            {operation === "applying" ? "Applying…" : "Apply execution revision"}
+          </button>
+        ) : null}
+      </div>
+      {preview ? (
+        <p>
+          {preview.itinerary.trip_days} days · trace {preview.planner_run.trace_digest.slice(0, 12)} · preview expires {new Date(preview.proposal.expires_at).toLocaleTimeString()}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function ClarificationCard({
   question,
   answer,
@@ -746,7 +855,7 @@ function IntentEditPanel({
         ))}
       </div>
       <div className="intent-confirmation-workspace__subsection" data-intent-field-path="time.fixed_events">
-        <div className="intent-confirmation-workspace__row-header"><strong>Fixed events</strong><button type="button" disabled={disabled} onClick={() => onChange({ ...form, fixedEvents: [...form.fixedEvents, { id: `event-${Date.now()}`, title: "", startAt: "", endAt: "", timezone: form.timezone, fixedDay: "", locationText: "", flexibility: "fixed" }] })}>Add event</button></div>
+        <div className="intent-confirmation-workspace__row-header"><strong>Fixed events</strong><button type="button" disabled={disabled} onClick={() => onChange({ ...form, fixedEvents: [...form.fixedEvents, { id: `event-${Date.now()}`, title: "", startAt: "", endAt: "", timezone: form.timezone, fixedDay: "", placeCandidateId: "", locationText: "", flexibility: "fixed" }] })}>Add event</button></div>
         {form.fixedEvents.map((event) => (
           <div className="intent-confirmation-workspace__event" key={event.id}>
             <input aria-label="Fixed event title" disabled={disabled} value={event.title} onChange={(input) => updateEvent(event.id, "title", input.target.value)} placeholder="Event title" />
@@ -754,6 +863,10 @@ function IntentEditPanel({
             <input type="datetime-local" aria-label="Fixed event end" disabled={disabled} value={event.endAt} onChange={(input) => updateEvent(event.id, "endAt", input.target.value)} />
             <input aria-label="Fixed event timezone" disabled={disabled} value={event.timezone} onChange={(input) => updateEvent(event.id, "timezone", input.target.value)} placeholder="Timezone" />
             <input inputMode="numeric" aria-label="Fixed event day" disabled={disabled} value={event.fixedDay} onChange={(input) => updateEvent(event.id, "fixedDay", input.target.value)} placeholder="Day" />
+            <select aria-label="Verified fixed event place" disabled={disabled} value={event.placeCandidateId} onChange={(input) => updateEvent(event.id, "placeCandidateId", input.target.value)}>
+              <option value="">No verified place selected</option>
+              {eligibleCandidates.filter((candidate) => candidate.coordinates && candidate.location_state === "known").map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.display_name}</option>)}
+            </select>
             <input aria-label="Fixed event location" disabled={disabled} value={event.locationText} onChange={(input) => updateEvent(event.id, "locationText", input.target.value)} placeholder="Location" />
             <select aria-label="Fixed event flexibility" disabled={disabled} value={event.flexibility} onChange={(input) => updateEvent(event.id, "flexibility", input.target.value)}><option value="fixed">Fixed</option><option value="movable_with_confirmation">Movable with confirmation</option></select>
             <button type="button" disabled={disabled} onClick={() => onChange({ ...form, fixedEvents: form.fixedEvents.filter((item) => item.id !== event.id) })}>Remove</button>

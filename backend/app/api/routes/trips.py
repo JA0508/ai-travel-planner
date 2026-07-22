@@ -43,12 +43,16 @@ from app.trips.intent_contracts import (
 )
 from app.trips.schemas import (
     ApplyPersistedMutationProposalRequest,
+    ApplyPlannerHandoffProposalRequest,
     ApplyPersistedReplanProposalRequest,
     PersistedCompletionTaskActionRequest,
     PersistedCompletionTaskActionResponse,
     PersistedMutationApplyResponse,
     PersistedMutationPreviewRequest,
     PersistedMutationPreviewResponse,
+    PlannerHandoffApplyResponse,
+    PlannerHandoffPreviewRequest,
+    PlannerHandoffPreviewResponse,
     PersistedReplanRequest,
     PersistedReplanPreviewResponse,
     PersistedReplanResponse,
@@ -661,6 +665,54 @@ def apply_persisted_completion_task(
     try:
         return get_trip_persistence_service().apply_completion_task(
             trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/planner-handoff/preview",
+    response_model=PlannerHandoffPreviewResponse,
+)
+def preview_planner_handoff(
+    trip_id: str,
+    payload: PlannerHandoffPreviewRequest,
+    request: Request,
+) -> PlannerHandoffPreviewResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().preview_planner_handoff(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/planner-handoff/proposals/{proposal_id}/apply",
+    response_model=PlannerHandoffApplyResponse,
+)
+def apply_planner_handoff_proposal(
+    trip_id: str,
+    proposal_id: str,
+    payload: ApplyPlannerHandoffProposalRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> PlannerHandoffApplyResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().apply_planner_handoff_proposal(
+            trip_id=trip_id,
+            proposal_id=proposal_id,
             capability=get_trip_capability_from_request(request, trip_id),
             idempotency_key=x_idempotency_key,
             payload=payload,
