@@ -481,7 +481,7 @@ function clarificationInputKind(code: string): "destination" | "trip_days" | "da
   if (["destination_missing", "missing_destination", "destination_conflict"].includes(code)) return "destination";
   if (["trip_length_missing", "missing_trip_length", "trip_dates_missing"].includes(code)) return "trip_days";
   if (code === "relative_date_requires_anchor") return "date_range";
-  if (code === "date_conflict") return "date_choice";
+  if (["date_conflict", "date_range_conflict", "date_invalid"].includes(code)) return "date_choice";
   return null;
 }
 
