@@ -60,6 +60,7 @@ class TripMetadata(BaseModel):
     revision_count: int
     lifecycle_status: str
     planning_phase: str = "planned"
+    draft_version: int = 0
     created_at: str
     updated_at: str
 
@@ -71,6 +72,7 @@ class TripMetadata(BaseModel):
             revision_count=record.revision_count,
             lifecycle_status=record.lifecycle_status,
             planning_phase=record.planning_phase,
+            draft_version=record.draft_version,
             created_at=record.created_at,
             updated_at=record.updated_at,
         )
@@ -162,6 +164,26 @@ class PrePlanIntentCompileResponse(BaseModel):
     envelope: dict
     revision: DraftIntentRevisionMetadata
     idempotent_replay: bool = False
+
+
+class DraftIntentEditResponse(BaseModel):
+    draft_trip_id: str
+    draft_version: int
+    previous_intent_revision_id: str
+    latest_intent_revision_id: str
+    intent_revision_number: int
+    changed: bool
+    idempotent_replay: bool = False
+    readiness: str
+    issue_summary: list[str] = Field(default_factory=list)
+    envelope: dict
+    revision: DraftIntentRevisionMetadata
+
+
+class PrePlanIntentLatestResponse(BaseModel):
+    trip: TripMetadata
+    envelope: dict
+    revision: DraftIntentRevisionMetadata
 
 
 class PrePlanHandoffPreviewRequest(BaseModel):

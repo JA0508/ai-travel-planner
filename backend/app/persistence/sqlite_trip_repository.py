@@ -38,6 +38,7 @@ from app.trips.errors import (
     ProposalIntegrityViolationError,
     RevisionNotFoundError,
     StaleBaseRevisionError,
+    StaleDraftRevisionError,
     StaleIntentRevisionError,
     StaleMutationProposalError,
     TripAccessDeniedError,
@@ -48,6 +49,7 @@ from app.trips.models import (
     CandidateRegistrationResult,
     CreateRevisionResult,
     DraftIntentRevisionRecord,
+    DraftIntentEditResult,
     ProposalStatus,
     RevisionSourceType,
     TripCandidateDecisionRecord,
@@ -294,12 +296,108 @@ class SQLiteTripRepository:
             connection.execute(
                 """
                 INSERT INTO draft_intent_idempotency_records(trip_id, idempotency_key_hash, request_digest,
-                  result_draft_intent_revision_id, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                  result_draft_intent_revision_id, created_at, changed, result_draft_version)
+                VALUES (?, ?, ?, ?, ?, 1, ?)
                 """,
-                (stored.trip_id, idempotency_key_hash, request_digest, stored.id, stored.created_at),
+                (stored.trip_id, idempotency_key_hash, request_digest, stored.id, stored.created_at, int(trip["draft_version"]) + 1),
+            )
+            connection.execute(
+                "UPDATE trips SET draft_version = draft_version + 1, updated_at = ? WHERE id = ?",
+                (revision.created_at, stored.trip_id),
             )
             return stored, False
+
+    def edit_draft_intent_revision(
+        self,
+        *,
+        revision: DraftIntentRevisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+        expected_parent_draft_intent_revision_id: str,
+        expected_draft_version: int,
+        operation: str,
+    ) -> DraftIntentEditResult:
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM draft_intent_idempotency_records WHERE trip_id = ? AND idempotency_key_hash = ?",
+                (revision.trip_id, idempotency_key_hash),
+            ).fetchone()
+            if existing is not None:
+                if existing["request_digest"] != request_digest:
+                    raise IdempotencyConflictError()
+                stored = self._get_draft_intent_revision_in_connection(connection, revision.trip_id, existing["result_draft_intent_revision_id"])
+                return DraftIntentEditResult(
+                    revision=stored,
+                    previous_intent_revision_id=stored.parent_draft_intent_revision_id or stored.id,
+                    draft_version=int(existing["result_draft_version"]),
+                    changed=bool(existing["changed"]),
+                    idempotent_replay=True,
+                )
+            trip = connection.execute("SELECT * FROM trips WHERE id = ?", (revision.trip_id,)).fetchone()
+            if trip is None:
+                raise TripNotFoundError(revision.trip_id)
+            if trip["planning_phase"] != TripPlanningPhase.DRAFT.value or trip["current_revision_id"] is not None:
+                raise StaleBaseRevisionError(trip_id=revision.trip_id, provided_base_revision_id="", current_revision_id=trip["current_revision_id"] or "")
+            if int(trip["draft_version"]) != expected_draft_version:
+                raise StaleDraftRevisionError(trip_id=revision.trip_id, provided_draft_version=expected_draft_version, current_draft_version=int(trip["draft_version"]))
+            latest = connection.execute(
+                "SELECT * FROM draft_intent_revisions WHERE trip_id = ? ORDER BY revision_number DESC LIMIT 1",
+                (revision.trip_id,),
+            ).fetchone()
+            latest_id = latest["id"] if latest else None
+            if latest_id != expected_parent_draft_intent_revision_id:
+                raise StaleIntentRevisionError(trip_id=revision.trip_id, provided_intent_revision_id=expected_parent_draft_intent_revision_id, current_intent_revision_id=latest_id or "")
+            if latest is None:
+                raise StaleIntentRevisionError(trip_id=revision.trip_id, provided_intent_revision_id=expected_parent_draft_intent_revision_id, current_intent_revision_id="")
+            parent = self._get_draft_intent_revision_in_connection(connection, revision.trip_id, latest_id)
+            parent_envelope = SourceLinkedTripIntentEnvelope.model_validate(parent.envelope)
+            finalized = finalize_intent_envelope_for_revision(
+                SourceLinkedTripIntentEnvelope.model_validate(revision.envelope),
+                revision_id=revision.id,
+                revision_number=int(latest["revision_number"]) + 1,
+                base_trip_revision_id=None,
+                parent_intent_revision_id=latest_id,
+                parent_lineage_digest=parent_envelope.lineage_digest,
+                operation=operation,
+                restore_source_revision_id=None,
+                created_at=revision.created_at,
+            )
+            if finalized.semantic_digest == parent_envelope.semantic_digest:
+                connection.execute(
+                    """INSERT INTO draft_intent_idempotency_records(trip_id, idempotency_key_hash, request_digest,
+                    result_draft_intent_revision_id, created_at, changed, result_draft_version) VALUES (?, ?, ?, ?, ?, 0, ?)""",
+                    (revision.trip_id, idempotency_key_hash, request_digest, parent.id, revision.created_at, int(trip["draft_version"])),
+                )
+                return DraftIntentEditResult(parent, parent.id, int(trip["draft_version"]), False)
+            stored = DraftIntentRevisionRecord(
+                id=revision.id,
+                trip_id=revision.trip_id,
+                revision_number=finalized.revision_number,
+                parent_draft_intent_revision_id=latest_id,
+                envelope_schema_version=revision.envelope_schema_version,
+                envelope=finalized.model_dump(mode="json"),
+                content_digest=finalized.content_digest,
+                compiler_version=revision.compiler_version,
+                source_digest=revision.source_digest,
+                validation_report=finalized.validation_report,
+                created_at=revision.created_at,
+            )
+            connection.execute(
+                """INSERT INTO draft_intent_revisions(id, trip_id, revision_number, parent_draft_intent_revision_id,
+                envelope_schema_version, envelope_json, content_digest, compiler_version, source_digest, validation_report_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (stored.id, stored.trip_id, stored.revision_number, stored.parent_draft_intent_revision_id,
+                 stored.envelope_schema_version, canonical_json(stored.envelope), stored.content_digest,
+                 stored.compiler_version, stored.source_digest, canonical_json(stored.validation_report), stored.created_at),
+            )
+            next_version = int(trip["draft_version"]) + 1
+            connection.execute("UPDATE trips SET draft_version = ?, updated_at = ? WHERE id = ?", (next_version, revision.created_at, revision.trip_id))
+            connection.execute(
+                """INSERT INTO draft_intent_idempotency_records(trip_id, idempotency_key_hash, request_digest,
+                result_draft_intent_revision_id, created_at, changed, result_draft_version) VALUES (?, ?, ?, ?, ?, 1, ?)""",
+                (revision.trip_id, idempotency_key_hash, request_digest, stored.id, revision.created_at, next_version),
+            )
+            return DraftIntentEditResult(stored, latest_id, next_version, True)
 
     def get_draft_intent_revision(self, *, trip_id: str, revision_id: str) -> DraftIntentRevisionRecord:
         with closing(self.connection_factory()) as connection:
@@ -1738,6 +1836,7 @@ def row_to_trip(row: sqlite3.Row) -> TripRecord:
         capability_hash=row["capability_hash"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        draft_version=row["draft_version"],
     )
 
 

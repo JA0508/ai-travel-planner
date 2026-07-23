@@ -6069,6 +6069,7 @@ function EditorialHeroField({
             <textarea
               className="ec-home-textarea"
               id="trip-text"
+              aria-label="旅行需求"
               rows={5}
               value={tripText}
               onChange={(event) => onTripTextChange(event.target.value)}

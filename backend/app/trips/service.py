@@ -80,6 +80,9 @@ from .errors import (
     RevisionNotUndoableError,
     SnapshotSchemaUnsupportedError,
     StaleBaseRevisionError,
+    ClarificationAlreadyResolvedError,
+    DraftIntentEditError,
+    StaleDraftRevisionError,
     StaleIntentRevisionError,
     StaleMutationProposalError,
     TripAccessDeniedError,
@@ -108,6 +111,13 @@ from .intent_contracts import (
     compile_source_linked_intent,
     finalize_intent_envelope_for_revision,
     intent_revision_metadata,
+)
+from .draft_intent_edits import (
+    DraftClarificationResolveRequest,
+    DraftIntentEditRequest,
+    DraftIntentEditValidationError,
+    apply_operations_to_overrides,
+    clarification_answer_to_operation,
 )
 from .intent_llm_adapter import build_untrusted_llm_intent_proposal
 from .models import (
@@ -141,6 +151,8 @@ from .schemas import (
     DraftTripCreateResponse,
     DraftTripDetailResponse,
     DraftIntentRevisionMetadata,
+    DraftIntentEditResponse,
+    PrePlanIntentLatestResponse,
     PrePlanHandoffApplyRequest,
     PrePlanHandoffApplyResponse,
     PrePlanHandoffPreviewRequest,
@@ -310,6 +322,196 @@ class TripPersistenceService:
             expected_parent_draft_intent_revision_id=parent_id,
         )
         return PrePlanIntentCompileResponse(envelope=stored.envelope, revision=DraftIntentRevisionMetadata.from_record(stored), idempotent_replay=replay)
+
+    def edit_draft_intent(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        idempotency_key: str | None,
+        payload: DraftIntentEditRequest,
+    ) -> DraftIntentEditResponse:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        trip = self._require_trip_access(trip_id, capability)
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+            raise InvalidRevisionOperationError("Draft intent edits are only available while the trip is a draft.")
+        parent = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+        if parent is None:
+            raise DraftIntentEditError("intent_edit_no_longer_applicable")
+        try:
+            parent_envelope = SourceLinkedTripIntentEnvelope.model_validate(parent.envelope)
+            overrides = apply_operations_to_overrides(parent_envelope, payload.operations)
+        except DraftIntentEditValidationError as exc:
+            raise DraftIntentEditError(exc.code) from exc
+        candidate_ids = sorted({
+            *overrides.must_candidate_ids,
+            *overrides.optional_candidate_ids,
+            *overrides.avoid_candidate_ids,
+            *(event.place_candidate_id for event in overrides.fixed_events if event.place_candidate_id),
+        })
+        candidates, states, preferences = self._intent_candidate_context(
+            trip_id,
+            CompileTripIntentRequest(base_intent_revision_id=parent.id, candidate_ids=candidate_ids, structured_overrides=overrides),
+        )
+        refs, verification = self._verified_candidate_source_refs(trip_id, candidates)
+        self._validate_draft_edit_candidates(candidate_ids, states, verification)
+        now = format_utc(self.clock())
+        compiler_request = CompileTripIntentRequest(
+            base_intent_revision_id=parent.id,
+            candidate_ids=candidate_ids,
+            structured_overrides=overrides,
+        )
+        parser_result = IntentProposalParseResult(
+            status="success",
+            proposal=None,
+            parser_name="draft_intent_typed_editor",
+            parser_version=TRIP_INTENT_COMPILER_VERSION,
+            warning_codes=[],
+        )
+        envelope = compile_source_linked_intent(
+            trip_id=trip_id,
+            base_revision_id=None,
+            parent_intent_revision_id=parent.id,
+            next_revision_number=0,
+            created_at=now,
+            request=compiler_request,
+            parser_result=parser_result,
+            existing_trip_snapshot={},
+            parent_intent_snapshot=parent.envelope,
+            candidates=candidates,
+            candidate_workflow_states=states,
+            candidate_preferences=preferences,
+            verified_candidate_source_refs=refs,
+            candidate_verification_states=verification,
+        )
+        operation_names = [operation.operation for operation in payload.operations]
+        envelope.validation_report.update({
+            "preplan_contract": True,
+            "draft_intent_edit": True,
+            "draft_intent_edit_operations": operation_names,
+            "parser_calls": 0,
+            "llm_calls": 0,
+            "planner_calls": 0,
+            "preview_created": 0,
+            "trip_revision_created": 0,
+            "itinerary_mutations": 0,
+        })
+        if payload.clarification_resolution_id:
+            envelope.validation_report["clarification_resolution"] = {
+                "question_id": payload.clarification_resolution_id,
+                "resolved_from_draft_intent_revision_id": parent.id,
+            }
+        record = DraftIntentRevisionRecord(
+            id=envelope.id,
+            trip_id=trip_id,
+            revision_number=0,
+            parent_draft_intent_revision_id=parent.id,
+            envelope_schema_version=TRIP_INTENT_ENVELOPE_SCHEMA_VERSION,
+            envelope=envelope.model_dump(mode="json"),
+            content_digest=envelope.content_digest,
+            compiler_version=TRIP_INTENT_COMPILER_VERSION,
+            source_digest=envelope.source_digest,
+            validation_report=envelope.validation_report,
+            created_at=now,
+        )
+        result = self.repository.edit_draft_intent_revision(
+            revision=record,
+            request_digest=request_digest({
+                "operation": "draft_intent_edit",
+                "trip_id": trip_id,
+                "base_intent_revision_id": payload.base_intent_revision_id,
+                "base_draft_version": payload.base_draft_version,
+                "operations": [operation.model_dump(mode="json") for operation in payload.operations],
+                "clarification_resolution_id": payload.clarification_resolution_id,
+            }),
+            idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+            expected_parent_draft_intent_revision_id=payload.base_intent_revision_id,
+            expected_draft_version=payload.base_draft_version,
+            operation=(
+                f"draft_intent_clarification:{payload.clarification_resolution_id}:"
+                if payload.clarification_resolution_id
+                else "draft_intent_edit:"
+            ) + ",".join(operation_names),
+        )
+        stored_envelope = SourceLinkedTripIntentEnvelope.model_validate(result.revision.envelope)
+        issue_summary = list(stored_envelope.readiness_policy.blocking_reason_codes) if stored_envelope.readiness_policy else []
+        return DraftIntentEditResponse(
+            draft_trip_id=trip_id,
+            draft_version=result.draft_version,
+            previous_intent_revision_id=result.previous_intent_revision_id,
+            latest_intent_revision_id=result.revision.id,
+            intent_revision_number=result.revision.revision_number,
+            changed=result.changed,
+            idempotent_replay=result.idempotent_replay,
+            readiness=stored_envelope.planner_ready_status.value,
+            issue_summary=issue_summary,
+            envelope=result.revision.envelope,
+            revision=DraftIntentRevisionMetadata.from_record(result.revision),
+        )
+
+    def get_latest_preplan_intent(self, *, trip_id: str, capability: str | None) -> PrePlanIntentLatestResponse:
+        trip = self._require_trip_access(trip_id, capability)
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+            raise InvalidRevisionOperationError("Pre-plan intent is only available while the trip is a draft.")
+        revision = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+        if revision is None:
+            raise DraftIntentEditError("intent_edit_no_longer_applicable")
+        return PrePlanIntentLatestResponse(
+            trip=TripMetadata.from_record(trip),
+            envelope=revision.envelope,
+            revision=DraftIntentRevisionMetadata.from_record(revision),
+        )
+
+    def resolve_draft_intent_clarification(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        question_id: str,
+        idempotency_key: str | None,
+        payload: DraftClarificationResolveRequest,
+    ) -> DraftIntentEditResponse:
+        self._require_trip_access(trip_id, capability)
+        # Resolve against the requested immutable revision. The shared edit
+        # transaction checks idempotency before stale state, preserving safe retries.
+        parent = self.repository.get_draft_intent_revision(
+            trip_id=trip_id,
+            revision_id=payload.base_intent_revision_id,
+        )
+        envelope = SourceLinkedTripIntentEnvelope.model_validate(parent.envelope)
+        question = next((item for item in envelope.clarification_queue if item.question_id == question_id), None)
+        if question is None:
+            raise ClarificationAlreadyResolvedError()
+        if not question.blocking or question.resolution_kind.value not in {"inline_answer", "edit_contract"}:
+            raise DraftIntentEditError("clarification_not_editable")
+        operation = clarification_answer_to_operation(payload.answer)
+        try:
+            return self.edit_draft_intent(
+                trip_id=trip_id,
+                capability=capability,
+                idempotency_key=idempotency_key,
+                payload=DraftIntentEditRequest(
+                    base_intent_revision_id=payload.base_intent_revision_id,
+                    base_draft_version=payload.base_draft_version,
+                    operations=[operation],
+                    clarification_resolution_id=question_id,
+                ),
+            )
+        except (StaleIntentRevisionError, StaleDraftRevisionError):
+            latest = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+            if latest is not None:
+                latest_envelope = SourceLinkedTripIntentEnvelope.model_validate(latest.envelope)
+                if not any(item.question_id == question_id for item in latest_envelope.clarification_queue):
+                    raise ClarificationAlreadyResolvedError() from None
+            raise
+
+    def _validate_draft_edit_candidates(self, candidate_ids: list[str], states: dict[str, str], verification: dict[str, str]) -> None:
+        for candidate_id in candidate_ids:
+            if states.get(candidate_id) in {"rejected", "deferred"}:
+                raise DraftIntentEditError("candidate_not_eligible")
+            if verification.get(candidate_id) == "legacy_unverified":
+                raise DraftIntentEditError("candidate_provenance_invalid")
 
     def preview_preplan_handoff(self, *, trip_id: str, capability: str | None, payload: PrePlanHandoffPreviewRequest) -> PrePlanHandoffPreviewResponse:
         trip = self._require_trip_access(trip_id, capability)

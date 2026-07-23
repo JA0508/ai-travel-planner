@@ -8,6 +8,7 @@ from .models import (
     CandidateRegistrationResult,
     CreateRevisionResult,
     DraftIntentRevisionRecord,
+    DraftIntentEditResult,
     PrePlanHandoffRunRecord,
     TripAggregate,
     TripCandidateDecisionRecord,
@@ -61,6 +62,18 @@ class TripRepository(Protocol):
         idempotency_key_hash: str,
         expected_parent_draft_intent_revision_id: str | None,
     ) -> tuple[DraftIntentRevisionRecord, bool]:
+        ...
+
+    def edit_draft_intent_revision(
+        self,
+        *,
+        revision: DraftIntentRevisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+        expected_parent_draft_intent_revision_id: str,
+        expected_draft_version: int,
+        operation: str,
+    ) -> DraftIntentEditResult:
         ...
 
     def get_draft_intent_revision(self, *, trip_id: str, revision_id: str) -> DraftIntentRevisionRecord:
