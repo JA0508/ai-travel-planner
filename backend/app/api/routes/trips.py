@@ -44,6 +44,14 @@ from app.trips.intent_contracts import (
 from app.trips.schemas import (
     ApplyPersistedMutationProposalRequest,
     ApplyPlannerHandoffProposalRequest,
+    DraftTripCreateRequest,
+    DraftTripCreateResponse,
+    DraftTripDetailResponse,
+    PrePlanHandoffApplyRequest,
+    PrePlanHandoffApplyResponse,
+    PrePlanHandoffPreviewRequest,
+    PrePlanHandoffPreviewResponse,
+    PrePlanIntentCompileResponse,
     ApplyPersistedReplanProposalRequest,
     PersistedCompletionTaskActionRequest,
     PersistedCompletionTaskActionResponse,
@@ -68,6 +76,38 @@ from app.trips.schemas import (
 )
 
 router = APIRouter(prefix="/trips", tags=["trips"])
+
+
+@router.post("/drafts", response_model=DraftTripCreateResponse, status_code=status.HTTP_201_CREATED)
+def create_draft_trip(
+    payload: DraftTripCreateRequest,
+    response: Response,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> DraftTripCreateResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        result = get_trip_persistence_service().create_draft_trip(
+            direct_user_text=payload.direct_user_text,
+            idempotency_key=x_idempotency_key,
+        )
+        set_trip_capability_cookie(response, result.response.trip.id, result.capability)
+        return result.response
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get("/{trip_id}/draft", response_model=DraftTripDetailResponse)
+def get_draft_trip(trip_id: str, request: Request) -> DraftTripDetailResponse | JSONResponse:
+    try:
+        return get_trip_persistence_service().get_draft_trip(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
 
 
 @router.post("/plan", response_model=TripPlanResponse, status_code=status.HTTP_201_CREATED)
@@ -182,6 +222,73 @@ def compile_trip_intent_envelope(
     try:
         return get_trip_persistence_service().compile_intent_envelope(
             trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/preplan-intent/compile",
+    response_model=PrePlanIntentCompileResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def compile_preplan_intent_envelope(
+    trip_id: str,
+    payload: CompileTripIntentRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> PrePlanIntentCompileResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().compile_draft_intent_envelope(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key,
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post("/{trip_id}/preplan-handoff/preview", response_model=PrePlanHandoffPreviewResponse)
+def preview_preplan_handoff(
+    trip_id: str,
+    payload: PrePlanHandoffPreviewRequest,
+    request: Request,
+) -> PrePlanHandoffPreviewResponse | JSONResponse:
+    try:
+        return get_trip_persistence_service().preview_preplan_handoff(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/preplan-handoff/runs/{run_id}/apply",
+    response_model=PrePlanHandoffApplyResponse,
+)
+def apply_preplan_handoff(
+    trip_id: str,
+    run_id: str,
+    payload: PrePlanHandoffApplyRequest,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> PrePlanHandoffApplyResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().apply_preplan_handoff(
+            trip_id=trip_id,
+            run_id=run_id,
             capability=get_trip_capability_from_request(request, trip_id),
             idempotency_key=x_idempotency_key,
             payload=payload,

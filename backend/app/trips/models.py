@@ -10,6 +10,13 @@ class TripLifecycleStatus(str, Enum):
     ARCHIVED = "archived"
 
 
+class TripPlanningPhase(str, Enum):
+    """Whether a trip has an executable itinerary revision yet."""
+
+    DRAFT = "draft"
+    PLANNED = "planned"
+
+
 class RevisionSourceType(str, Enum):
     PLANNER_GENERATION = "planner_generation"
     PLANNER_REGENERATION = "planner_regeneration"
@@ -37,9 +44,10 @@ class ProposalStatus(str, Enum):
 @dataclass(slots=True)
 class TripRecord:
     id: str
-    current_revision_id: str
+    current_revision_id: str | None
     revision_count: int
     lifecycle_status: str
+    planning_phase: str
     capability_hash: str
     created_at: str
     updated_at: str
@@ -146,6 +154,48 @@ class PlannerHandoffRunRecord:
 class TripAggregate:
     trip: TripRecord
     current_revision: TripRevisionRecord
+
+
+@dataclass(slots=True)
+class DraftIntentRevisionRecord:
+    """An immutable intent contract that intentionally predates Revision 1."""
+
+    id: str
+    trip_id: str
+    revision_number: int
+    parent_draft_intent_revision_id: str | None
+    envelope_schema_version: str
+    envelope: dict[str, Any]
+    content_digest: str
+    compiler_version: str
+    source_digest: str
+    validation_report: dict[str, Any]
+    created_at: str
+
+
+@dataclass(slots=True)
+class PrePlanHandoffRunRecord:
+    """A frozen, reviewable planner result for a Draft Trip."""
+
+    id: str
+    trip_id: str
+    draft_intent_revision_id: str
+    intent_semantic_digest: str
+    intent_lineage_digest: str
+    input_snapshot: dict[str, Any]
+    input_digest: str
+    planner_version: str
+    trace_schema_version: str
+    trace_snapshot: dict[str, Any]
+    trace_digest: str
+    result_snapshot: dict[str, Any]
+    result_content_digest: str
+    validation_report: dict[str, Any]
+    status: str
+    expires_at: str
+    applied_revision_id: str | None
+    created_at: str
+    updated_at: str
 
 
 @dataclass(slots=True)

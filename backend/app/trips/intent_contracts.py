@@ -832,7 +832,7 @@ class SourceLinkedTripIntentEnvelope(BaseModel):
     schema_version: str = TRIP_INTENT_ENVELOPE_SCHEMA_VERSION
     revision_number: int
     trip_id: str
-    base_trip_revision_id: str
+    base_trip_revision_id: str | None = None
     parent_intent_revision_id: str | None = None
     compiler_version: str = TRIP_INTENT_COMPILER_VERSION
     fields: list[IntentField] = Field(default_factory=list)
@@ -963,9 +963,8 @@ class UntrustedIntentProposal(BaseModel):
 class CompileTripIntentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    base_trip_revision_id: str = Field(
-        ...,
-        min_length=1,
+    base_trip_revision_id: str | None = Field(
+        default=None,
         validation_alias=AliasChoices("base_trip_revision_id", "base_revision_id"),
     )
     base_intent_revision_id: str | None = Field(..., min_length=1)
@@ -976,54 +975,51 @@ class CompileTripIntentRequest(BaseModel):
     use_llm_proposal_adapter: bool = False
 
     @property
-    def base_revision_id(self) -> str:
+    def base_revision_id(self) -> str | None:
         return self.base_trip_revision_id
 
 
 class EditTripIntentEnvelopeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    base_trip_revision_id: str = Field(
-        ...,
-        min_length=1,
+    base_trip_revision_id: str | None = Field(
+        default=None,
         validation_alias=AliasChoices("base_trip_revision_id", "base_revision_id"),
     )
     base_intent_revision_id: str = Field(..., min_length=1)
     field_updates: IntentStructuredOverrides
 
     @property
-    def base_revision_id(self) -> str:
+    def base_revision_id(self) -> str | None:
         return self.base_trip_revision_id
 
 
 class AnswerIntentClarificationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    base_trip_revision_id: str = Field(
-        ...,
-        min_length=1,
+    base_trip_revision_id: str | None = Field(
+        default=None,
         validation_alias=AliasChoices("base_trip_revision_id", "base_revision_id"),
     )
     base_intent_revision_id: str = Field(..., min_length=1)
     answer: str | int | bool | list[str] | IntentFixedEventValue | IntentBudgetValue
 
     @property
-    def base_revision_id(self) -> str:
+    def base_revision_id(self) -> str | None:
         return self.base_trip_revision_id
 
 
 class RestoreTripIntentEnvelopeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    base_trip_revision_id: str = Field(
-        ...,
-        min_length=1,
+    base_trip_revision_id: str | None = Field(
+        default=None,
         validation_alias=AliasChoices("base_trip_revision_id", "base_revision_id"),
     )
     base_intent_revision_id: str = Field(..., min_length=1)
 
     @property
-    def base_revision_id(self) -> str:
+    def base_revision_id(self) -> str | None:
         return self.base_trip_revision_id
 
 
@@ -1031,7 +1027,7 @@ class TripIntentRevisionMetadata(BaseModel):
     id: str
     trip_id: str
     revision_number: int
-    base_trip_revision_id: str
+    base_trip_revision_id: str | None = None
     parent_intent_revision_id: str | None = None
     envelope_schema_version: str
     compiler_version: str
@@ -1158,7 +1154,7 @@ def _structured_override_field_paths(overrides: IntentStructuredOverrides) -> se
 def compile_source_linked_intent(
     *,
     trip_id: str,
-    base_revision_id: str,
+    base_revision_id: str | None,
     parent_intent_revision_id: str | None,
     next_revision_number: int,
     created_at: str,
@@ -3339,7 +3335,7 @@ def _build_semantic_digest(
 
 def _build_intent_lineage_digest(
     *,
-    base_revision_id: str,
+    base_revision_id: str | None,
     parent_intent_revision_id: str | None,
     semantic_digest: str,
     formal_contract: FormalTripIntentContract,
@@ -3372,7 +3368,7 @@ def finalize_intent_envelope_for_revision(
     *,
     revision_id: str,
     revision_number: int,
-    base_trip_revision_id: str,
+    base_trip_revision_id: str | None,
     parent_intent_revision_id: str | None,
     parent_lineage_digest: str | None,
     operation: str,

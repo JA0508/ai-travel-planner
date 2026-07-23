@@ -2,7 +2,7 @@
 
 ## Current phase
 
-F-004b Planner Intent Handoff — in review.
+F-001c Draft Trip and Pre-Plan Intent Workspace — in progress.
 
 ## Recently completed and merged
 
@@ -13,6 +13,7 @@ F-004b Planner Intent Handoff — in review.
 - F-004a.1 Typed Intent, Provenance and Concurrency Hardening
 - F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure
 - F-004a.3 Completion Integrity Repair
+- F-004b Planner Intent Handoff
 
 The completed document extraction path now supports:
 
@@ -56,6 +57,7 @@ The completed document extraction path now supports:
 - F-004a.1 Typed Intent, Provenance and Concurrency Hardening
 - F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure
 - F-004a.3 Completion Integrity Repair
+- F-004b Planner Intent Handoff
 
 ## Known technical debt
 
@@ -68,7 +70,7 @@ The completed document extraction path now supports:
   candidate-to-import lineage, fails closed for legacy-unverified candidates,
   exercises real immutable revision and SQLite race scenarios, and hands
   provenance nodes back to the existing private Import Review workspace.
-- F-004b is in review. It introduces a narrow, server-authoritative handoff
+- F-004b is merged. It introduces a narrow, server-authoritative handoff
   from the latest verified `TripIntentEnvelope` to a frozen deterministic
   planner preview and an atomic apply operation. It is not a full planner trace
   review workspace, provider-refresh system, or multi-city planner.
@@ -91,10 +93,35 @@ The completed document extraction path now supports:
 
 ## Current next product objective
 
-1. F-004b Planner Intent Handoff
+1. F-001c Draft Trip and Pre-Plan Intent Workspace
 
-The active product step hands the confirmed `TripIntentEnvelope` to planner
-input preparation without weakening the contract boundary:
+The active product step makes the admission sequence explicit: a private Draft
+Trip can persist reviewed sources and an immutable pre-plan intent contract
+without fabricating an empty itinerary revision. The first deterministic planner
+handoff remains a frozen preview and, on confirmation, atomically creates
+`TripRevision` 1.
+
+Current F-001c work includes:
+
+- private Draft Trip lifecycle distinct from an executable trip
+- immutable draft intent contracts with a null itinerary-revision baseline
+- reviewable source candidate selection before compiler input
+- private source-text recovery after browser reload using the existing capability
+  boundary
+- frozen pre-plan planner runs with stale-intent rejection and idempotent apply
+- both quick-language and structured first-plan entry paths route through the
+  same labelled Draft Trip input and pre-plan contract boundary
+- a pre-plan review surface that makes selected fields, source authority,
+  assumptions, conflicts, clarifications, and frozen-preview state explicit
+
+F-001c does not yet provide full draft editing/history UX or inline resolution
+for every clarification type. Those remain explicit follow-up work; unresolved
+requirements continue to block a frozen preview rather than being silently
+assumed away.
+
+F-004b remains the post-revision handoff for an already saved itinerary and
+continues to hand the confirmed `TripIntentEnvelope` to planner input preparation
+without weakening the contract boundary:
 
 - hard constraints
 - soft preferences

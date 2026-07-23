@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, useEffect, useReducer, useRef, useState } from "react";
+import React, { type CSSProperties, useEffect, useReducer, useRef, useState } from "react";
 import type { TripPersistenceState } from "@/features/trip-workspace/tripPersistence";
 import {
   commitImport,
@@ -64,7 +64,10 @@ export function ImportReviewWorkspace({
   const byteCount = utf8ByteLength(text);
   const normalizedUrl = url.trim();
   const urlValidation = validateBrowserUrl(normalizedUrl);
-  const savedTripId = tripPersistence.status === "saved" ? tripPersistence.tripId : null;
+  const savedTripId =
+    tripPersistence.status === "saved" || tripPersistence.status === "draft"
+      ? tripPersistence.tripId
+      : null;
 
   useEffect(() => {
     return () => {

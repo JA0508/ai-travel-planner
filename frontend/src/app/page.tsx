@@ -20,6 +20,7 @@ import {
   PERSISTED_TRIP_REF_KEY,
   buildMutationProposalIdempotencyKey,
   buildReplanProposalIdempotencyKey,
+  buildPersistedDraftTripRef,
   buildPersistedTripRef,
   describeTripPersistence,
   markDirty,
@@ -50,6 +51,8 @@ import {
 } from "@/features/trip-workspace/tripCandidates";
 import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
 import { IntentConfirmationWorkspace } from "@/features/intent-confirmation/IntentConfirmationWorkspace";
+import { PrePlanIntentWorkspace } from "@/features/preplan-intent/PrePlanIntentWorkspace";
+import { buildPrePlanDraftText } from "@/features/preplan-intent/prePlanDraftInput";
 import { ConversationalReplanPanel } from "@/components/trip/replanning/ConversationalReplanPanel";
 import type {
   ReplanExecutionResult,
@@ -1539,6 +1542,21 @@ export default function HomePage() {
       return false;
     }
 
+    if (ref.schemaVersion === 2 && ref.kind === "draft") {
+      const draft = await getTripJson<{ trip: TripMetadata; direct_user_text: string }>(
+        TRIP_API_ENDPOINTS.getDraftTrip(ref.tripId),
+        "恢复草稿行程失败",
+      );
+      if (!draft.ok) {
+        clearPersistedTripRef();
+        return false;
+      }
+      setTripText(draft.data.direct_user_text);
+      setTripPersistence({ status: "draft", tripId: draft.data.trip.id });
+      setSavedTripPromptOpen(false);
+      return true;
+    }
+
     setTripPersistence({ status: "restoring", tripId: ref.tripId });
     const response = await getTripJson<TripCurrentResponse>(
       TRIP_API_ENDPOINTS.getTrip(ref.tripId),
@@ -2602,6 +2620,30 @@ function buildRegenerationSemanticsViewModel(
     rememberPersistedTrip(result.data.trip, result.data.current_revision);
     await refreshRevisionHistory(result.data.trip.id);
     return result.data;
+  }
+
+  async function createDraftTrip(directUserText: string = tripText): Promise<string | null> {
+    setTripPersistence({ status: "creating" });
+    const idempotencyKey = `draft-trip:${crypto.randomUUID()}`;
+    const result = await postTripJson<{ trip: TripMetadata }>(
+      TRIP_API_ENDPOINTS.createDraftTrip,
+      { direct_user_text: directUserText },
+      "创建行程草稿失败",
+      undefined,
+      { headers: { "X-Idempotency-Key": idempotencyKey } },
+    );
+    if (!result.ok) {
+      setTripPersistence({ status: "error", message: result.message, recoverable: true });
+      return null;
+    }
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        PERSISTED_TRIP_REF_KEY,
+        serializePersistedTripRef(buildPersistedDraftTripRef(result.data.trip.id)),
+      );
+    }
+    setTripPersistence({ status: "draft", tripId: result.data.trip.id });
+    return result.data.trip.id;
   }
 
   function toggleCompletionOption(option: ItineraryCompletionOption) {
@@ -4001,45 +4043,9 @@ function buildRegenerationSemanticsViewModel(
     setActiveSwapTarget(null);
 
     try {
-      const plan = await planTripFromText(tripText);
-      if (!plan) {
-        return;
-      }
-      if (!plan.parsed_intent || !plan.planning_state || !plan.trip_intent) {
-        setParseError("持久化规划结果缺少可恢复的意图信息。");
-        return;
-      }
-
-      const quickIntentState: UserIntentState = {
-        original_scenic: plan.parsed_intent.scenic_spots,
-        original_restaurants: plan.parsed_intent.restaurants,
-        confirmed_scenic: [],
-        confirmed_restaurants: [],
-        rejected_scenic: [],
-        rejected_restaurants: [],
-      };
-      const itinerary = plan.itinerary;
-      const regenerationIntent =
-        plan.trip_intent.current_intent ??
-        itinerary.trip_intent?.current_intent ??
-        itinerary.planning_assumptions?.regeneration_intent ??
-        null;
-
-      setParsedIntent(plan.parsed_intent);
-      setPlanningState(plan.planning_state);
-      populateStructuredFormFromParsedIntent(plan.parsed_intent, plan.planning_state);
-      setUserIntentState(quickIntentState);
-      setCommittedSwaps([]);
-      setCompletionTaskEdits([]);
-      setCompletionCandidateHistory([]);
-      setResult(itinerary);
-      setGenerationContext(buildGenerationContextFromPlanTextResponse(plan));
-      setDismissedFollowUpRawText(null);
-      setLatestFollowUpBaseIntent(null);
-      syncFormStateWithRegenerationIntent(regenerationIntent);
-      setQuickPreviewMode(regenerationIntent ? "current_brief" : "original_parse");
-      setCompletionPickerOpen(false);
-      setSelectedCompletionOptionKeys([]);
+      const draftId = await createDraftTrip();
+      if (!draftId) return;
+      return;
     } catch {
       setError("Unable to generate from the quick trip idea.");
     } finally {
@@ -4067,45 +4073,33 @@ function buildRegenerationSemanticsViewModel(
       return;
     }
 
+    const structuredDraftText = buildPrePlanDraftText({
+      directText: tripText,
+      tripDays,
+      scenicSpots: splitLines(scenicSpots),
+      restaurants: splitLines(restaurants),
+      fixedEventsText,
+      availabilityWindowsText,
+      arrivalAnchor,
+      departureAnchor,
+      hotel,
+      preferences: splitLines(preferencesText),
+      pacingLabel: formatPacingProfileLabel(pacingProfile),
+      travelMode,
+    });
+
     setLoading(true);
     setError(null);
-    scheduleResultReveal();
     setResult(null);
     setCompletionTaskEdits([]);
     setCompletionCandidateHistory([]);
     setActiveSwapTarget(null);
 
     try {
-      if (activeTripIntent) {
-        await generateItineraryFromTripIntent(activeTripIntent);
-        return;
-      }
-      const regenerateValues = buildRegenerateValuesFromCurrentState({
-        result,
-        generationContext,
-        userIntentState,
-        regenerationIntentOverride: effectiveRegenerationIntentForNextGenerate,
-        parsedIntent,
-        planningState,
-        scenicSpots,
-        restaurants,
-        hotel,
-        arrivalAnchor,
-        departureAnchor,
-        availabilityWindowsText,
-        preferencesText,
-        tripDays,
-        fixedEventsText,
-        travelMode,
-        splitLines,
-        parseFixedEventLines,
-        parseAvailabilityWindowLines,
-        schedulerEstimatedTripDaysSource: "scheduler_estimated" as TripDaysSource,
-        explicitTripDaysSource: "explicit" as TripDaysSource,
-      });
-      await generateItineraryFromValues(regenerateValues);
+      setTripText(structuredDraftText);
+      await createDraftTrip(structuredDraftText);
     } catch {
-      setError("无法连接后端生成接口。");
+      setError("无法创建行程草稿。");
     } finally {
       setLoading(false);
     }
@@ -4189,7 +4183,21 @@ function buildRegenerationSemanticsViewModel(
         }}
       />
 
-      {!result ? (
+      {tripPersistence.status === "draft" ? (
+        <PrePlanIntentWorkspace
+          tripId={tripPersistence.tripId}
+          directUserText={tripText}
+          onCancel={() => setTripPersistence({ status: "none" })}
+          onApplied={(applied) => {
+            setResult(applied.itinerary);
+            rememberPersistedTrip(applied.trip, applied.current_revision);
+            void refreshRevisionHistory(applied.trip.id);
+            scheduleResultReveal();
+          }}
+        />
+      ) : null}
+
+      {!result && tripPersistence.status !== "draft" ? (
         <section
           className="ec-home-shell"
           style={{
@@ -4746,7 +4754,7 @@ function buildRegenerationSemanticsViewModel(
                   </p>
                 </div>
                 <button type="submit" disabled={loading} style={floatingPrimaryButtonStyle}>
-                  {loading ? "骨架缓冲中…" : "开始生成骨架"}
+                  {loading ? "正在创建草稿…" : "进入意图确认"}
                 </button>
               </div>
               {!readiness.ready ? (

@@ -47,14 +47,17 @@ from app.trips.models import (
     CandidateDecisionResult,
     CandidateRegistrationResult,
     CreateRevisionResult,
+    DraftIntentRevisionRecord,
     ProposalStatus,
     RevisionSourceType,
     TripCandidateDecisionRecord,
     TripCandidateRecord,
     TripAggregate,
     TripLifecycleStatus,
+    TripPlanningPhase,
     TripMutationProposalRecord,
     PlannerHandoffRunRecord,
+    PrePlanHandoffRunRecord,
     TripRecord,
     TripRevisionRecord,
 )
@@ -162,6 +165,242 @@ class SQLiteTripRepository:
             )
 
         return self.get_trip_with_current_revision(trip_id)
+
+    def create_draft_trip(
+        self,
+        *,
+        capability_hash: str,
+        direct_user_text: str,
+        source_digest: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> tuple[TripRecord, bool]:
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM draft_trip_idempotency_records WHERE idempotency_key_hash = ?",
+                (idempotency_key_hash,),
+            ).fetchone()
+            if existing is not None:
+                if existing["request_digest"] != request_digest:
+                    raise IdempotencyConflictError()
+                row = connection.execute("SELECT * FROM trips WHERE id = ?", (existing["result_trip_id"],)).fetchone()
+                if row is None:
+                    raise TripNotFoundError(existing["result_trip_id"])
+                return row_to_trip(row), True
+            trip_id = generate_trip_id()
+            now = utc_now()
+            connection.execute(
+                """
+                INSERT INTO trips(id, current_revision_id, revision_count, lifecycle_status, planning_phase, capability_hash, created_at, updated_at)
+                VALUES (?, NULL, 0, ?, ?, ?, ?, ?)
+                """,
+                (trip_id, TripLifecycleStatus.ACTIVE.value, TripPlanningPhase.DRAFT.value, capability_hash, now, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO draft_trip_idempotency_records(idempotency_key_hash, request_digest, result_trip_id, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (idempotency_key_hash, request_digest, trip_id, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO draft_trip_source_inputs(trip_id, direct_user_text, source_digest, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (trip_id, direct_user_text, source_digest, now),
+            )
+            return row_to_trip(connection.execute("SELECT * FROM trips WHERE id = ?", (trip_id,)).fetchone()), False
+
+    def get_draft_source_text(self, *, trip_id: str) -> str:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute(
+                "SELECT direct_user_text FROM draft_trip_source_inputs WHERE trip_id = ?",
+                (trip_id,),
+            ).fetchone()
+        if row is None:
+            raise TripNotFoundError(trip_id)
+        return str(row["direct_user_text"])
+
+    def create_draft_intent_revision(
+        self,
+        *,
+        revision: DraftIntentRevisionRecord,
+        request_digest: str,
+        idempotency_key_hash: str,
+        expected_parent_draft_intent_revision_id: str | None,
+    ) -> tuple[DraftIntentRevisionRecord, bool]:
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM draft_intent_idempotency_records WHERE trip_id = ? AND idempotency_key_hash = ?",
+                (revision.trip_id, idempotency_key_hash),
+            ).fetchone()
+            if existing is not None:
+                if existing["request_digest"] != request_digest:
+                    raise IdempotencyConflictError()
+                return self._get_draft_intent_revision_in_connection(connection, revision.trip_id, existing["result_draft_intent_revision_id"]), True
+            trip = connection.execute("SELECT * FROM trips WHERE id = ?", (revision.trip_id,)).fetchone()
+            if trip is None:
+                raise TripNotFoundError(revision.trip_id)
+            if trip["planning_phase"] != TripPlanningPhase.DRAFT.value or trip["current_revision_id"] is not None:
+                raise StaleBaseRevisionError(trip_id=revision.trip_id, provided_base_revision_id="", current_revision_id=trip["current_revision_id"] or "")
+            latest = connection.execute(
+                "SELECT * FROM draft_intent_revisions WHERE trip_id = ? ORDER BY revision_number DESC LIMIT 1",
+                (revision.trip_id,),
+            ).fetchone()
+            latest_id = latest["id"] if latest else None
+            if latest_id != expected_parent_draft_intent_revision_id:
+                raise StaleIntentRevisionError(trip_id=revision.trip_id, provided_intent_revision_id=expected_parent_draft_intent_revision_id or "", current_intent_revision_id=latest_id or "")
+            number = 1 if latest is None else int(latest["revision_number"]) + 1
+            parent_lineage_digest = None
+            if latest is not None:
+                parent_envelope = json.loads(latest["envelope_json"])
+                parent_lineage_digest = parent_envelope.get("lineage_digest")
+            finalized_envelope = finalize_intent_envelope_for_revision(
+                SourceLinkedTripIntentEnvelope.model_validate(revision.envelope),
+                revision_id=revision.id,
+                revision_number=number,
+                base_trip_revision_id=None,
+                parent_intent_revision_id=expected_parent_draft_intent_revision_id,
+                parent_lineage_digest=parent_lineage_digest if isinstance(parent_lineage_digest, str) else None,
+                operation="compile_draft_trip_intent_envelope",
+                restore_source_revision_id=None,
+                created_at=revision.created_at,
+            )
+            stored = DraftIntentRevisionRecord(
+                id=revision.id,
+                trip_id=revision.trip_id,
+                revision_number=number,
+                parent_draft_intent_revision_id=expected_parent_draft_intent_revision_id,
+                envelope_schema_version=revision.envelope_schema_version,
+                envelope=finalized_envelope.model_dump(mode="json"),
+                content_digest=finalized_envelope.content_digest,
+                compiler_version=revision.compiler_version,
+                source_digest=revision.source_digest,
+                validation_report=revision.validation_report,
+                created_at=revision.created_at,
+            )
+            connection.execute(
+                """
+                INSERT INTO draft_intent_revisions(id, trip_id, revision_number, parent_draft_intent_revision_id,
+                  envelope_schema_version, envelope_json, content_digest, compiler_version, source_digest,
+                  validation_report_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (stored.id, stored.trip_id, stored.revision_number, stored.parent_draft_intent_revision_id,
+                 stored.envelope_schema_version, canonical_json(stored.envelope), stored.content_digest,
+                 stored.compiler_version, stored.source_digest, canonical_json(stored.validation_report), stored.created_at),
+            )
+            connection.execute(
+                """
+                INSERT INTO draft_intent_idempotency_records(trip_id, idempotency_key_hash, request_digest,
+                  result_draft_intent_revision_id, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (stored.trip_id, idempotency_key_hash, request_digest, stored.id, stored.created_at),
+            )
+            return stored, False
+
+    def get_draft_intent_revision(self, *, trip_id: str, revision_id: str) -> DraftIntentRevisionRecord:
+        with closing(self.connection_factory()) as connection:
+            return self._get_draft_intent_revision_in_connection(connection, trip_id, revision_id)
+
+    def get_latest_draft_intent_revision(self, *, trip_id: str) -> DraftIntentRevisionRecord | None:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute("SELECT * FROM draft_intent_revisions WHERE trip_id = ? ORDER BY revision_number DESC LIMIT 1", (trip_id,)).fetchone()
+            return row_to_draft_intent_revision(row) if row is not None else None
+
+    def list_draft_intent_revisions(self, *, trip_id: str) -> list[DraftIntentRevisionRecord]:
+        with closing(self.connection_factory()) as connection:
+            rows = connection.execute("SELECT * FROM draft_intent_revisions WHERE trip_id = ? ORDER BY revision_number DESC", (trip_id,)).fetchall()
+        return [row_to_draft_intent_revision(row) for row in rows]
+
+    def create_preplan_handoff_run(self, *, run: PrePlanHandoffRunRecord) -> PrePlanHandoffRunRecord:
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO preplan_handoff_runs(id, trip_id, draft_intent_revision_id, intent_semantic_digest,
+                  intent_lineage_digest, input_snapshot_json, input_digest, planner_version, trace_schema_version,
+                  trace_snapshot_json, trace_digest, result_snapshot_json, result_content_digest,
+                  validation_report_json, status, expires_at, applied_revision_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (run.id, run.trip_id, run.draft_intent_revision_id, run.intent_semantic_digest,
+                 run.intent_lineage_digest, canonical_json(run.input_snapshot), run.input_digest, run.planner_version,
+                 run.trace_schema_version, canonical_json(run.trace_snapshot), run.trace_digest,
+                 canonical_json(run.result_snapshot), run.result_content_digest, canonical_json(run.validation_report),
+                 run.status, run.expires_at, run.applied_revision_id, run.created_at, run.updated_at),
+            )
+        return self.get_preplan_handoff_run(trip_id=run.trip_id, run_id=run.id)
+
+    def get_preplan_handoff_run(self, *, trip_id: str, run_id: str) -> PrePlanHandoffRunRecord:
+        with closing(self.connection_factory()) as connection:
+            row = connection.execute("SELECT * FROM preplan_handoff_runs WHERE id = ? AND trip_id = ?", (run_id, trip_id)).fetchone()
+        if row is None:
+            raise MutationProposalNotFoundError(run_id)
+        return row_to_preplan_handoff_run(row)
+
+    def activate_preplan_handoff(
+        self,
+        *,
+        trip_id: str,
+        capability_hash: str,
+        run_id: str,
+        draft_intent_revision_id: str,
+        handoff_digest: str,
+        now: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+        operation_metadata: dict[str, Any],
+    ) -> CreateRevisionResult:
+        with self._transaction() as connection:
+            trip_row = connection.execute("SELECT * FROM trips WHERE id = ?", (trip_id,)).fetchone()
+            if trip_row is None:
+                raise TripNotFoundError(trip_id)
+            trip = row_to_trip(trip_row)
+            if trip.capability_hash != capability_hash:
+                raise TripAccessDeniedError()
+            replay = connection.execute("SELECT * FROM idempotency_records WHERE trip_id = ? AND idempotency_key_hash = ?", (trip_id, idempotency_key_hash)).fetchone()
+            if replay is not None:
+                if replay["request_digest"] != request_digest:
+                    raise IdempotencyConflictError()
+                return CreateRevisionResult(self._get_revision_in_connection(connection, trip_id, replay["result_revision_id"]), True)
+            run_row = connection.execute("SELECT * FROM preplan_handoff_runs WHERE id = ? AND trip_id = ?", (run_id, trip_id)).fetchone()
+            if run_row is None:
+                raise MutationProposalNotFoundError(run_id)
+            run = row_to_preplan_handoff_run(run_row)
+            if run.draft_intent_revision_id != draft_intent_revision_id or run.trace_digest != handoff_digest:
+                raise ProposalDigestMismatchError()
+            if run.status == "applied":
+                return CreateRevisionResult(self._get_revision_in_connection(connection, trip_id, run.applied_revision_id or ""), True)
+            if run.status != "pending" or now >= run.expires_at:
+                if run.status == "pending" and now >= run.expires_at:
+                    connection.execute("UPDATE preplan_handoff_runs SET status = 'expired', updated_at = ? WHERE id = ?", (now, run_id))
+                raise StaleMutationProposalError(trip_id=trip_id, proposal_id=run_id, base_revision_id="", current_revision_id=trip.current_revision_id or "")
+            latest = connection.execute("SELECT id FROM draft_intent_revisions WHERE trip_id = ? ORDER BY revision_number DESC LIMIT 1", (trip_id,)).fetchone()
+            if latest is None or latest["id"] != draft_intent_revision_id:
+                raise StaleIntentRevisionError(trip_id=trip_id, provided_intent_revision_id=draft_intent_revision_id, current_intent_revision_id=latest["id"] if latest else "")
+            if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+                raise StaleBaseRevisionError(trip_id=trip_id, provided_base_revision_id="", current_revision_id=trip.current_revision_id or "")
+            content_digest = itinerary_content_digest(run.result_snapshot)
+            if content_digest != run.result_content_digest:
+                raise ProposalIntegrityViolationError()
+            revision_id = generate_revision_id()
+            lineage = lineage_digest(parent_lineage_digest=None, source_type=RevisionSourceType.PLANNER_INTENT_HANDOFF.value, operation_metadata=operation_metadata, content_digest=content_digest)
+            self._insert_revision(connection, revision_id=revision_id, trip_id=trip_id, revision_number=1,
+                parent_revision_id=None, base_revision_id=None, source_type=RevisionSourceType.PLANNER_INTENT_HANDOFF.value,
+                itinerary_snapshot=run.result_snapshot, content_digest=content_digest, parent_lineage_digest=None,
+                lineage_digest_value=lineage, planner_run_id=run.id, planner_version=run.planner_version,
+                trace_schema_version=run.trace_schema_version, trace_digest=run.trace_digest, restored_from_revision_id=None, created_at=now)
+            self._insert_operation(connection, operation_id=generate_operation_id(), trip_id=trip_id, revision_id=revision_id,
+                base_revision_id=None, source_type=RevisionSourceType.PLANNER_INTENT_HANDOFF.value,
+                operation_type="apply_preplan_intent_handoff", operation_metadata=operation_metadata,
+                request_digest=request_digest, idempotency_key_hash=idempotency_key_hash,
+                summary="Created Revision 1 from a confirmed pre-plan intent contract.", created_at=now)
+            connection.execute("INSERT INTO idempotency_records(trip_id, idempotency_key_hash, request_digest, result_revision_id, created_at) VALUES (?, ?, ?, ?, ?)", (trip_id, idempotency_key_hash, request_digest, revision_id, now))
+            connection.execute("UPDATE preplan_handoff_runs SET status = 'applied', applied_revision_id = ?, updated_at = ? WHERE id = ?", (revision_id, now, run_id))
+            connection.execute("UPDATE trips SET current_revision_id = ?, revision_count = 1, planning_phase = ?, updated_at = ? WHERE id = ?", (revision_id, TripPlanningPhase.PLANNED.value, now, trip_id))
+            return CreateRevisionResult(self._get_revision_in_connection(connection, trip_id, revision_id))
 
     def get_trip(self, trip_id: str) -> TripRecord:
         with closing(self.connection_factory()) as connection:
@@ -1143,6 +1382,20 @@ class SQLiteTripRepository:
             ),
         )
 
+    def _get_draft_intent_revision_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        trip_id: str,
+        revision_id: str,
+    ) -> DraftIntentRevisionRecord:
+        row = connection.execute(
+            "SELECT * FROM draft_intent_revisions WHERE id = ? AND trip_id = ?",
+            (revision_id, trip_id),
+        ).fetchone()
+        if row is None:
+            raise RevisionNotFoundError(revision_id)
+        return row_to_draft_intent_revision(row)
+
     def _insert_operation(self, connection: sqlite3.Connection, **values: Any) -> None:
         connection.execute(
             """
@@ -1481,6 +1734,7 @@ def row_to_trip(row: sqlite3.Row) -> TripRecord:
         current_revision_id=row["current_revision_id"],
         revision_count=row["revision_count"],
         lifecycle_status=row["lifecycle_status"],
+        planning_phase=row["planning_phase"],
         capability_hash=row["capability_hash"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -1516,6 +1770,22 @@ def row_to_intent_revision(row: sqlite3.Row) -> TripIntentRevisionRecord:
         revision_number=row["revision_number"],
         parent_intent_revision_id=row["parent_intent_revision_id"],
         base_trip_revision_id=row["base_trip_revision_id"],
+        envelope_schema_version=row["envelope_schema_version"],
+        envelope=json.loads(row["envelope_json"]),
+        content_digest=row["content_digest"],
+        compiler_version=row["compiler_version"],
+        source_digest=row["source_digest"],
+        validation_report=json.loads(row["validation_report_json"]),
+        created_at=row["created_at"],
+    )
+
+
+def row_to_draft_intent_revision(row: sqlite3.Row) -> DraftIntentRevisionRecord:
+    return DraftIntentRevisionRecord(
+        id=row["id"],
+        trip_id=row["trip_id"],
+        revision_number=row["revision_number"],
+        parent_draft_intent_revision_id=row["parent_draft_intent_revision_id"],
         envelope_schema_version=row["envelope_schema_version"],
         envelope=json.loads(row["envelope_json"]),
         content_digest=row["content_digest"],
@@ -1584,6 +1854,30 @@ def row_to_planner_handoff_run(row: sqlite3.Row) -> PlannerHandoffRunRecord:
         validation_report=json.loads(row["validation_report_json"]),
         proposal_id=row["proposal_id"],
         status=row["status"],
+        applied_revision_id=row["applied_revision_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def row_to_preplan_handoff_run(row: sqlite3.Row) -> PrePlanHandoffRunRecord:
+    return PrePlanHandoffRunRecord(
+        id=row["id"],
+        trip_id=row["trip_id"],
+        draft_intent_revision_id=row["draft_intent_revision_id"],
+        intent_semantic_digest=row["intent_semantic_digest"],
+        intent_lineage_digest=row["intent_lineage_digest"],
+        input_snapshot=json.loads(row["input_snapshot_json"]),
+        input_digest=row["input_digest"],
+        planner_version=row["planner_version"],
+        trace_schema_version=row["trace_schema_version"],
+        trace_snapshot=json.loads(row["trace_snapshot_json"]),
+        trace_digest=row["trace_digest"],
+        result_snapshot=json.loads(row["result_snapshot_json"]),
+        result_content_digest=row["result_content_digest"],
+        validation_report=json.loads(row["validation_report_json"]),
+        status=row["status"],
+        expires_at=row["expires_at"],
         applied_revision_id=row["applied_revision_id"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
