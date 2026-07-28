@@ -126,6 +126,15 @@ class AddCandidateStopCommand(BaseModel):
     requested_start_time: str | None = Field(default=None, max_length=16)
 
 
+class RouteRepairScope(BaseModel):
+    """Constrain a route edit to a small, deterministic local repair."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_day: int = Field(..., ge=1)
+    goal: Literal["relax_day"]
+
+
 TripMutationCommand = Annotated[
     MoveStopCommand
     | ReorderDayCommand
@@ -144,6 +153,7 @@ class TripMutationCommandEnvelope(BaseModel):
     base_revision_id: str = Field(..., min_length=1)
     mutation_kind: Literal["route_edit", "swap", "candidate_admission"]
     commands: list[TripMutationCommand] = Field(..., min_length=1, max_length=MAX_MUTATION_COMMANDS)
+    repair: RouteRepairScope | None = None
 
     @model_validator(mode="after")
     def validate_schema_and_kind(self) -> "TripMutationCommandEnvelope":
@@ -158,6 +168,11 @@ class TripMutationCommandEnvelope(BaseModel):
             raise ValueError("candidate_admission accepts only add_candidate_stop commands.")
         if self.mutation_kind != "candidate_admission" and "add_candidate_stop" in command_types:
             raise ValueError("add_candidate_stop requires candidate_admission mutation_kind.")
+        if self.repair is not None:
+            if self.mutation_kind != "route_edit":
+                raise ValueError("repair scope requires route_edit mutation_kind.")
+            if not command_types.issubset({"move_stop", "remove_stop"}) or len(self.commands) != 1:
+                raise ValueError("local repair accepts exactly one move_stop or remove_stop command.")
         return self
 
 
@@ -180,9 +195,12 @@ class TripMutationEngine:
         candidates_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> MutationPreview:
         snapshot = ensure_stable_item_ids(base_snapshot)
+        validate_local_repair_scope(snapshot, envelope)
         baseline_ids = collect_item_ids(snapshot)
         before_digest = itinerary_content_digest(snapshot)
         impact = empty_impact()
+        if envelope.repair is not None:
+            impact["repair"] = envelope.repair.model_dump(mode="json")
         for index, command in enumerate(envelope.commands):
             try:
                 self._apply_command(snapshot, command, impact, candidates_by_id or {})
@@ -261,6 +279,7 @@ def build_command_digest(envelope: TripMutationCommandEnvelope) -> str:
             "mutation_kind": envelope.mutation_kind,
             "base_revision_id": envelope.base_revision_id,
             "commands": [command.model_dump(mode="json") for command in envelope.commands],
+            "repair": envelope.repair.model_dump(mode="json") if envelope.repair else None,
         }
     )
 
@@ -339,6 +358,26 @@ def assert_mutable_stop(item: dict[str, Any], *, command_index: int = 0) -> None
             command_index=command_index,
             reason_code="fixed_event_mutation_forbidden",
         )
+
+
+SYSTEM_REPAIR_SOURCE_TYPES = {"auto_seeded_poi", "auto_seeded_meal", "auto_filled"}
+
+
+def validate_local_repair_scope(
+    snapshot: dict[str, Any],
+    envelope: TripMutationCommandEnvelope,
+) -> None:
+    """Keep a UI-triggered relaxation repair away from user-owned route items."""
+    if envelope.repair is None:
+        return
+    command = envelope.commands[0]
+    stop_id = command.stop_id
+    source_day, source_block, source_index = require_stop(snapshot, stop_id)
+    item = source_block["items"][source_index]
+    if source_day.get("day") != envelope.repair.target_day:
+        raise MutationCommandFailedError(command_index=0, reason_code="local_repair_day_mismatch")
+    if item.get("is_fixed") is True or item.get("source_type") not in SYSTEM_REPAIR_SOURCE_TYPES:
+        raise MutationCommandFailedError(command_index=0, reason_code="local_repair_protected_item")
 
 
 def find_day(snapshot: dict[str, Any], day_number: int) -> dict[str, Any] | None:
@@ -638,7 +677,13 @@ def normalize_snapshot_after_mutation(snapshot: dict[str, Any], impact: dict[str
                 previous_name = item.get("name")
     snapshot["completion_recommendation"] = None
     snapshot["completion_intelligence"] = None
-    snapshot["planner_realism"] = None
+    # This is a pure deterministic recalculation over the mutated snapshot. It does
+    # not invoke parsing, providers, or the full planner.
+    from app.services.planner_realism_analyzer import analyze_planner_realism
+
+    snapshot["planner_realism"] = analyze_planner_realism(
+        ItineraryResponse.model_validate(snapshot)
+    ).model_dump(mode="json")
 
 
 def build_validation_report(
@@ -723,6 +768,12 @@ def empty_impact() -> dict[str, Any]:
         "route_recalculation_required": False,
         "invalidated_surfaces": [],
         "warning_codes": [],
+        "execution_evidence": {
+            "planner_calls": 0,
+            "parser_calls": 0,
+            "llm_calls": 0,
+            "route_provider_calls": 0,
+        },
     }
 
 

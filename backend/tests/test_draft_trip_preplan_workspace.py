@@ -8,6 +8,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.schemas import PlannerRealismSummary
 from app.trips.dependencies import reset_trip_repository_cache_for_tests
 from tests.test_trip_persistence_api import simple_itinerary
 
@@ -123,3 +124,43 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(stale.status_code, 409, stale.text)
         self.assertEqual(stale.json()["error"]["code"], "stale_intent_revision")
+
+    def test_unstable_route_preview_cannot_create_revision_one(self) -> None:
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": "我想去西安玩两天。"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-unstable"},
+        )
+        trip_id = created.json()["trip"]["id"]
+        compiled = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/compile",
+            json={"base_intent_revision_id": None, "structured_overrides": {"city": "西安", "trip_days": 2}},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-unstable-intent"},
+        )
+        intent_id = compiled.json()["revision"]["id"]
+        unstable = simple_itinerary(2).model_copy(
+            update={
+                "planner_realism": PlannerRealismSummary(
+                    status="unstable",
+                    headline="这版路线存在未解决的执行冲突。",
+                    issues=[],
+                    suggested_actions=[],
+                    daily_loads=[],
+                )
+            }
+        )
+        with patch("app.trips.service.build_itinerary_response", return_value=unstable):
+            preview = self.client.post(
+                f"/trips/{trip_id}/preplan-handoff/preview",
+                json={"draft_intent_revision_id": intent_id},
+            )
+        self.assertEqual(preview.status_code, 200, preview.text)
+        run = preview.json()["handoff"]
+        applied = self.client.post(
+            f"/trips/{trip_id}/preplan-handoff/runs/{run['id']}/apply",
+            json={"draft_intent_revision_id": intent_id, "handoff_digest": run["trace_digest"]},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-unstable-apply"},
+        )
+        self.assertEqual(applied.status_code, 422, applied.text)
+        self.assertEqual(applied.json()["error"]["code"], "invalid_revision_operation")
+        self.assertEqual(self.client.get(f"/trips/{trip_id}/revisions").json()["revisions"], [])

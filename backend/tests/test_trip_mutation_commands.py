@@ -104,6 +104,48 @@ class TripMutationCommandTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.context["reason_code"], "fixed_event_mutation_forbidden")
 
+    def test_local_repair_scope_rejects_fixed_and_user_owned_stops(self) -> None:
+        snapshot = ensure_stable_item_ids(command_itinerary(fixed_museum=True).model_dump(mode="json"))
+        for name in ("上海博物馆", "豫园"):
+            with self.subTest(name=name), self.assertRaises(MutationCommandFailedError) as caught:
+                TripMutationEngine().preview(
+                    base_snapshot=snapshot,
+                    envelope=TripMutationCommandEnvelope.model_validate(
+                        {
+                            "base_revision_id": "rev_1",
+                            "mutation_kind": "route_edit",
+                            "repair": {"target_day": 1, "goal": "relax_day"},
+                            "commands": [{"type": "remove_stop", "stop_id": stop_id_by_name(snapshot, name)}],
+                        }
+                    ),
+                )
+            self.assertEqual(caught.exception.context["reason_code"], "local_repair_protected_item")
+
+    def test_local_repair_moves_only_system_suggested_item_without_planner_work(self) -> None:
+        snapshot = ensure_stable_item_ids(command_itinerary(system_yu=True).model_dump(mode="json"))
+        yu_id = stop_id_by_name(snapshot, "豫园")
+
+        preview = TripMutationEngine().preview(
+            base_snapshot=snapshot,
+            envelope=TripMutationCommandEnvelope.model_validate(
+                {
+                    "base_revision_id": "rev_1",
+                    "mutation_kind": "route_edit",
+                    "repair": {"target_day": 1, "goal": "relax_day"},
+                    "commands": [{"type": "remove_stop", "stop_id": yu_id}],
+                }
+            ),
+        )
+
+        self.assertNotIn("豫园", flattened_names(preview.resulting_snapshot))
+        self.assertIn("上海博物馆", flattened_names(preview.resulting_snapshot))
+        self.assertEqual(preview.impact_summary["repair"], {"target_day": 1, "goal": "relax_day"})
+        self.assertEqual(
+            preview.impact_summary["execution_evidence"],
+            {"planner_calls": 0, "parser_calls": 0, "llm_calls": 0, "route_provider_calls": 0},
+        )
+        self.assertIsNotNone(preview.resulting_snapshot["planner_realism"])
+
     def test_swap_preview_exchanges_slots_without_reassigning_stable_ids(self) -> None:
         snapshot = ensure_stable_item_ids(command_itinerary().model_dump(mode="json"))
         museum_id = stop_id_by_name(snapshot, "上海博物馆")
@@ -229,7 +271,7 @@ class TripMutationCommandTests(unittest.TestCase):
         self.assertEqual(flattened_names(snapshot), ["上海博物馆", "豫园", "外滩"])
 
 
-def command_itinerary(*, fixed_museum: bool = False) -> ItineraryResponse:
+def command_itinerary(*, fixed_museum: bool = False, system_yu: bool = False) -> ItineraryResponse:
     hotel = HotelStay(name="人民广场酒店", city="上海", latitude=31.2304, longitude=121.4737)
     return ItineraryResponse(
         trip_days=1,
@@ -261,6 +303,11 @@ def command_itinerary(*, fixed_museum: bool = False) -> ItineraryResponse:
                                 TimeBlockType.MORNING,
                                 time(11, 15),
                                 time(12, 0),
+                                source_type=(
+                                    ScheduledPOISourceType.AUTO_SEEDED_POI
+                                    if system_yu
+                                    else ScheduledPOISourceType.USER_SEED
+                                ),
                             ),
                         ],
                     ),
@@ -290,6 +337,7 @@ def scheduled_item(
     end: time,
     *,
     fixed: bool = False,
+    source_type: ScheduledPOISourceType = ScheduledPOISourceType.USER_SEED,
 ) -> ScheduledPOI:
     return ScheduledPOI(
         name=name,
@@ -302,7 +350,7 @@ def scheduled_item(
         start_time=start,
         end_time=end,
         is_fixed=fixed,
-        source_type=ScheduledPOISourceType.USER_FIXED if fixed else ScheduledPOISourceType.USER_SEED,
+        source_type=ScheduledPOISourceType.USER_FIXED if fixed else source_type,
         travel_from_name="人民广场酒店" if block_type == TimeBlockType.MORNING else "豫园",
         travel_distance_m=1200,
         travel_duration_s=900,

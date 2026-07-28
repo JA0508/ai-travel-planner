@@ -536,6 +536,62 @@ class TripPersistenceApiTests(unittest.TestCase):
         self.assertEqual(flattened_names(undone.json()["itinerary"]), base_names)
         self.assertEqual(undone.json()["current_revision"]["restored_from_revision_id"], base_revision_id)
 
+    def test_local_repair_preview_is_non_persistent_and_apply_creates_one_child_revision(self) -> None:
+        client = TestClient(app)
+        with patch(
+            "app.trips.service.build_itinerary_response",
+            return_value=command_itinerary(system_yu=True),
+        ):
+            created = client.post(
+                "/trips/plan",
+                json={"itinerary_request": {"city": "上海", "trip_days": 1, "scenic_spots": [], "restaurants": []}},
+            )
+        trip_id = created.json()["trip"]["id"]
+        base_revision_id = created.json()["current_revision"]["id"]
+        yu_id = stop_id_by_name(created.json()["itinerary"], "豫园")
+
+        preview = client.post(
+            f"/trips/{trip_id}/mutations/preview",
+            json={
+                "base_revision_id": base_revision_id,
+                "mutation_kind": "route_edit",
+                "repair": {"target_day": 1, "goal": "relax_day"},
+                "commands": [{"type": "remove_stop", "stop_id": yu_id}],
+            },
+            headers={"Origin": "http://testserver"},
+        )
+        self.assertEqual(preview.status_code, 200, preview.text)
+        proposal = preview.json()["proposal"]
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 1)
+        self.assertNotIn("豫园", flattened_names(preview.json()["itinerary"]))
+        self.assertEqual(
+            preview.json()["impact_summary"]["execution_evidence"],
+            {"planner_calls": 0, "parser_calls": 0, "llm_calls": 0, "route_provider_calls": 0},
+        )
+
+        with patch("app.trips.service.build_itinerary_response", side_effect=AssertionError("local repair must not invoke planner")):
+            applied = client.post(
+                f"/trips/{trip_id}/mutation-proposals/{proposal['id']}/apply",
+                json={"base_revision_id": base_revision_id, "proposal_digest": proposal["proposal_digest"]},
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "local-repair-apply"},
+            )
+        self.assertEqual(applied.status_code, 200, applied.text)
+        self.assertEqual(applied.json()["current_revision"]["revision_number"], 2)
+        self.assertEqual(applied.json()["current_revision"]["parent_revision_id"], base_revision_id)
+        self.assertNotIn("豫园", flattened_names(applied.json()["itinerary"]))
+        replay = client.post(
+            f"/trips/{trip_id}/mutation-proposals/{proposal['id']}/apply",
+            json={"base_revision_id": base_revision_id, "proposal_digest": proposal["proposal_digest"]},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "local-repair-apply"},
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertTrue(replay.json()["persistence"]["idempotent_replay"])
+        metadata = operation_metadata_for_revision(
+            Path(self.temp_dir.name) / "api-trip-store.sqlite3",
+            applied.json()["current_revision"]["id"],
+        )
+        self.assertEqual(metadata["impact_summary"]["repair"], {"target_day": 1, "goal": "relax_day"})
+
     def test_swap_typed_mutation_is_idempotent_and_preserves_stable_identity(self) -> None:
         client = TestClient(app)
         with patch(

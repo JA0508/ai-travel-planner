@@ -12,14 +12,24 @@ type IntentRevisionRow = {
 type DraftDatabaseSnapshot = {
   draft_version: number;
   intent_revisions: IntentRevisionRow[];
+  trip_revisions: TripRevisionRow[];
   trip_revision_count: number;
   preview_count: number;
+};
+
+type TripRevisionRow = {
+  id: string;
+  revision_number: number;
+  parent_revision_id: string | null;
+  source_type: string;
+  snapshot: Record<string, any>;
 };
 
 type ErrorGate = {
   allowExpectedInitialIntentAbsence: () => void;
   allowExpectedNetworkFailure: () => void;
   allowExpectedStaleConflict: () => void;
+  allowExpectedRouteSegmentAbort: () => void;
   assertClean: () => void;
 };
 
@@ -217,6 +227,98 @@ test("Scenario D: retries a lost edit response with the original idempotency key
   gate.assertClean();
 });
 
+test("Scenario E: shows a readable route preview before it creates the first TripRevision", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const gate = installErrorGate(page);
+  gate.allowExpectedInitialIntentAbsence();
+  const tripId = await createDraftThroughHome(page, "周末去杭州玩两天，轻松一点，想去西湖和灵隐寺。");
+  const before = readDraftDatabase(tripId);
+  const previewResponse = page.waitForResponse((response) => response.url().includes("/preplan-handoff/preview") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "生成路线预览" }).click();
+  expect((await previewResponse).status()).toBe(200);
+  const routePreview = page.getByRole("region", { name: "可执行路线预览" });
+  await expect(routePreview.getByRole("heading", { name: "你的第一版行程" })).toBeVisible();
+  await expect(routePreview.getByText("第 1 天").first()).toBeVisible();
+  await expect(routePreview.getByText("预计移动").first()).toBeVisible();
+  await expect(routePreview.getByText("活动时长").first()).toBeVisible();
+  await expect(routePreview.getByText("路线距离").first()).toBeVisible();
+  await expect(routePreview.getByRole("heading", { name: /轻松|适中|偏赶|不可执行/ }).first()).toBeVisible();
+  await expect(routePreview.getByText("为什么这样安排").first()).toBeVisible();
+  await expect(routePreview.getByText("trace_digest", { exact: false })).toHaveCount(0);
+  await expect(routePreview.getByText("planner_run_id", { exact: false })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "确认并生成行程" })).toBeEnabled();
+  const after = readDraftDatabase(tripId);
+  expect(after.preview_count).toBe(before.preview_count + 1);
+  expect(after.trip_revision_count).toBe(0);
+  await assertViewportFits(page);
+  gate.assertClean();
+});
+
+test("Scenario F: previews and applies a local relaxation without regenerating the saved route", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const gate = installErrorGate(page);
+  gate.allowExpectedInitialIntentAbsence();
+  // The replaced route workspace cancels its in-flight map segment preview.
+  // The route preview and mutation APIs remain subject to the normal error gate.
+  gate.allowExpectedRouteSegmentAbort();
+  const tripId = await createDraftThroughHome(page, "周末去杭州玩两天，轻松一点。");
+
+  const firstPreview = page.waitForResponse((response) => response.url().includes("/preplan-handoff/preview") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "生成路线预览" }).click();
+  expect((await firstPreview).status()).toBe(200);
+  const beforeSave = readDraftDatabase(tripId);
+  const save = page.waitForResponse((response) => response.url().includes("/preplan-handoff/runs/") && response.url().includes("/apply") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "确认并生成行程" }).click();
+  expect((await save).status()).toBe(200);
+
+  const routePreview = page.getByRole("region", { name: "可执行路线预览" });
+  await expect(routePreview.getByRole("heading", { name: "当前可执行路线" })).toBeVisible();
+  await expect(routePreview.getByRole("heading", { name: "偏赶" })).toBeVisible();
+  const beforeRepair = readDraftDatabase(tripId);
+  expect(beforeRepair.trip_revisions).toHaveLength(1);
+  expect(flattenedStopNames(beforeRepair.trip_revisions[0].snapshot)).toContain("武林夜市");
+
+  const previewRepair = page.waitForResponse((response) => response.url().includes("/mutations/preview") && response.request().method() === "POST");
+  await routePreview.getByRole("button", { name: "让这一天轻松一些" }).click();
+  expect((await previewRepair).status()).toBe(200);
+  const review = page.getByRole("dialog", { name: "调整预览" });
+  await expect(review).toContainText(/武林夜市\s*将从第 1 天移到第 2 天/);
+  await expect(review.getByText("固定安排没有移动；你明确想去的地点没有删除；没有重新生成全部行程。")).toBeVisible();
+
+  const applyRepair = page.waitForResponse((response) => response.url().includes("/mutation-proposals/") && response.url().includes("/apply") && response.request().method() === "POST");
+  await review.getByRole("button", { name: "应用这次调整" }).click();
+  expect((await applyRepair).status()).toBe(200);
+  await expect(review).toHaveCount(0);
+
+  const afterRepair = readDraftDatabase(tripId);
+  expect(afterRepair.preview_count).toBe(beforeSave.preview_count);
+  expect(afterRepair.trip_revisions).toHaveLength(2);
+  expect(afterRepair.trip_revisions.map((revision) => revision.revision_number)).toEqual([1, 2]);
+  expect(afterRepair.trip_revisions[1].source_type).toBe("route_edit");
+  expect(afterRepair.trip_revisions[1].parent_revision_id).toBe(afterRepair.trip_revisions[0].id);
+  expect(flattenedStopNames(afterRepair.trip_revisions[0].snapshot)).toContain("武林夜市");
+  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 1)).not.toContain("武林夜市");
+  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 2)).toContain("武林夜市");
+  await assertViewportFits(page);
+  gate.assertClean();
+});
+
+test("Scenario G: blocks an unresolved fixed reservation instead of creating a false executable route", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const gate = installErrorGate(page);
+  gate.allowExpectedInitialIntentAbsence();
+  const tripId = await createDraftThroughHome(page, "去上海三天，第二天下午2点到4点预约了上海博物馆。");
+
+  const previewResponse = page.waitForResponse((response) => response.url().includes("/preplan-handoff/preview") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "生成路线预览" }).click();
+  expect((await previewResponse).status()).toBe(422);
+  await expect(page.getByText("固定安排的地点还没有确认", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "返回修改需求" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "可执行路线预览" })).toHaveCount(0);
+  expect(readDraftDatabase(tripId).trip_revision_count).toBe(0);
+  gate.assertClean();
+});
+
 async function createDraftThroughHome(page: Page, text: string): Promise<string> {
   await page.addInitScript(() => window.localStorage.clear());
   await page.goto("/");
@@ -237,6 +339,7 @@ function installErrorGate(page: Page): ErrorGate {
   let allowExpectedInitialIntentAbsence = false;
   let allowExpectedNetworkFailure = false;
   let allowExpectedStaleConflict = false;
+  let allowExpectedRouteSegmentAbort = false;
   page.on("console", (message) => {
     // Chromium logs the deliberate, user-visible 409 stale response as a resource error.
     const expectedInitialIntentAbsence = allowExpectedInitialIntentAbsence && message.text().includes("status of 422");
@@ -249,7 +352,10 @@ function installErrorGate(page: Page): ErrorGate {
   });
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("requestfailed", (request) => {
-    if (request.url().includes("/api/") && !allowExpectedNetworkFailure) {
+    const expectedRouteSegmentAbort = allowExpectedRouteSegmentAbort
+      && request.url().includes("/api/preview-route-segments")
+      && request.failure()?.errorText === "net::ERR_ABORTED";
+    if (request.url().includes("/api/") && !allowExpectedNetworkFailure && !expectedRouteSegmentAbort) {
       errors.push(`failed API request: ${request.url()} ${request.failure()?.errorText ?? "unknown"}`);
     }
   });
@@ -262,6 +368,7 @@ function installErrorGate(page: Page): ErrorGate {
     allowExpectedInitialIntentAbsence: () => { allowExpectedInitialIntentAbsence = true; },
     allowExpectedNetworkFailure: () => { allowExpectedNetworkFailure = true; },
     allowExpectedStaleConflict: () => { allowExpectedStaleConflict = true; },
+    allowExpectedRouteSegmentAbort: () => { allowExpectedRouteSegmentAbort = true; },
     assertClean: () => expect(errors, errors.join("\n")).toEqual([]),
   };
 }
@@ -284,11 +391,13 @@ connection = sqlite3.connect(sys.argv[1])
 connection.row_factory = sqlite3.Row
 trip_id = sys.argv[2]
 rows = connection.execute("SELECT id, revision_number, parent_draft_intent_revision_id, envelope_json FROM draft_intent_revisions WHERE trip_id = ? ORDER BY revision_number", (trip_id,)).fetchall()
+trip_revisions = connection.execute("SELECT id, revision_number, parent_revision_id, source_type, itinerary_snapshot FROM trip_revisions WHERE trip_id = ? ORDER BY revision_number", (trip_id,)).fetchall()
 trip = connection.execute("SELECT draft_version FROM trips WHERE id = ?", (trip_id,)).fetchone()
 snapshot = {
   "draft_version": trip["draft_version"],
   "intent_revisions": [{"id": row["id"], "revision_number": row["revision_number"], "parent_draft_intent_revision_id": row["parent_draft_intent_revision_id"], "envelope": json.loads(row["envelope_json"])} for row in rows],
-  "trip_revision_count": connection.execute("SELECT COUNT(*) FROM trip_revisions WHERE trip_id = ?", (trip_id,)).fetchone()[0],
+  "trip_revisions": [{"id": row["id"], "revision_number": row["revision_number"], "parent_revision_id": row["parent_revision_id"], "source_type": row["source_type"], "snapshot": json.loads(row["itinerary_snapshot"])} for row in trip_revisions],
+  "trip_revision_count": len(trip_revisions),
   "preview_count": connection.execute("SELECT COUNT(*) FROM preplan_handoff_runs WHERE trip_id = ?", (trip_id,)).fetchone()[0],
 }
 print(json.dumps(snapshot, ensure_ascii=False))`;
@@ -309,6 +418,18 @@ function pace(row: IntentRevisionRow): string | undefined {
 
 function destinations(row: IntentRevisionRow): string[] {
   return (row.envelope.formal_contract.destinations ?? []).map((item: { city_name: string }) => item.city_name);
+}
+
+function flattenedStopNames(snapshot: Record<string, any>): string[] {
+  return (snapshot.days ?? []).flatMap((day: Record<string, any>) => day.blocks ?? [])
+    .flatMap((block: Record<string, any>) => block.items ?? [])
+    .map((item: Record<string, any>) => item.name);
+}
+
+function dayStopNames(snapshot: Record<string, any>, dayNumber: number): string[] {
+  const day = (snapshot.days ?? []).find((item: Record<string, any>) => item.day === dayNumber);
+  return (day?.blocks ?? []).flatMap((block: Record<string, any>) => block.items ?? [])
+    .map((item: Record<string, any>) => item.name);
 }
 
 function activeClarifications(row: IntentRevisionRow): string[] {

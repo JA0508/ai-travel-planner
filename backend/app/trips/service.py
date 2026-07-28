@@ -552,6 +552,11 @@ class TripPersistenceService:
             raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
         trip = self._require_trip_access(trip_id, capability)
         run = self.repository.get_preplan_handoff_run(trip_id=trip_id, run_id=run_id)
+        preview_itinerary = deserialize_itinerary_snapshot(run.result_snapshot)
+        if preview_itinerary.planner_realism and preview_itinerary.planner_realism.status == "unstable":
+            raise InvalidRevisionOperationError(
+                "The route preview has unresolved execution conflicts and cannot be saved yet."
+            )
         result = self.repository.activate_preplan_handoff(
             trip_id=trip_id, capability_hash=trip.capability_hash, run_id=run_id,
             draft_intent_revision_id=payload.draft_intent_revision_id, handoff_digest=payload.handoff_digest,
@@ -2378,7 +2383,25 @@ def deserialize_itinerary_snapshot(snapshot: dict[str, Any]) -> ItineraryRespons
     version = TRIP_SNAPSHOT_SCHEMA_VERSION
     if not version.startswith("1."):
         raise SnapshotSchemaUnsupportedError(version)
-    return ItineraryResponse.model_validate(snapshot)
+    itinerary = ItineraryResponse.model_validate(snapshot)
+    # Older persisted snapshots predate per-day execution loads. Rebuild this
+    # derived, deterministic view on the server so clients never invent it.
+    if itinerary.planner_realism is not None and not itinerary.planner_realism.daily_loads:
+        from app.services.planner_realism_analyzer import build_daily_route_loads
+
+        itinerary = itinerary.model_copy(
+            update={
+                "planner_realism": itinerary.planner_realism.model_copy(
+                    update={
+                        "daily_loads": build_daily_route_loads(
+                            itinerary,
+                            itinerary.planner_realism.issues,
+                        )
+                    }
+                )
+            }
+        )
+    return itinerary
 
 
 def redacted_plan_request_payload(payload: TripPlanRequest) -> dict[str, Any]:
