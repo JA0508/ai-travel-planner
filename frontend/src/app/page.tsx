@@ -52,6 +52,7 @@ import {
 import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
 import { IntentConfirmationWorkspace } from "@/features/intent-confirmation/IntentConfirmationWorkspace";
 import { PrePlanIntentWorkspace } from "@/features/preplan-intent/PrePlanIntentWorkspace";
+import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import { buildPrePlanDraftText } from "@/features/preplan-intent/prePlanDraftInput";
 import { ConversationalReplanPanel } from "@/components/trip/replanning/ConversationalReplanPanel";
 import type {
@@ -4845,6 +4846,19 @@ function buildRegenerationSemanticsViewModel(
       {result ? (
         <section ref={resultSectionRef} className="ec-result-entry">
           <SectionShell>
+            {tripPersistence.status === "saved" ? (
+              <ExecutableRoutePreview
+                itinerary={result}
+                variant="saved"
+                tripId={tripPersistence.tripId}
+                baseRevisionId={tripPersistence.currentRevisionId}
+                onApplied={(applied) => {
+                  setResult(applied.itinerary as ItineraryResponse);
+                  rememberPersistedTrip(applied.trip, applied.current_revision);
+                  void refreshRevisionHistory(applied.trip.id);
+                }}
+              />
+            ) : null}
             <RouteWorkspaceContainer
             city={activeTripCity}
             itinerary={result}

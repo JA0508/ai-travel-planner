@@ -351,6 +351,13 @@ export function useEditableRouteWorkspaceState({
           return;
         }
         const payload = result.data;
+        // A navigation can complete a proxied response after this workspace has
+        // been replaced. Do not let an empty successful payload crash the route
+        // surface; the itinerary remains server-authoritative without map legs.
+        if (!payload) {
+          setRoutePreviewState("failed");
+          return;
+        }
         setRoutePreviewMap((current) => {
           const next = { ...current };
           for (const segment of payload.segments ?? []) {

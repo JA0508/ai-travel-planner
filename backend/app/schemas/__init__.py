@@ -19,6 +19,7 @@ from .itinerary import (
     DepartureHubDecisionTrace,
     DepartureOption,
     DepartureRecommendation,
+    DailyRouteLoad,
     DayItinerary,
     DayTimeBlock,
     FixedConstraint,
@@ -109,6 +110,7 @@ from .preference_policy import PlannerPreferencePolicy
 
 __all__ = [
     "DayItinerary",
+    "DailyRouteLoad",
     "DayTimeBlock",
     "DayAvailabilitySummary",
     "AvailabilityPreviewDay",

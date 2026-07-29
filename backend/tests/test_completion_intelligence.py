@@ -841,6 +841,31 @@ class CompletionIntelligenceTests(unittest.TestCase):
         self.assertEqual(realism.status, "unstable")
         self.assertTrue(any(issue.code == "distance_outlier" for issue in realism.issues))
         self.assertTrue(any("单独成半日线" in action.label for action in realism.suggested_actions))
+        self.assertEqual(realism.daily_loads[0].classification, "infeasible")
+        self.assertEqual(realism.daily_loads[0].reason_codes, ["long_transfer", "distance_outlier"])
+
+    def test_planner_realism_publishes_deterministic_daily_load_metrics(self) -> None:
+        itinerary = self.build_itinerary(
+            blocks=[
+                self.block(
+                    TimeBlockType.MORNING,
+                    items=[
+                        self.poi("天津意大利风情旅游区", POIType.SCENIC),
+                        self.poi("天津之眼", POIType.SCENIC),
+                        self.poi("古文化街", POIType.SCENIC),
+                        self.poi("五大道", POIType.SCENIC),
+                        self.poi("海河夜景", POIType.SCENIC),
+                    ],
+                ),
+            ],
+        )
+
+        first = analyze_planner_realism(itinerary).daily_loads[0]
+        second = analyze_planner_realism(itinerary).daily_loads[0]
+
+        self.assertEqual(first.classification, "rushed")
+        self.assertEqual(first.reason_codes, ["daily_load_high"])
+        self.assertEqual(first, second)
 
     def test_stay_recommendation_uses_region_label_instead_of_poi_chain(self) -> None:
         itinerary = self.build_itinerary(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from math import atan2, cos, radians, sin, sqrt
 
 from app.schemas import (
+    DailyRouteLoad,
     ItineraryResponse,
     PlannerRealismAction,
     PlannerRealismIssue,
@@ -66,12 +67,64 @@ def analyze_planner_realism(itinerary: ItineraryResponse) -> PlannerRealismSumma
         )
 
     status = realism_status(issues)
+    daily_loads = build_daily_route_loads(itinerary, issues)
     return PlannerRealismSummary(
         status=status,
         headline=realism_headline(status, issues),
         issues=issues,
         suggested_actions=actions,
+        daily_loads=daily_loads,
     )
+
+
+def build_daily_route_loads(
+    itinerary: ItineraryResponse,
+    issues: list[PlannerRealismIssue],
+) -> list[DailyRouteLoad]:
+    """Classify daily execution load once on the server for every client surface."""
+    loads: list[DailyRouteLoad] = []
+    for day in itinerary.days:
+        items = [item for block in day.blocks for item in block.items]
+        activity_minutes = sum(item.duration_minutes for item in items)
+        travel_minutes = round(sum(item.travel_duration_s or 0 for item in items) / 60)
+        known_distances = [item.travel_distance_m for item in items if item.travel_distance_m is not None]
+        distance_m = sum(known_distances) if known_distances else None
+        day_issues = [issue for issue in issues if issue.day == day.day]
+        has_blocking_issue = any(issue.severity == "high" for issue in day_issues)
+        total_minutes = activity_minutes + travel_minutes
+        if has_blocking_issue:
+            classification = "infeasible"
+            reason_codes = [issue.code for issue in day_issues if issue.severity == "high"]
+            explanation = "当天存在需要先解决的路线冲突，不能当作可直接出发的安排。"
+        elif len(items) >= 5 or travel_minutes >= 120 or total_minutes > 510:
+            classification = "rushed"
+            reason_codes = ["daily_load_high"]
+            explanation = (
+                f"安排了 {len(items)} 项活动，预计移动 {travel_minutes} 分钟，"
+                "当天衔接偏紧。"
+            )
+        elif len(items) <= 2 and total_minutes <= 260:
+            classification = "relaxed"
+            reason_codes = ["daily_load_light"]
+            explanation = "活动和移动时间留有余量，适合慢慢逛。"
+        else:
+            classification = "balanced"
+            reason_codes = ["daily_load_balanced"]
+            explanation = "活动、移动和可用时间大致均衡。"
+        loads.append(
+            DailyRouteLoad(
+                day=day.day,
+                classification=classification,
+                activity_count=len(items),
+                fixed_count=sum(1 for item in items if item.is_fixed),
+                activity_minutes=activity_minutes,
+                travel_minutes=travel_minutes,
+                route_distance_m=distance_m,
+                reason_codes=reason_codes,
+                explanation=explanation,
+            )
+        )
+    return loads
 
 
 def find_long_transfer_issues(items: list[ScheduledPOI]) -> list[PlannerRealismIssue]:

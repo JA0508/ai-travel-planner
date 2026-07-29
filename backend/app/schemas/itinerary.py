@@ -697,11 +697,26 @@ class PlannerRealismAction(BaseModel):
     related_issue_code: str | None = None
 
 
+class DailyRouteLoad(BaseModel):
+    """Deterministic, server-owned execution load for one itinerary day."""
+
+    day: int = Field(..., ge=1)
+    classification: str
+    activity_count: int = Field(..., ge=0)
+    fixed_count: int = Field(..., ge=0)
+    activity_minutes: int = Field(..., ge=0)
+    travel_minutes: int = Field(..., ge=0)
+    route_distance_m: int | None = Field(default=None, ge=0)
+    reason_codes: list[str] = Field(default_factory=list)
+    explanation: str
+
+
 class PlannerRealismSummary(BaseModel):
     status: str
     headline: str
     issues: list[PlannerRealismIssue] = Field(default_factory=list)
     suggested_actions: list[PlannerRealismAction] = Field(default_factory=list)
+    daily_loads: list[DailyRouteLoad] = Field(default_factory=list)
 
 
 class ItineraryResponse(BaseModel):
