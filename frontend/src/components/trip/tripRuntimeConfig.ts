@@ -46,6 +46,10 @@ export const TRIP_API_ENDPOINTS = {
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/mutation-proposals/${encodeURIComponent(proposalId)}/apply`,
     ),
+  previewGoldenPathRepair: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/golden-path/repair/preview`),
+  applyGoldenPathRepair: (tripId: string, proposalId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/golden-path/repair/proposals/${encodeURIComponent(proposalId)}/apply`),
   previewPlannerHandoff: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/planner-handoff/preview`),
   applyPlannerHandoffProposal: (tripId: string, proposalId: string) =>
