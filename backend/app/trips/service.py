@@ -1527,6 +1527,59 @@ class TripPersistenceService:
             refresh_targets=preview.refresh_targets,
         )
 
+    def preview_golden_path_repair(self, *, trip_id: str, capability: str | None, payload):
+        """Create a server-authored, bounded relaxation proposal."""
+        from .golden_path_repair import build_relax_day_envelope
+        from .schemas import GoldenPathRepairPreviewResponse, GoldenPathRepairProposal
+
+        trip = self._require_trip_access(trip_id, capability)
+        if trip.current_revision_id != payload.base_revision:
+            raise StaleMutationProposalError(
+                trip_id=trip_id, proposal_id="pending", base_revision_id=payload.base_revision,
+                current_revision_id=trip.current_revision_id or "",
+            )
+        base = self.repository.get_revision(trip_id, payload.base_revision)
+        envelope, selection = build_relax_day_envelope(
+            snapshot=base.itinerary_snapshot, base_revision_id=base.id, target_day=payload.target_day,
+        )
+        # Reuse the standard persistence logic after the server, not the browser, authored the command.
+        preview = self.preview_typed_mutation(
+            trip_id=trip_id,
+            capability=capability,
+            payload=PersistedMutationPreviewRequest.model_validate(envelope.model_dump(mode="json")),
+        )
+        proposal = GoldenPathRepairProposal(
+            proposal_id=preview.proposal.id,
+            proposal_digest=preview.proposal.proposal_digest,
+            base_revision=base.id,
+            target_day=payload.target_day,
+            moved_activity_id=selection.stop_id,
+            moved_activity_name=selection.stop_name,
+            from_day=selection.from_day,
+            to_day=selection.to_day,
+            before=deserialize_itinerary_snapshot(base.itinerary_snapshot),
+            after=preview.itinerary,
+            protection_summary="固定安排和你明确想去的地点没有移动；没有重新生成全部行程。",
+            execution_evidence={"parser_calls": 0, "llm_calls": 0, "full_planner_calls": 0, "route_provider_calls": 0},
+        )
+        return GoldenPathRepairPreviewResponse(
+            trip=preview.trip, current_revision=preview.current_revision, proposal=proposal,
+        )
+
+    def apply_golden_path_repair(self, *, trip_id: str, proposal_id: str, capability: str | None, idempotency_key: str | None, payload):
+        from .schemas import ApplyPersistedMutationProposalRequest, GoldenPathRepairApplyResponse
+
+        applied = self.apply_mutation_proposal(
+            trip_id=trip_id, proposal_id=proposal_id, capability=capability, idempotency_key=idempotency_key,
+            payload=ApplyPersistedMutationProposalRequest(
+                base_revision_id=payload.base_revision, proposal_digest=payload.proposal_digest,
+            ),
+        )
+        return GoldenPathRepairApplyResponse(
+            trip=applied.trip, current_revision=applied.current_revision,
+            itinerary=applied.itinerary, persistence=applied.persistence,
+        )
+
     def preview_planner_handoff(
         self,
         *,
