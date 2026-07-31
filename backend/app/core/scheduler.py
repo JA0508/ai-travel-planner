@@ -704,7 +704,11 @@ class Scheduler:
                             ),
                         ),
                         source_type=ScheduledPOISourceType.USER_SEED,
-                        source_label="用户种子",
+                        source_label=(
+                            "必去" if next_poi.intent_ownership == "user_must"
+                            else "可调整" if next_poi.intent_ownership == "user_optional"
+                            else "用户地点"
+                        ),
                         source_reason="这个地点来自你明确给出的想去地点或已确认意图。",
                         travel_from_name=current_anchor.name,
                         travel_distance_m=travel_info["distance_m"] if travel_info else None,

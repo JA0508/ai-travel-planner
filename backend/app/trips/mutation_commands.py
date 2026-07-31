@@ -135,6 +135,83 @@ class RouteRepairScope(BaseModel):
     goal: Literal["relax_day"]
 
 
+def build_relax_day_envelope(
+    *,
+    snapshot: dict[str, Any],
+    base_revision_id: str,
+    target_day: int,
+) -> tuple["TripMutationCommandEnvelope", dict[str, Any]]:
+    """Select one safe system-owned stop for a local day-relaxation proposal."""
+
+    source_day = find_day(snapshot, target_day)
+    next_day = find_day(snapshot, target_day + 1)
+    if source_day is None:
+        raise MutationCommandFailedError(command_index=0, reason_code="mutation_command_target_not_found")
+    if next_day is None:
+        raise MutationCommandFailedError(command_index=0, reason_code="local_repair_no_safe_option")
+    candidate: tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None = None
+    for block in reversed(source_day.get("blocks", [])):
+        for item in reversed(block.get("items", [])):
+            if item.get("is_fixed") is True or item.get("source_type") not in SYSTEM_REPAIR_SOURCE_TYPES or not item.get("stable_id"):
+                continue
+            target_block = next(
+                (
+                    destination_block
+                    for destination_block in next_day.get("blocks", [])
+                    if _item_fits_block(item, destination_block)
+                    and not any(_items_overlap(item, existing) for existing in destination_block.get("items", []))
+                ),
+                None,
+            )
+            if target_block is not None:
+                candidate = (block, item, target_block)
+                break
+        if candidate:
+            break
+    if candidate is None:
+        raise MutationCommandFailedError(command_index=0, reason_code="local_repair_no_safe_option")
+    source_block, item, target_block = candidate
+    block_type = TimeBlockType(str(target_block.get("block_type")))
+    envelope = TripMutationCommandEnvelope(
+        base_revision_id=base_revision_id,
+        mutation_kind="route_edit",
+        repair=RouteRepairScope(target_day=target_day, goal="relax_day"),
+        commands=[MoveStopCommand(
+            type="move_stop",
+            stop_id=str(item["stable_id"]),
+            target_day=target_day + 1,
+            target_block=block_type,
+            placement=StopPlacement(at_end=True),
+        )],
+    )
+    return envelope, {
+        "action": "move",
+        "stop_name": str(item.get("name") or "系统补充"),
+        "from_day": target_day,
+        "to_day": target_day + 1,
+        "ownership": "system_suggested",
+        "protected": {"fixed_mutations": 0, "must_moves": 0, "must_deletions": 0, "full_planner_calls": 0},
+    }
+
+
+def _items_overlap(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    """Keep a server-selected local repair from creating a time collision."""
+
+    start = str(first.get("start_time") or "")
+    end = str(first.get("end_time") or "")
+    other_start = str(second.get("start_time") or "")
+    other_end = str(second.get("end_time") or "")
+    return bool(start and end and other_start and other_end and start < other_end and other_start < end)
+
+
+def _item_fits_block(item: dict[str, Any], block: dict[str, Any]) -> bool:
+    start = str(item.get("start_time") or "")
+    end = str(item.get("end_time") or "")
+    block_start = str(block.get("start_time") or "")
+    block_end = str(block.get("end_time") or "")
+    return bool(start and end and block_start and block_end and block_start <= start and end <= block_end)
+
+
 TripMutationCommand = Annotated[
     MoveStopCommand
     | ReorderDayCommand

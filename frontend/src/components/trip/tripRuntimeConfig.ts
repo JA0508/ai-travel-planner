@@ -42,6 +42,8 @@ export const TRIP_API_ENDPOINTS = {
     ),
   previewPersistedMutation: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/mutations/preview`),
+  previewLocalRelaxDayRepair: (tripId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/local-repairs/relax-day/preview`),
   applyPersistedMutationProposal: (tripId: string, proposalId: string) =>
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/mutation-proposals/${encodeURIComponent(proposalId)}/apply`,
@@ -131,6 +133,8 @@ export const TRIP_API_ENDPOINTS = {
       `/trips/${encodeURIComponent(tripId)}/revisions/${encodeURIComponent(revisionId)}/undo`,
     ),
   parseTripIntent: buildApiUrl("/parse-trip-intent"),
+  compileTripCompilerIntent: buildApiUrl("/trip-compiler/intents/compile"),
+  planTripCompilerIntent: buildApiUrl("/trip-compiler/trips"),
   parsePlanningState: buildApiUrl("/parse-planning-state"),
   previewAvailability: buildApiUrl("/preview-availability"),
 } as const;

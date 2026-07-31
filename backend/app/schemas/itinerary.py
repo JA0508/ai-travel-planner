@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import time
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -109,6 +109,10 @@ class RawPOIInput(FixedConstraint):
     resolved_latitude: float | None = Field(default=None, ge=-90, le=90)
     resolved_longitude: float | None = Field(default=None, ge=-180, le=180)
     resolved_duration_minutes: int | None = Field(default=None, gt=0, le=1440)
+    # The planner keeps its existing source_type categories. This optional label
+    # carries the confirmed intent distinction through scheduling and persistence
+    # so the route UI does not collapse must-visit and flexible places.
+    intent_ownership: Literal["user_must", "user_optional"] | None = None
 
     @model_validator(mode="after")
     def validate_resolved_coordinates(self) -> "RawPOIInput":
@@ -217,6 +221,7 @@ class NormalizedPOI(FixedConstraint):
     # intent handoff supplies them so a scheduled item can retain its source.
     candidate_id: str | None = Field(default=None, min_length=1)
     canonical_place_id: str | None = Field(default=None, min_length=1)
+    intent_ownership: Literal["user_must", "user_optional"] | None = None
 
 
 class HotelStay(BaseModel):
