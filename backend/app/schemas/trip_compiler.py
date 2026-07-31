@@ -92,9 +92,10 @@ class TravelIntent(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    contract_version: Literal["1"] = "1"
     destination: str | None = None
     date_window: dict[str, str | None] = Field(default_factory=dict)
-    trip_days: int | None = Field(default=None, ge=1, le=60)
+    trip_days: int | None = Field(default=None, ge=1, le=3)
     pace: TripPace = "balanced"
     must_visit_places: list[TripCompilerPlace] = Field(default_factory=list)
     optional_places: list[TripCompilerPlace] = Field(default_factory=list)
@@ -105,6 +106,12 @@ class TravelIntent(BaseModel):
     unresolved_items: list[TripCompilerUnresolvedItem] = Field(default_factory=list)
     source_fragments: list[SourceFragment] = Field(default_factory=list)
     travel_mode: TravelMode | None = None
+
+    @model_validator(mode="after")
+    def validate_v1_place_limit(self) -> "TravelIntent":
+        if len(self.must_visit_places) + len(self.optional_places) > 8:
+            raise ValueError("AI Trip Compiler V1 supports at most eight user places.")
+        return self
 
     @property
     def has_blocking_unresolved_items(self) -> bool:

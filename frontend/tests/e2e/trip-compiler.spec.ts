@@ -18,7 +18,7 @@ test("Trip Compiler Scenario A: compiles confirmed language into a saved executa
   await page.setViewportSize({ width: 1440, height: 900 });
   const assertClean = installGate(page);
   await page.goto("/trip-compiler");
-  await page.getByLabel("旅行想法").fill(hangzhou);
+  await page.getByLabel("这趟旅行，你已经知道些什么？").fill(hangzhou);
   const compiled = page.waitForResponse((response) => response.url().includes("/trip-compiler/intents/compile"));
   await page.getByRole("button", { name: "整理我的旅行想法" }).click();
   expect((await compiled).status()).toBe(200);
@@ -43,7 +43,7 @@ test("Trip Compiler Scenario B: missing travel length stays visible instead of s
   await page.setViewportSize({ width: 1440, height: 900 });
   const assertClean = installGate(page);
   await page.goto("/trip-compiler");
-  await page.getByLabel("旅行想法").fill("周末想去苏州，想看看园林，别太累。");
+  await page.getByLabel("这趟旅行，你已经知道些什么？").fill("周末想去苏州，想看看园林，别太累。");
   await page.getByRole("button", { name: "整理我的旅行想法" }).click();
   await expect(page.getByRole("heading", { name: "还需要你确认" })).toBeVisible();
   await expect(page.getByText("准备玩几天？")).toBeVisible();
@@ -55,7 +55,7 @@ test("Trip Compiler Scenario C: an arrival-after-reservation conflict never crea
   await page.setViewportSize({ width: 1440, height: 900 });
   const assertClean = installGate(page);
   await page.goto("/trip-compiler");
-  await page.getByLabel("旅行想法").fill("下午三点到上海，下午两点到四点预约了上海博物馆。");
+  await page.getByLabel("这趟旅行，你已经知道些什么？").fill("下午三点到上海，下午两点到四点预约了上海博物馆。");
   await page.getByRole("button", { name: "整理我的旅行想法" }).click();
   await expect(page.locator(".tc-conflict[role=alert]")).toContainText("当前安排存在冲突");
   await expect(page.getByText("到达时间晚于固定安排“上海博物馆”的开始时间。")).toBeVisible();
@@ -67,7 +67,7 @@ test("Trip Compiler Scenario D: a rushed day receives one server-authoritative l
   await page.setViewportSize({ width: 1440, height: 900 });
   const assertClean = installGate(page);
   await page.goto("/trip-compiler");
-  await page.getByLabel("旅行想法").fill(hangzhou);
+  await page.getByLabel("这趟旅行，你已经知道些什么？").fill(hangzhou);
   await page.getByRole("button", { name: "整理我的旅行想法" }).click();
   await page.getByRole("button", { name: "生成我的行程骨架" }).click();
   await expect(page.getByRole("region", { name: "可执行路线预览" })).toBeVisible();
@@ -93,8 +93,8 @@ test("Trip Compiler mobile input remains single-column and readable", async ({ p
   await page.setViewportSize({ width: 390, height: 844 });
   const assertClean = installGate(page);
   await page.goto("/trip-compiler");
-  await expect(page.getByRole("heading", { name: "把你收集到的旅行想法，变成一条能直接执行的路线。" })).toBeVisible();
-  await expect(page.getByLabel("旅行想法")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "把零散的旅行想法，变成一条能直接执行的路线。" })).toBeVisible();
+  await expect(page.getByLabel("这趟旅行，你已经知道些什么？")).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   assertClean();
 });

@@ -18,6 +18,7 @@ type Preference = { stable_id: string; value: string; confidence: number; source
 type Constraint = { stable_id: string; value: string; kind: "availability" | "arrival" | "departure" | "avoid"; hard: boolean; source_fragment_ids: string[] };
 type Unresolved = { stable_id: string; field: string; question: string; blocking: boolean; source_fragment_ids: string[] };
 type TravelIntent = {
+  contract_version: "1";
   destination: string | null;
   date_window: { start_date?: string | null; end_date?: string | null; arrival_time?: string | null; departure_time?: string | null };
   trip_days: number | null;
@@ -119,7 +120,7 @@ export function TripCompilerWorkspace() {
 }
 
 function InputScreen({ text, onText, onSubmit, busy }: { text: string; onText: (value: string) => void; onSubmit: (event: FormEvent) => void; busy: boolean }) {
-  return <main className="tc-page tc-input-page"><section className="tc-input-copy"><p className="tc-eyebrow">AI Trip Compiler</p><h1>把你收集到的旅行想法，变成一条能直接执行的路线。</h1><p>可以直接粘贴笔记、朋友推荐、想去的地点、预约信息和出行时间。系统会先替你整理。</p></section><form className="tc-composer" onSubmit={onSubmit}><label htmlFor="trip-compiler-input">旅行想法</label><textarea id="trip-compiler-input" value={text} onChange={(event) => onText(event.target.value)} placeholder={EXAMPLES[0][1]} rows={13} disabled={busy} autoFocus /><button type="submit" disabled={busy || !text.trim()}>{busy ? "正在整理你的旅行想法" : "整理我的旅行想法"}</button><div className="tc-example-row" aria-label="可选示例">{EXAMPLES.map(([label, value]) => <button type="button" key={label} onClick={() => onText(value)} disabled={busy}>{label}</button>)}</div></form><TripCompilerStyles /></main>;
+  return <main className="tc-page tc-input-page"><section className="tc-input-copy"><p className="tc-eyebrow">AI Trip Compiler</p><h1>把零散的旅行想法，变成一条能直接执行的路线。</h1><p>粘贴想去的地点、朋友推荐、固定预约和时间要求，系统会先替你整理，再生成行程。</p></section><form className="tc-composer" onSubmit={onSubmit}><label htmlFor="trip-compiler-input">这趟旅行，你已经知道些什么？</label><textarea id="trip-compiler-input" value={text} onChange={(event) => onText(event.target.value)} placeholder={EXAMPLES[0][1]} rows={13} disabled={busy} autoFocus /><button type="submit" disabled={busy || !text.trim()}>{busy ? "正在整理你的旅行想法" : "整理我的旅行想法"}</button><div className="tc-example-row" aria-label="可选示例">{EXAMPLES.map(([label, value]) => <button type="button" key={label} onClick={() => onText(value)} disabled={busy}>{label}</button>)}</div></form><TripCompilerStyles /></main>;
 }
 
 function IntentConfirmation({ intent: initialIntent, busy, onBack, onPlan }: { intent: TravelIntent; busy: boolean; onBack: () => void; onPlan: (intent: TravelIntent) => void }) {

@@ -46,6 +46,7 @@ class TripCompilerContractTests(unittest.TestCase):
         intent = compiled.intent
 
         self.assertEqual(compiled.status, "ready")
+        self.assertEqual(intent.contract_version, "1")
         self.assertEqual(intent.destination, "杭州")
         self.assertEqual(intent.trip_days, 2)
         self.assertEqual(intent.pace, "relaxed")
