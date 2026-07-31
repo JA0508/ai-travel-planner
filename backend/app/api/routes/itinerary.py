@@ -1946,6 +1946,7 @@ def normalize_optional_pois(
                     fixed_time_end=raw_poi.fixed_time_end,
                     candidate_id=raw_poi.candidate_id,
                     canonical_place_id=raw_poi.canonical_place_id,
+                    intent_ownership=raw_poi.intent_ownership,
                 )
             else:
                 normalized_poi = normalize_poi(raw_poi=raw_poi, poi_type=poi_type, city=city)
@@ -2128,11 +2129,15 @@ def normalize_poi_from_local_catalog(
         city=normalize_candidate_city_name(city),
         latitude=float(candidate.latitude),
         longitude=float(candidate.longitude),
-        duration_minutes=profile.typical_duration_minutes,
+        # A confirmed fixed window is authoritative even when the place identity
+        # falls back to the local catalog. Keep that duration through the
+        # fallback instead of restoring a generic profile visit length.
+        duration_minutes=raw_poi.resolved_duration_minutes or profile.typical_duration_minutes,
         profile=profile,
         fixed_day=raw_poi.fixed_day,
         fixed_time_start=raw_poi.fixed_time_start,
         fixed_time_end=raw_poi.fixed_time_end,
+        intent_ownership=raw_poi.intent_ownership,
     )
 
 

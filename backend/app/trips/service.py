@@ -136,7 +136,12 @@ from .planner_handoff import (
     build_planner_handoff_input,
     record_handoff_trace_context,
 )
-from .mutation_commands import TripMutationCommandEnvelope, TripMutationEngine, ensure_stable_item_ids
+from .mutation_commands import (
+    TripMutationCommandEnvelope,
+    TripMutationEngine,
+    build_relax_day_envelope,
+    ensure_stable_item_ids,
+)
 from .repository import TripRepository
 from .schemas import (
     ApplyPersistedMutationProposalRequest,
@@ -145,6 +150,7 @@ from .schemas import (
     PersistedCompletionTaskActionRequest,
     PersistedCompletionTaskActionResponse,
     PersistedMutationApplyResponse,
+    LocalRepairPreviewRequest,
     PersistedMutationPreviewRequest,
     PersistedMutationPreviewResponse,
     ApplyPlannerHandoffProposalRequest,
@@ -1526,6 +1532,37 @@ class TripPersistenceService:
             invalidated_surfaces=preview.invalidated_surfaces,
             refresh_targets=preview.refresh_targets,
         )
+
+    def preview_local_repair(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        payload: LocalRepairPreviewRequest,
+    ) -> PersistedMutationPreviewResponse:
+        """Turn a user goal into one constrained typed command on the server."""
+
+        trip = self._require_trip_access(trip_id, capability)
+        base_revision = self.repository.get_revision(trip_id, payload.base_revision_id)
+        if trip.current_revision_id != payload.base_revision_id:
+            raise StaleMutationProposalError(
+                trip_id=trip_id,
+                proposal_id="pending",
+                base_revision_id=payload.base_revision_id,
+                current_revision_id=trip.current_revision_id,
+            )
+        envelope, repair_summary = build_relax_day_envelope(
+            snapshot=base_revision.itinerary_snapshot,
+            base_revision_id=payload.base_revision_id,
+            target_day=payload.target_day,
+        )
+        result = self.preview_typed_mutation(
+            trip_id=trip_id,
+            capability=capability,
+            payload=PersistedMutationPreviewRequest.model_validate(envelope.model_dump(mode="json")),
+        )
+        result.impact_summary["local_repair"] = repair_summary
+        return result
 
     def preview_planner_handoff(
         self,

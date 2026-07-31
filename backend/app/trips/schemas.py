@@ -487,6 +487,16 @@ class PersistedMutationPreviewRequest(TripMutationCommandEnvelope):
     pass
 
 
+class LocalRepairPreviewRequest(BaseModel):
+    """A user goal; the server, not the browser, determines the mutation command."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision_id: str = Field(..., min_length=1)
+    target_day: int = Field(..., ge=1)
+    goal: Literal["relax_day"]
+
+
 class UndoPersistedMutationRequest(BaseModel):
     base_revision_id: str = Field(..., min_length=1)
 

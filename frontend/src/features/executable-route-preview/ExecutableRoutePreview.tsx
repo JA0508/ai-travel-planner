@@ -6,17 +6,26 @@ import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 import {
   buildDayLoads,
-  buildDayRelaxationPlan,
   buildUserFacingRisks,
   formatDistance,
   formatMinutes,
-  type DayRepairPlan,
+  type DayLoad,
   type RoutePreviewItinerary,
 } from "./routePreviewModel";
 
 type MutationPreviewResponse = {
   proposal: { id: string; proposal_digest: string };
   itinerary: RoutePreviewItinerary;
+  impact_summary: {
+    local_repair?: {
+      action: "move";
+      stop_name: string;
+      from_day: number;
+      to_day: number;
+      ownership: "system_suggested";
+      protected: { fixed_mutations: number; must_moves: number; must_deletions: number; full_planner_calls: number };
+    };
+  };
 };
 
 type MutationApplyResponse = {
@@ -35,9 +44,9 @@ type Props = {
 
 type RepairState =
   | { status: "idle" }
-  | { status: "previewing"; day: number }
-  | { status: "review"; plan: DayRepairPlan; preview: MutationPreviewResponse }
-  | { status: "applying"; plan: DayRepairPlan; preview: MutationPreviewResponse }
+  | { status: "previewing"; day: number; before: DayLoad }
+  | { status: "review"; day: number; before: DayLoad; preview: MutationPreviewResponse }
+  | { status: "applying"; day: number; before: DayLoad; preview: MutationPreviewResponse }
   | { status: "error"; message: string };
 
 export function ExecutableRoutePreview({
@@ -54,15 +63,15 @@ export function ExecutableRoutePreview({
 
   async function previewRelaxation(day: number) {
     if (!tripId || !baseRevisionId) return;
-    const plan = buildDayRelaxationPlan(itinerary, day, baseRevisionId);
-    if (!plan) {
-      setRepair({ status: "error", message: "这一天没有可安全移动的系统补入地点；固定安排和你明确想去的地点不会被自动改动。" });
+    const before = loads.find((load) => load.day === day);
+    if (!before) {
+      setRepair({ status: "error", message: "暂时无法读取这一天的行程负载，当前行程没有被修改。" });
       return;
     }
-    setRepair({ status: "previewing", day });
+    setRepair({ status: "previewing", day, before });
     const response = await postTripJson<MutationPreviewResponse>(
-      TRIP_API_ENDPOINTS.previewPersistedMutation(tripId),
-      plan.command,
+      TRIP_API_ENDPOINTS.previewLocalRelaxDayRepair(tripId),
+      { base_revision_id: baseRevisionId, target_day: day, goal: "relax_day" },
       "暂时无法生成这次调整预览。当前行程没有被修改。",
       "服务暂时不可用，当前行程没有被修改。",
     );
@@ -70,12 +79,12 @@ export function ExecutableRoutePreview({
       setRepair({ status: "error", message: response.message });
       return;
     }
-    setRepair({ status: "review", plan, preview: response.data });
+    setRepair({ status: "review", day, before, preview: response.data });
   }
 
-  async function applyRelaxation(plan: DayRepairPlan, preview: MutationPreviewResponse) {
+  async function applyRelaxation(day: number, before: DayLoad, preview: MutationPreviewResponse) {
     if (!tripId || !baseRevisionId || !onApplied) return;
-    setRepair({ status: "applying", plan, preview });
+    setRepair({ status: "applying", day, before, preview });
     const response = await postTripJson<MutationApplyResponse>(
       TRIP_API_ENDPOINTS.applyPersistedMutationProposal(tripId, preview.proposal.id),
       { base_revision_id: baseRevisionId, proposal_digest: preview.proposal.proposal_digest },
@@ -128,17 +137,17 @@ export function ExecutableRoutePreview({
                 {item.travel_from_name && item.travel_duration_s != null ? <div className="erp-leg"><span>预计移动</span><strong>{item.travel_from_name} → {item.name}</strong><small>{formatMinutes(Math.round(item.travel_duration_s / 60))}{item.travel_distance_m != null ? ` · ${formatDistance(item.travel_distance_m)}` : ""}</small></div> : null}
                 <div className="erp-stop">
                   <time>{item.start_time}–{item.end_time}</time>
-                  <div><div className="erp-stop-title"><strong>{item.name}</strong>{item.is_fixed ? <span className="erp-fixed">已预约 · 不可随意移动</span> : <span className="erp-kind">{item.type === "restaurant" ? "餐食" : item.type === "hotel" ? "住宿" : "地点"}</span>}</div><p>{item.placement_reason ?? "根据已确认的时间、地点和旅行节奏安排。"}</p></div>
+                  <div><div className="erp-stop-title"><strong>{item.name}</strong>{item.is_fixed ? <span className="erp-fixed">已预约 · 不可随意移动</span> : <span className="erp-kind">{isSystemSuggested(item) ? "系统补充" : item.source_label === "必去" ? "必去" : item.source_label === "可调整" ? "可调整" : item.type === "restaurant" ? "餐食" : item.type === "hotel" ? "住宿" : "用户地点"}</span>}</div>{item.placement_reason ? <p>{item.placement_reason}</p> : <p>暂时没有可验证的安排说明。</p>}</div>
                 </div>
               </div>))}
             </div>
-            <details className="erp-why"><summary>为什么这样安排</summary><div>{day.blocks.flatMap((block) => block.items).filter((item) => item.placement_reason).slice(0, 3).map((item) => <p key={item.stable_id ?? item.name}><strong>{item.name}</strong>{item.placement_reason}</p>) || <p>这一天按已确认的时间范围和地点顺序生成。</p>}</div></details>
+            <details className="erp-why"><summary>为什么这样安排</summary><DayReasons items={day.blocks.flatMap((block) => block.items)} /></details>
             {canRepair && load.pace === "rushed" ? <button className="erp-repair-button" type="button" onClick={() => void previewRelaxation(day.day)} disabled={repair.status === "previewing" || repair.status === "applying"}>{repair.status === "previewing" && repair.day === day.day ? "正在评估调整……" : "让这一天轻松一些"}</button> : null}
           </article>;
         })}
       </div>
 
-      {repair.status === "review" || repair.status === "applying" ? <RepairReview repair={repair} onCancel={() => setRepair({ status: "idle" })} onApply={() => void applyRelaxation(repair.plan, repair.preview)} /> : null}
+      {repair.status === "review" || repair.status === "applying" ? <RepairReview repair={repair} onCancel={() => setRepair({ status: "idle" })} onApply={() => void applyRelaxation(repair.day, repair.before, repair.preview)} /> : null}
       {repair.status === "error" ? <p className="erp-error" role="alert">{repair.message}</p> : null}
       <RoutePreviewStyles />
     </section>
@@ -149,9 +158,19 @@ function Metric({ label, value }: { label: string; value: string }) {
   return <div><span>{label}</span><strong>{value}</strong></div>;
 }
 
+function isSystemSuggested(item: RoutePreviewItinerary["days"][number]["blocks"][number]["items"][number]) {
+  return item.source_type === "auto_seeded_poi" || item.source_type === "auto_seeded_meal" || item.source_type === "auto_filled";
+}
+
+function DayReasons({ items }: { items: RoutePreviewItinerary["days"][number]["blocks"][number]["items"] }) {
+  const reasons = items.filter((item) => item.placement_reason).slice(0, 3);
+  return <div>{reasons.length ? reasons.map((item) => <p key={item.stable_id ?? item.name}><strong>{item.name}</strong>{item.placement_reason}</p>) : <p>暂时没有可验证的安排说明。</p>}</div>;
+}
+
 function RepairReview({ repair, onCancel, onApply }: { repair: Extract<RepairState, { status: "review" | "applying" }>; onCancel: () => void; onApply: () => void }) {
-  const afterLoad = buildDayLoads(repair.preview.itinerary).find((entry) => entry.day === repair.plan.day);
-  return <section className="erp-repair-review" role="dialog" aria-modal="false" aria-label="调整预览"><p>调整预览</p><h3>让第 {repair.plan.day} 天轻松一些</h3><div className="erp-repair-compare"><article><span>调整前</span><strong>{repair.plan.before.activityCount} 个活动 · 移动 {formatMinutes(repair.plan.before.travelMinutes)}</strong></article><article><span>调整后</span><strong>{afterLoad ? `${afterLoad.activityCount} 个活动 · 移动 ${formatMinutes(afterLoad.travelMinutes)}` : "已生成新路线"}</strong></article></div><p>{repair.plan.action === "move" ? `${repair.plan.stopName} 将从第 ${repair.plan.fromDay} 天移到第 ${repair.plan.toDay} 天。` : `${repair.plan.stopName} 会从当天移除。`}</p><p className="erp-protection">固定安排没有移动；你明确想去的地点没有删除；没有重新生成全部行程。</p><div><button type="button" onClick={onCancel} disabled={repair.status === "applying"}>取消</button><button type="button" className="erp-repair-button" onClick={onApply} disabled={repair.status === "applying"}>{repair.status === "applying" ? "正在应用……" : "应用这次调整"}</button></div></section>;
+  const afterLoad = buildDayLoads(repair.preview.itinerary).find((entry) => entry.day === repair.day);
+  const summary = repair.preview.impact_summary.local_repair;
+  return <section className="erp-repair-review" role="dialog" aria-modal="false" aria-label="调整预览"><p>调整预览</p><h3>让第 {repair.day} 天轻松一些</h3><div className="erp-repair-compare"><article><span>调整前</span><strong>{repair.before.activityCount} 个活动 · 移动 {formatMinutes(repair.before.travelMinutes)}</strong></article><article><span>调整后</span><strong>{afterLoad ? `${afterLoad.activityCount} 个活动 · 移动 ${formatMinutes(afterLoad.travelMinutes)}` : "已生成调整后的路线"}</strong></article></div><p>{summary ? `系统建议将“${summary.stop_name}”从第 ${summary.from_day} 天移动到第 ${summary.to_day} 天。` : "系统已生成一个只影响当天的安全调整。"}</p><p className="erp-protection">固定安排没有移动；你明确想去的地点没有删除；没有重新生成全部行程。</p><div><button type="button" onClick={onCancel} disabled={repair.status === "applying"}>取消</button><button type="button" className="erp-repair-button" onClick={onApply} disabled={repair.status === "applying"}>{repair.status === "applying" ? "正在应用……" : "应用这次调整"}</button></div></section>;
 }
 
 function RoutePreviewStyles() {

@@ -26,11 +26,17 @@ test("route preview renders a readable day timeline without internal handoff met
   assert.doesNotMatch(html, /handoff ID/);
 });
 
-test("saved route preview uses the existing server-authoritative proposal endpoints", () => {
+test("saved route preview sends only a user goal to the server-authoritative repair endpoint", () => {
   const source = readFileSync(componentPath, "utf8");
-  assert.match(source, /previewPersistedMutation/);
+  assert.match(source, /previewLocalRelaxDayRepair/);
   assert.match(source, /applyPersistedMutationProposal/);
   assert.match(source, /X-Idempotency-Key/);
   assert.match(source, /固定安排没有移动/);
   assert.match(source, /没有重新生成全部行程/);
+  assert.match(source, /target_day: day, goal: "relax_day"/);
+  assert.match(source, /调整前/);
+  assert.match(source, /系统补充/);
+  assert.match(source, /暂时没有可验证的安排说明/);
+  assert.doesNotMatch(source, /buildDayRelaxationPlan/);
+  assert.doesNotMatch(source, /move_stop/);
 });
