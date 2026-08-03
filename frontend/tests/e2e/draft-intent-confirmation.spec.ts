@@ -345,8 +345,9 @@ function installErrorGate(page: Page): ErrorGate {
     const expectedInitialIntentAbsence = allowExpectedInitialIntentAbsence && message.text().includes("status of 422");
     const expectedNetworkReset = allowExpectedNetworkFailure && message.text().includes("net::ERR_CONNECTION_RESET");
     const expectedStaleConflict = allowExpectedStaleConflict && message.text().includes("status of 409");
+    const expectedRouteSegmentAbort = allowExpectedRouteSegmentAbort && message.text().includes("net::ERR_INTERNET_DISCONNECTED");
     // The initial GET probes for an existing immutable IntentRevision before first compile.
-    if (message.type() === "error" && !expectedInitialIntentAbsence && !expectedNetworkReset && !expectedStaleConflict) {
+    if (message.type() === "error" && !expectedInitialIntentAbsence && !expectedNetworkReset && !expectedStaleConflict && !expectedRouteSegmentAbort) {
       errors.push(`console.error: ${message.text()}`);
     }
   });

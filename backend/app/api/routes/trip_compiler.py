@@ -33,7 +33,7 @@ def plan_confirmed_intent(
     try:
         itinerary_request = build_itinerary_request(payload.intent)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     result = get_trip_persistence_service().create_persisted_plan(
         TripPlanRequest(itinerary_request=itinerary_request),
     )
