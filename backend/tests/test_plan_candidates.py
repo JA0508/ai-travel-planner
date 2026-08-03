@@ -93,6 +93,7 @@ class PlanCandidateApiTests(unittest.TestCase):
         replay = self.client.post(f"/trip-compiler/plan-candidates/{candidate['id']}/select", json={"candidate_hash": candidate["candidate_hash"], "intent_digest": payload["intent_digest"]}, headers=headers)
         self.assertEqual(replay.status_code, 201, replay.text)
         self.assertEqual(selected.json()["trip"]["id"], replay.json()["trip"]["id"])
+        self.assertIn("HttpOnly", replay.headers["set-cookie"])
         selected_names = [item["name"] for day in selected.json()["itinerary"]["days"] for block in day["blocks"] for item in block["items"]]
         preview_names = [item["name"] for day in candidate["itinerary"]["days"] for block in day["blocks"] for item in block["items"]]
         self.assertEqual(selected_names, preview_names)

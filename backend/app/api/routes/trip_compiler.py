@@ -63,10 +63,13 @@ def select_plan_candidate(
     except CandidateProposalError as exc:
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"error": {"code": exc.code, "message": str(exc), "recoverable": True}})
     if replay and stored.selected_result is not None:
+        if stored.capability is not None:
+            set_trip_capability_cookie(response, stored.selected_result.trip.id, stored.capability)
         return stored.selected_result
     result = get_trip_persistence_service().create_persisted_plan(TripPlanRequest(itinerary_request=stored.itinerary_request))
     set_trip_capability_cookie(response, result.response.trip.id, result.capability)
     stored.selected_result = result.response
+    stored.capability = result.capability
     return result.response
 
 

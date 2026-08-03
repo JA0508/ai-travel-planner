@@ -20,6 +20,7 @@ class StoredCandidate:
     itinerary_request: object
     expires_at: datetime
     selected_result: object | None = None
+    capability: str | None = None
     idempotency_key: str | None = None
 
 
