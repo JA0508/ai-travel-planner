@@ -22,7 +22,17 @@ class SourceFragment(BaseModel):
 
     stable_id: str
     text: str
-    source_type: Literal["direct_user_text"] = "direct_user_text"
+    source_type: Literal["direct_user_text", "user_confirmation"] = "direct_user_text"
+    start_offset: int | None = Field(default=None, ge=0)
+    end_offset: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_offsets(self) -> "SourceFragment":
+        if (self.start_offset is None) != (self.end_offset is None):
+            raise ValueError("Source fragments require both offsets or neither.")
+        if self.start_offset is not None and self.end_offset is not None and self.end_offset < self.start_offset:
+            raise ValueError("Source fragment end_offset must not precede start_offset.")
+        return self
 
 
 class TripCompilerPlace(BaseModel):
@@ -134,6 +144,7 @@ class TripCompilerCompileResponse(BaseModel):
     intent: TravelIntent
     status: Literal["ready", "needs_confirmation", "hard_conflict"]
     conflicts: list[str] = Field(default_factory=list)
+    conflict_cores: list[dict] = Field(default_factory=list)
 
 
 class TripCompilerPlanRequest(BaseModel):

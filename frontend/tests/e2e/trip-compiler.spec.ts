@@ -14,15 +14,15 @@ function installGate(page: Page) {
   return () => expect(errors, errors.join("\n")).toEqual([]);
 }
 
-function observePlanRequests(page: Page) {
+function observeCandidateRequests(page: Page) {
   let count = 0;
   page.on("request", (request) => {
-    if (request.method() === "POST" && request.url().includes("/trip-compiler/trips")) count += 1;
+    if (request.method() === "POST" && request.url().includes("/trip-compiler/plan-candidates")) count += 1;
   });
   return () => count;
 }
 
-test("Trip Compiler Scenario A: compiles confirmed language into a saved executable route", async ({ page }) => {
+test("Trip Compiler Scenario A: compares server candidates before saving one executable route", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const assertClean = installGate(page);
   await page.goto("/trip-compiler");
@@ -36,9 +36,14 @@ test("Trip Compiler Scenario A: compiles confirmed language into a saved executa
   await expect(page.getByText("西湖", { exact: true })).toBeVisible();
   await expect(page.getByText("龙井村", { exact: true })).toBeVisible();
   await expect(page.getByText("中国茶叶博物馆", { exact: true })).toBeVisible();
-  const planned = page.waitForResponse((response) => response.url().includes("/trip-compiler/trips") && response.request().method() === "POST");
+  const planned = page.waitForResponse((response) => response.url().includes("/trip-compiler/plan-candidates") && response.request().method() === "POST");
   await page.getByRole("button", { name: "生成我的行程骨架" }).click();
-  expect((await planned).status()).toBe(201);
+  expect((await planned).status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "选一条更符合这次旅行的安排。" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "确认并保存这条路线" })).toBeVisible();
+  const selected = page.waitForResponse((response) => response.url().includes("/select") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "确认并保存这条路线" }).click();
+  expect((await selected).status()).toBe(201);
   await expect(page.getByRole("heading", { name: /杭州 · 2 天/ })).toBeVisible();
   await expect(page.getByRole("region", { name: "可执行路线预览" })).toBeVisible();
   await expect(page.getByText("必去", { exact: true }).first()).toBeVisible();
@@ -50,7 +55,7 @@ test("Trip Compiler Scenario A: compiles confirmed language into a saved executa
 test("Trip Compiler Scenario B: missing travel length stays visible instead of silently planning", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const assertClean = installGate(page);
-  const planRequestCount = observePlanRequests(page);
+  const planRequestCount = observeCandidateRequests(page);
   await page.goto("/trip-compiler");
   await page.getByLabel("这趟旅行，你已经知道些什么？").fill("周末想去苏州，想看看园林，别太累。");
   await page.getByRole("button", { name: "整理我的旅行想法" }).click();
@@ -73,12 +78,12 @@ test("Trip Compiler Scenario B: missing travel length stays visible instead of s
 test("Trip Compiler Scenario C: an arrival-after-reservation conflict never creates a route", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const assertClean = installGate(page);
-  const planRequestCount = observePlanRequests(page);
+  const planRequestCount = observeCandidateRequests(page);
   await page.goto("/trip-compiler");
   await page.getByLabel("这趟旅行，你已经知道些什么？").fill("下午三点到上海，下午两点到四点预约了上海博物馆。");
   await page.getByRole("button", { name: "整理我的旅行想法" }).click();
   await expect(page.locator(".tc-conflict[role=alert]")).toContainText("当前安排存在冲突");
-  await expect(page.getByText("到达时间晚于固定安排“上海博物馆”的开始时间。")).toBeVisible();
+  await expect(page.getByText("第 1 天到达时间晚于固定安排“上海博物馆”的开始时间，无法同时满足。")).toBeVisible();
   await expect(page.getByRole("region", { name: "可执行路线预览" })).toHaveCount(0);
   expect(planRequestCount()).toBe(0);
   assertClean();
@@ -91,6 +96,7 @@ test("Trip Compiler Scenario D: a rushed day receives one server-authoritative l
   await page.getByLabel("这趟旅行，你已经知道些什么？").fill(hangzhou);
   await page.getByRole("button", { name: "整理我的旅行想法" }).click();
   await page.getByRole("button", { name: "生成我的行程骨架" }).click();
+  await page.getByRole("button", { name: "确认并保存这条路线" }).click();
   await expect(page.getByRole("region", { name: "可执行路线预览" })).toBeVisible();
 
   const previewed = page.waitForResponse((response) => response.url().includes("/local-repairs/relax-day/preview"));

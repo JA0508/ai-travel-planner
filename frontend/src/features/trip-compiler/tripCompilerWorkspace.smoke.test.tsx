@@ -19,10 +19,12 @@ test("trip compiler starts with one clear text input and no technical fields", (
   assert.doesNotMatch(html, /schema version/i);
 });
 
-test("live compiler never imports fixtures or creates a route in the browser", () => {
+test("live compiler never imports fixtures or creates a route before server candidate selection", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /compileTripCompilerIntent/);
-  assert.match(source, /planTripCompilerIntent/);
+  assert.match(source, /generateTripCompilerCandidates/);
+  assert.match(source, /selectTripCompilerCandidate/);
+  assert.match(source, /user_confirmation/);
   assert.match(source, /postTripJson/);
   assert.match(source, /getTripJson/);
   assert.match(source, /ExecutableRoutePreview/);
@@ -30,4 +32,5 @@ test("live compiler never imports fixtures or creates a route in the browser", (
   assert.doesNotMatch(source, /buildDayRelaxationPlan/);
   assert.doesNotMatch(source, /move_stop/);
   assert.doesNotMatch(source, /placementReason \?\?/);
+  assert.doesNotMatch(source, /planTripCompilerIntent/);
 });
