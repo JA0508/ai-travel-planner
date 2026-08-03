@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildDayLoads, buildDayRelaxationPlan } from "./routePreviewModel";
+import { buildDayLoads } from "./routePreviewModel";
 
 const itinerary = {
   trip_days: 2,
@@ -23,23 +23,9 @@ const itinerary = {
   ],
 };
 
-test("classifies a packed day and keeps fixed and user-owned stops out of a relaxation plan", () => {
+test("classifies a packed day from the server-owned realism payload", () => {
   const [day] = buildDayLoads(itinerary);
   assert.equal(day.pace, "rushed");
-  const plan = buildDayRelaxationPlan(itinerary, 1, "revision-1");
-  assert.equal(plan?.action, "move");
-  assert.equal(plan?.stopName, "系统补点");
-  assert.equal(plan?.toDay, 2);
-  assert.deepEqual(plan?.command, {
-    schema_version: "1.0",
-    base_revision_id: "revision-1",
-    mutation_kind: "route_edit",
-    repair: { target_day: 1, goal: "relax_day" },
-    commands: [{ type: "move_stop", stop_id: "fill", target_day: 2, target_block: "afternoon", placement: { at_end: true } }],
-  });
-});
-
-test("does not offer a repair when a day only contains fixed or user-selected stops", () => {
-  const protectedOnly = { ...itinerary, days: itinerary.days.map((day) => day.day === 1 ? { ...day, blocks: day.blocks.map((block) => ({ ...block, items: block.items.filter((item) => item.source_type === "user_fixed" || item.source_type === "user_seed") })) } : day) };
-  assert.equal(buildDayRelaxationPlan(protectedOnly, 1, "revision-1"), null);
+  assert.equal(day.activityMinutes, 425);
+  assert.equal(day.travelMinutes, 75);
 });

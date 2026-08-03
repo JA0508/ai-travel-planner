@@ -278,11 +278,11 @@ test("Scenario F: previews and applies a local relaxation without regenerating t
   expect(beforeRepair.trip_revisions).toHaveLength(1);
   expect(flattenedStopNames(beforeRepair.trip_revisions[0].snapshot)).toContain("武林夜市");
 
-  const previewRepair = page.waitForResponse((response) => response.url().includes("/mutations/preview") && response.request().method() === "POST");
+  const previewRepair = page.waitForResponse((response) => response.url().includes("/local-repairs/relax-day/preview") && response.request().method() === "POST");
   await routePreview.getByRole("button", { name: "让这一天轻松一些" }).click();
   expect((await previewRepair).status()).toBe(200);
   const review = page.getByRole("dialog", { name: "调整预览" });
-  await expect(review).toContainText(/武林夜市\s*将从第 1 天移到第 2 天/);
+  await expect(review).toContainText(/系统建议将“武林夜市”从第 1 天移动到第 2 天/);
   await expect(review.getByText("固定安排没有移动；你明确想去的地点没有删除；没有重新生成全部行程。")).toBeVisible();
 
   const applyRepair = page.waitForResponse((response) => response.url().includes("/mutation-proposals/") && response.url().includes("/apply") && response.request().method() === "POST");

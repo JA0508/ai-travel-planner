@@ -16,7 +16,7 @@ export default defineConfig({
   use: { baseURL: "http://127.0.0.1:3026", browserName: "chromium", headless: true, trace: "retain-on-failure", screenshot: "only-on-failure" },
   webServer: [
     {
-      command: `${process.env.TRIP_E2E_PYTHON ?? "python"} -m uvicorn app.main:app --host 127.0.0.1 --port 8026`,
+      command: `${process.env.TRIP_E2E_PYTHON ?? ".venv/bin/python"} -m uvicorn app.main:app --host 127.0.0.1 --port 8026`,
       cwd: "../backend",
       env: { APP_ENV: "development", OPENAI_API_KEY: "", AMAP_API_KEY: "", POI_DISCOVERY_MODE: "fallback", TRIP_STORE_MODE: "sqlite", TRIP_STORE_PATH: join(runtime, "trips.sqlite3"), IMPORT_ARTIFACT_ROOT: artifacts, TRIP_ALLOWED_ORIGINS: "http://127.0.0.1:3026", CORS_ALLOW_ORIGINS: "http://127.0.0.1:3026", TRIP_CAPABILITY_COOKIE_SECURE: "false", LOG_LEVEL: "WARNING" },
       url: "http://127.0.0.1:8026/readiness", timeout: 120_000, reuseExistingServer: false,

@@ -44,6 +44,7 @@ from app.trips.intent_contracts import (
 from app.trips.draft_intent_edits import DraftClarificationResolveRequest, DraftIntentEditRequest
 from app.trips.schemas import (
     ApplyPersistedMutationProposalRequest,
+    LocalRepairPreviewRequest,
     ApplyPlannerHandoffProposalRequest,
     DraftTripCreateRequest,
     DraftTripCreateResponse,
@@ -960,6 +961,28 @@ def preview_typed_mutation(
         return origin_error
     try:
         return get_trip_persistence_service().preview_typed_mutation(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post(
+    "/{trip_id}/local-repairs/relax-day/preview",
+    response_model=PersistedMutationPreviewResponse,
+)
+def preview_local_repair(
+    trip_id: str,
+    payload: LocalRepairPreviewRequest,
+    request: Request,
+) -> PersistedMutationPreviewResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().preview_local_repair(
             trip_id=trip_id,
             capability=get_trip_capability_from_request(request, trip_id),
             payload=payload,

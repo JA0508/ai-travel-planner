@@ -40,11 +40,12 @@ def normalize_poi(
             city=city,
             latitude=float(external_poi["latitude"]),
             longitude=float(external_poi["longitude"]),
-            duration_minutes=profile.typical_duration_minutes,
+            duration_minutes=raw_poi.resolved_duration_minutes or profile.typical_duration_minutes,
             profile=profile,
             fixed_day=raw_poi.fixed_day,
             fixed_time_start=raw_poi.fixed_time_start,
             fixed_time_end=raw_poi.fixed_time_end,
+            intent_ownership=raw_poi.intent_ownership,
         )
 
     geocode = geocode_place_details(raw_poi.name, city=city)
@@ -56,11 +57,12 @@ def normalize_poi(
         city=city_name,
         latitude=geocode["latitude"],
         longitude=geocode["longitude"],
-        duration_minutes=profile.typical_duration_minutes,
+        duration_minutes=raw_poi.resolved_duration_minutes or profile.typical_duration_minutes,
         profile=profile,
         fixed_day=raw_poi.fixed_day,
         fixed_time_start=raw_poi.fixed_time_start,
         fixed_time_end=raw_poi.fixed_time_end,
+        intent_ownership=raw_poi.intent_ownership,
     )
 
 

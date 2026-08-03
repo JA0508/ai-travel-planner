@@ -16,6 +16,9 @@ Backend CI badge
 
 ## Overview
 
+For the Chinese project narrative and long-term experience goal, see
+[Project Overview](docs/product/PROJECT_OVERVIEW.md).
+
 This repository implements an **AI Trip Compiler / Executable Trip Workspace**:
 a full-stack travel planning system built around a strict separation of
 responsibilities:
