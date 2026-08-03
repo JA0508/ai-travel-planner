@@ -25,19 +25,18 @@ from app.schemas.trip_compiler import (
 def compile_travel_intent(text: str) -> TripCompilerCompileResponse:
     """Compile language into an editable contract without scheduling anything."""
 
+    from app.services.constraint_planning import build_constraint_graph, find_conflict_cores
+
     normalized = text.strip()
     parsed = parse_trip_text(normalized)
-    fragment = SourceFragment(
-        stable_id=stable_compiler_id("source", normalized),
-        text=normalized,
-    )
-    source_ids = [fragment.stable_id]
+    fragments = _source_fragments(normalized)
+    source_ids = [fragment.stable_id for fragment in fragments[:1]]
     trip_days = _supported_trip_days(parsed.trip_days)
     pace = "relaxed" if any(token in normalized for token in ("不要太赶", "不想太赶", "别太累", "轻松", "不想太累")) else "intensive" if any(token in normalized for token in ("紧凑", "多安排", "尽量多")) else "balanced"
-    must, optional = _places(parsed, normalized, source_ids)
-    fixed_events = _fixed_events(parsed, normalized, source_ids)
-    constraints = _constraints(parsed, normalized, source_ids, trip_days=trip_days)
-    avoid_items = _avoid_items(normalized, source_ids)
+    must, optional = _places(parsed, normalized, fragments)
+    fixed_events = _fixed_events(parsed, normalized, fragments)
+    constraints = _constraints(parsed, normalized, fragments, trip_days=trip_days)
+    avoid_items = _avoid_items(normalized, fragments)
     unresolved = _unresolved(parsed, normalized, fixed_events, source_ids, trip_days=trip_days)
     conflicts = _conflicts(parsed, normalized, fixed_events)
     intent = TravelIntent(
@@ -49,17 +48,20 @@ def compile_travel_intent(text: str) -> TripCompilerCompileResponse:
         optional_places=optional,
         fixed_events=fixed_events,
         preferences=[
-            TripCompilerPreference(stable_id=stable_compiler_id("preference", value, index), value=value, confidence=0.8, source_fragment_ids=source_ids)
+            TripCompilerPreference(stable_id=stable_compiler_id("preference", value, index), value=value, confidence=0.8, source_fragment_ids=_matching_source_ids(fragments, value))
             for index, value in enumerate(_unique([*parsed.preferences, *parsed.style_preferences]))
         ],
         constraints=constraints,
         avoid_items=avoid_items,
         unresolved_items=unresolved,
-        source_fragments=[fragment],
+        source_fragments=fragments,
         travel_mode=_travel_mode(normalized),
     )
-    status = "hard_conflict" if conflicts else "needs_confirmation" if intent.has_blocking_unresolved_items else "ready"
-    return TripCompilerCompileResponse(intent=intent, status=status, conflicts=conflicts)
+    graph = build_constraint_graph(intent)
+    conflict_cores = find_conflict_cores(intent, graph)
+    conflicts = [core.explanation for core in conflict_cores] or conflicts
+    status = "hard_conflict" if conflict_cores else "needs_confirmation" if intent.has_blocking_unresolved_items else "ready"
+    return TripCompilerCompileResponse(intent=intent, status=status, conflicts=conflicts, conflict_cores=[core.model_dump(mode="json") for core in conflict_cores])
 
 
 def build_itinerary_request(intent: TravelIntent) -> ItineraryRequest:
@@ -110,7 +112,7 @@ def build_itinerary_request(intent: TravelIntent) -> ItineraryRequest:
     )
 
 
-def _places(parsed: ParsedTripIntentResponse, text: str, source_ids: list[str]) -> tuple[list[TripCompilerPlace], list[TripCompilerPlace]]:
+def _places(parsed: ParsedTripIntentResponse, text: str, fragments: list[SourceFragment]) -> tuple[list[TripCompilerPlace], list[TripCompilerPlace]]:
     must: list[TripCompilerPlace] = []
     optional: list[TripCompilerPlace] = []
     explicit_must, explicit_optional = _explicit_places(text)
@@ -122,13 +124,13 @@ def _places(parsed: ParsedTripIntentResponse, text: str, source_ids: list[str]) 
         ownership = "user_optional" if optional_hint else "user_must"
         item = TripCompilerPlace(
             stable_id=stable_compiler_id("place", name, index), name=name, ownership=ownership,
-            confidence=0.85, source_fragment_ids=source_ids,
+            confidence=0.85, source_fragment_ids=_matching_source_ids(fragments, name),
         )
         (optional if optional_hint else must).append(item)
     return must, optional
 
 
-def _fixed_events(parsed: ParsedTripIntentResponse, text: str, source_ids: list[str]) -> list[TripCompilerFixedEvent]:
+def _fixed_events(parsed: ParsedTripIntentResponse, text: str, fragments: list[SourceFragment]) -> list[TripCompilerFixedEvent]:
     events: list[TripCompilerFixedEvent] = []
     extracted = _explicit_fixed_events(text)
     raw_events = extracted or [(event.name, event.fixed_day, event.fixed_time_start, event.fixed_time_end) for event in parsed.fixed_events]
@@ -137,7 +139,7 @@ def _fixed_events(parsed: ParsedTripIntentResponse, text: str, source_ids: list[
             stable_id=stable_compiler_id("fixed", name, index), name=name,
             day=day, start_time=start_time, end_time=end_time,
             fixed_reason="你明确说明这是预约或固定时间安排。", confidence=0.9,
-            source_fragment_ids=source_ids,
+            source_fragment_ids=_matching_source_ids(fragments, name),
         ))
     return events
 
@@ -145,7 +147,7 @@ def _fixed_events(parsed: ParsedTripIntentResponse, text: str, source_ids: list[
 def _constraints(
     parsed: ParsedTripIntentResponse,
     text: str,
-    source_ids: list[str],
+    fragments: list[SourceFragment],
     *,
     trip_days: int | None,
 ) -> list[TripCompilerConstraint]:
@@ -155,20 +157,20 @@ def _constraints(
         bits = [f"第 {day} 天"]
         if window.available_start: bits.append(f"{window.available_start} 后")
         if window.available_end: bits.append(f"{window.available_end} 前")
-        constraints.append(TripCompilerConstraint(stable_id=stable_compiler_id("availability", ":".join(bits), index), value=" ".join(bits), kind="availability", source_fragment_ids=source_ids))
+        constraints.append(TripCompilerConstraint(stable_id=stable_compiler_id("availability", ":".join(bits), index), value=" ".join(bits), kind="availability", source_fragment_ids=_matching_source_ids(fragments, window.available_start or window.available_end or str(day))))
     arrival = _arrival_time(text)
     if arrival:
-        constraints.append(TripCompilerConstraint(stable_id=stable_compiler_id("arrival", arrival), value=f"第 1 天 {arrival} 后可开始安排", kind="arrival", source_fragment_ids=source_ids))
+        constraints.append(TripCompilerConstraint(stable_id=stable_compiler_id("arrival", arrival), value=f"第 1 天 {arrival} 后可开始安排", kind="arrival", source_fragment_ids=_matching_source_ids(fragments, arrival)))
     departure = _departure_time(text)
     if departure:
         day = trip_days or 1
-        constraints.append(TripCompilerConstraint(stable_id=stable_compiler_id("departure", departure), value=f"第 {day} 天 {departure} 前需要结束行程", kind="departure", source_fragment_ids=source_ids))
+        constraints.append(TripCompilerConstraint(stable_id=stable_compiler_id("departure", departure), value=f"第 {day} 天 {departure} 前需要结束行程", kind="departure", source_fragment_ids=_matching_source_ids(fragments, departure)))
     return constraints
 
 
-def _avoid_items(text: str, source_ids: list[str]) -> list[TripCompilerConstraint]:
+def _avoid_items(text: str, fragments: list[SourceFragment]) -> list[TripCompilerConstraint]:
     values = [match.strip("。 ，,；;") for match in re.findall(r"(?:不想去|不去|避开|不要安排)([^。；;，,\n]{1,30})", text)]
-    return [TripCompilerConstraint(stable_id=stable_compiler_id("avoid", value, index), value=value, kind="avoid", source_fragment_ids=source_ids) for index, value in enumerate(_unique(values))]
+    return [TripCompilerConstraint(stable_id=stable_compiler_id("avoid", value, index), value=value, kind="avoid", source_fragment_ids=_matching_source_ids(fragments, value)) for index, value in enumerate(_unique(values))]
 
 
 def _unresolved(
@@ -361,3 +363,24 @@ def _availability_from_constraint(value: str) -> AvailabilityWindow | None:
 def _unique(values: list[str]) -> list[str]:
     seen: set[str] = set()
     return [value for value in values if value.strip() and not (value in seen or seen.add(value))]
+
+
+def _source_fragments(text: str) -> list[SourceFragment]:
+    """Keep exact sentence offsets where they are mechanically reliable."""
+
+    fragments: list[SourceFragment] = []
+    for index, match in enumerate(re.finditer(r"[^。！？!?\n]+[。！？!?]?", text)):
+        sentence = match.group(0).strip()
+        if not sentence:
+            continue
+        start = match.start() + (len(match.group(0)) - len(match.group(0).lstrip()))
+        fragments.append(SourceFragment(
+            stable_id=stable_compiler_id("source", sentence, index), text=sentence,
+            start_offset=start, end_offset=start + len(sentence),
+        ))
+    return fragments or [SourceFragment(stable_id=stable_compiler_id("source", text), text=text, start_offset=0, end_offset=len(text))]
+
+
+def _matching_source_ids(fragments: list[SourceFragment], value: str) -> list[str]:
+    matches = [fragment.stable_id for fragment in fragments if value and value in fragment.text]
+    return matches or [fragments[0].stable_id]
