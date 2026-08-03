@@ -7,6 +7,7 @@ existing deterministic planner plus TripRevision persistence.
 | Field | Canonical source | Owner | Type | Nullable | UI rule |
 | --- | --- | --- | --- | --- | --- |
 | destination | compiler response | compiler + user confirmation | `string` | yes | block planning when missing |
+| trip days | compiler response | compiler + user confirmation | `1 \| 2 \| 3` | yes | V1 blocks planning outside one to three days |
 | date window | compiler response | compiler + user confirmation | typed time-window object | fields yes | relative dates are not presented as confirmed calendar dates |
 | pace | compiler response | compiler + user confirmation | relaxed/balanced/intensive | no | editable before planning |
 | must visit | compiler response | user | typed place list | no list | show `必去` |

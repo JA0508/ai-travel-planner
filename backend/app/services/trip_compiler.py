@@ -13,6 +13,8 @@ from app.schemas.trip_compiler import (
     TripCompilerCompileResponse,
     TripCompilerConstraint,
     TripCompilerFixedEvent,
+    TRIP_COMPILER_MAX_DAYS,
+    TRIP_COMPILER_MIN_DAYS,
     TripCompilerPlace,
     TripCompilerPreference,
     TripCompilerUnresolvedItem,
@@ -30,17 +32,18 @@ def compile_travel_intent(text: str) -> TripCompilerCompileResponse:
         text=normalized,
     )
     source_ids = [fragment.stable_id]
+    trip_days = _supported_trip_days(parsed.trip_days)
     pace = "relaxed" if any(token in normalized for token in ("不要太赶", "不想太赶", "别太累", "轻松", "不想太累")) else "intensive" if any(token in normalized for token in ("紧凑", "多安排", "尽量多")) else "balanced"
     must, optional = _places(parsed, normalized, source_ids)
     fixed_events = _fixed_events(parsed, normalized, source_ids)
-    constraints = _constraints(parsed, normalized, source_ids)
+    constraints = _constraints(parsed, normalized, source_ids, trip_days=trip_days)
     avoid_items = _avoid_items(normalized, source_ids)
-    unresolved = _unresolved(parsed, normalized, fixed_events, source_ids)
+    unresolved = _unresolved(parsed, normalized, fixed_events, source_ids, trip_days=trip_days)
     conflicts = _conflicts(parsed, normalized, fixed_events)
     intent = TravelIntent(
         destination=parsed.city,
         date_window={"start_date": None, "end_date": None, "arrival_time": _arrival_time(normalized), "departure_time": _departure_time(normalized)},
-        trip_days=parsed.trip_days,
+        trip_days=trip_days,
         pace=pace,
         must_visit_places=must,
         optional_places=optional,
@@ -64,6 +67,8 @@ def build_itinerary_request(intent: TravelIntent) -> ItineraryRequest:
 
     if not intent.destination or not intent.trip_days:
         raise ValueError("destination and trip_days are required before planning")
+    if not TRIP_COMPILER_MIN_DAYS <= intent.trip_days <= TRIP_COMPILER_MAX_DAYS:
+        raise ValueError(f"AI Trip Compiler V1 supports {TRIP_COMPILER_MIN_DAYS} to {TRIP_COMPILER_MAX_DAYS} days.")
     if intent.has_blocking_unresolved_items:
         raise ValueError("intent has unresolved blocking information")
     if any(event.day is None or event.start_time is None or event.end_time is None for event in intent.fixed_events):
@@ -137,10 +142,16 @@ def _fixed_events(parsed: ParsedTripIntentResponse, text: str, source_ids: list[
     return events
 
 
-def _constraints(parsed: ParsedTripIntentResponse, text: str, source_ids: list[str]) -> list[TripCompilerConstraint]:
+def _constraints(
+    parsed: ParsedTripIntentResponse,
+    text: str,
+    source_ids: list[str],
+    *,
+    trip_days: int | None,
+) -> list[TripCompilerConstraint]:
     constraints: list[TripCompilerConstraint] = []
     for index, window in enumerate(parsed.availability_windows):
-        day = parsed.trip_days if window.available_end and ("周日" in text or "星期日" in text) and parsed.trip_days else window.day or index + 1
+        day = trip_days if window.available_end and ("周日" in text or "星期日" in text) and trip_days else window.day or index + 1
         bits = [f"第 {day} 天"]
         if window.available_start: bits.append(f"{window.available_start} 后")
         if window.available_end: bits.append(f"{window.available_end} 前")
@@ -150,7 +161,7 @@ def _constraints(parsed: ParsedTripIntentResponse, text: str, source_ids: list[s
         constraints.append(TripCompilerConstraint(stable_id=stable_compiler_id("arrival", arrival), value=f"第 1 天 {arrival} 后可开始安排", kind="arrival", source_fragment_ids=source_ids))
     departure = _departure_time(text)
     if departure:
-        day = parsed.trip_days or 1
+        day = trip_days or 1
         constraints.append(TripCompilerConstraint(stable_id=stable_compiler_id("departure", departure), value=f"第 {day} 天 {departure} 前需要结束行程", kind="departure", source_fragment_ids=source_ids))
     return constraints
 
@@ -160,13 +171,28 @@ def _avoid_items(text: str, source_ids: list[str]) -> list[TripCompilerConstrain
     return [TripCompilerConstraint(stable_id=stable_compiler_id("avoid", value, index), value=value, kind="avoid", source_fragment_ids=source_ids) for index, value in enumerate(_unique(values))]
 
 
-def _unresolved(parsed: ParsedTripIntentResponse, text: str, events: list[TripCompilerFixedEvent], source_ids: list[str]) -> list[TripCompilerUnresolvedItem]:
+def _unresolved(
+    parsed: ParsedTripIntentResponse,
+    text: str,
+    events: list[TripCompilerFixedEvent],
+    source_ids: list[str],
+    *,
+    trip_days: int | None,
+) -> list[TripCompilerUnresolvedItem]:
     unresolved: list[TripCompilerUnresolvedItem] = []
     if not parsed.city:
         unresolved.append(TripCompilerUnresolvedItem(stable_id="unresolved_destination", field="destination", question="这次想去哪个城市？", blocking=True, source_fragment_ids=source_ids))
-    if not parsed.trip_days:
+    if parsed.trip_days is not None and trip_days is None:
+        unresolved.append(TripCompilerUnresolvedItem(
+            stable_id="unresolved_trip_days_v1_limit",
+            field="trip_days",
+            question=f"当前版本先支持 {TRIP_COMPILER_MIN_DAYS} 到 {TRIP_COMPILER_MAX_DAYS} 天的行程，请调整旅行天数后再继续。",
+            blocking=True,
+            source_fragment_ids=source_ids,
+        ))
+    elif not trip_days:
         unresolved.append(TripCompilerUnresolvedItem(stable_id="unresolved_trip_days", field="trip_days", question="准备玩几天？", blocking=True, source_fragment_ids=source_ids))
-    if "周末" in text and not parsed.trip_days:
+    if "周末" in text and not trip_days:
         unresolved.append(TripCompilerUnresolvedItem(stable_id="unresolved_weekend", field="date_window", question="“周末”具体是哪几天？", blocking=False, source_fragment_ids=source_ids))
     for event in events:
         if event.day is None or event.start_time is None or event.end_time is None:
@@ -174,6 +200,12 @@ def _unresolved(parsed: ParsedTripIntentResponse, text: str, events: list[TripCo
     if not parsed.scenic_spots and parsed.city:
         unresolved.append(TripCompilerUnresolvedItem(stable_id="unresolved_place_preference", field="places", question="更想看园林、历史文化、自然景观，还是城市街区？", blocking=False, source_fragment_ids=source_ids))
     return unresolved
+
+
+def _supported_trip_days(value: int | None) -> int | None:
+    if value is None or not TRIP_COMPILER_MIN_DAYS <= value <= TRIP_COMPILER_MAX_DAYS:
+        return None
+    return value
 
 
 def _conflicts(parsed: ParsedTripIntentResponse, text: str, events: list[TripCompilerFixedEvent]) -> list[str]:
