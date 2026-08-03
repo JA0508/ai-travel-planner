@@ -11,6 +11,8 @@ from .itinerary import TravelMode
 
 TripOwnership = Literal["user_fixed", "user_must", "user_optional", "system_suggested"]
 TripPace = Literal["relaxed", "balanced", "intensive"]
+TRIP_COMPILER_MIN_DAYS = 1
+TRIP_COMPILER_MAX_DAYS = 3
 
 
 class SourceFragment(BaseModel):
@@ -20,7 +22,17 @@ class SourceFragment(BaseModel):
 
     stable_id: str
     text: str
-    source_type: Literal["direct_user_text"] = "direct_user_text"
+    source_type: Literal["direct_user_text", "user_confirmation"] = "direct_user_text"
+    start_offset: int | None = Field(default=None, ge=0)
+    end_offset: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_offsets(self) -> "SourceFragment":
+        if (self.start_offset is None) != (self.end_offset is None):
+            raise ValueError("Source fragments require both offsets or neither.")
+        if self.start_offset is not None and self.end_offset is not None and self.end_offset < self.start_offset:
+            raise ValueError("Source fragment end_offset must not precede start_offset.")
+        return self
 
 
 class TripCompilerPlace(BaseModel):
@@ -38,7 +50,7 @@ class TripCompilerFixedEvent(BaseModel):
 
     stable_id: str
     name: str = Field(min_length=1, max_length=180)
-    day: int | None = Field(default=None, ge=1, le=60)
+    day: int | None = Field(default=None, ge=TRIP_COMPILER_MIN_DAYS, le=TRIP_COMPILER_MAX_DAYS)
     start_time: str | None = None
     end_time: str | None = None
     fixed_reason: str
@@ -95,7 +107,7 @@ class TravelIntent(BaseModel):
     contract_version: Literal["1"] = "1"
     destination: str | None = None
     date_window: dict[str, str | None] = Field(default_factory=dict)
-    trip_days: int | None = Field(default=None, ge=1, le=3)
+    trip_days: int | None = Field(default=None, ge=TRIP_COMPILER_MIN_DAYS, le=TRIP_COMPILER_MAX_DAYS)
     pace: TripPace = "balanced"
     must_visit_places: list[TripCompilerPlace] = Field(default_factory=list)
     optional_places: list[TripCompilerPlace] = Field(default_factory=list)
@@ -111,6 +123,10 @@ class TravelIntent(BaseModel):
     def validate_v1_place_limit(self) -> "TravelIntent":
         if len(self.must_visit_places) + len(self.optional_places) > 8:
             raise ValueError("AI Trip Compiler V1 supports at most eight user places.")
+        if self.trip_days is not None and any(
+            event.day is not None and event.day > self.trip_days for event in self.fixed_events
+        ):
+            raise ValueError("Fixed event days must be within the trip length.")
         return self
 
     @property
@@ -128,6 +144,7 @@ class TripCompilerCompileResponse(BaseModel):
     intent: TravelIntent
     status: Literal["ready", "needs_confirmation", "hard_conflict"]
     conflicts: list[str] = Field(default_factory=list)
+    conflict_cores: list[dict] = Field(default_factory=list)
 
 
 class TripCompilerPlanRequest(BaseModel):
