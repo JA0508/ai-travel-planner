@@ -170,7 +170,7 @@ def build_relax_day_envelope(
             break
     if candidate is None:
         raise MutationCommandFailedError(command_index=0, reason_code="local_repair_no_safe_option")
-    source_block, item, target_block = candidate
+    _source_block, item, target_block = candidate
     block_type = TimeBlockType(str(target_block.get("block_type")))
     envelope = TripMutationCommandEnvelope(
         base_revision_id=base_revision_id,
@@ -210,7 +210,6 @@ def _item_fits_block(item: dict[str, Any], block: dict[str, Any]) -> bool:
     block_start = str(block.get("start_time") or "")
     block_end = str(block.get("end_time") or "")
     return bool(start and end and block_start and block_end and block_start <= start and end <= block_end)
-
 
 TripMutationCommand = Annotated[
     MoveStopCommand

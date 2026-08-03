@@ -6,9 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "typecheck": "tsc --noEmit --incremental false",
-    "test:workspace": "node --import tsx --test src/features/trip-workspace/*.test.ts src/features/imports/*.test.ts src/features/intent-confirmation/*.test.ts src/features/preplan-intent/*.test.ts src/features/executable-route-preview/*.test.ts src/features/trip-compiler/*.smoke.test.tsx",
+    "test:workspace": "node --import tsx --test src/features/trip-workspace/*.test.ts src/features/imports/*.test.ts src/features/intent-confirmation/*.test.ts src/features/preplan-intent/*.test.ts src/features/executable-route-preview/*.test.ts src/features/product-reset-prototype/*.test.tsx src/features/trip-compiler/*.smoke.test.tsx",
     "test:browser-smoke": "node --import tsx --test src/features/intent-confirmation/*.smoke.test.tsx src/features/preplan-intent/*.smoke.test.tsx src/features/executable-route-preview/*.smoke.test.tsx src/features/trip-compiler/*.smoke.test.tsx",
     "test:e2e:intent": "TRIP_API_PROXY_TARGET=http://127.0.0.1:8018 npm run build && playwright test --config=playwright.intent.config.ts",
+    "test:e2e:product-reset": "npm run build && playwright test --config=playwright.product-reset.config.ts",
     "start": "next start"
   },
   "dependencies": {
