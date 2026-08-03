@@ -62,6 +62,10 @@ from app.trips.schemas import (
     PersistedMutationApplyResponse,
     PersistedMutationPreviewRequest,
     PersistedMutationPreviewResponse,
+    GoldenPathRepairApplyRequest,
+    GoldenPathRepairApplyResponse,
+    GoldenPathRepairPreviewRequest,
+    GoldenPathRepairPreviewResponse,
     PlannerHandoffApplyResponse,
     PlannerHandoffPreviewRequest,
     PlannerHandoffPreviewResponse,
@@ -1008,6 +1012,39 @@ def apply_typed_mutation_proposal(
             capability=get_trip_capability_from_request(request, trip_id),
             idempotency_key=x_idempotency_key,
             payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post("/{trip_id}/golden-path/repair/preview", response_model=GoldenPathRepairPreviewResponse)
+def preview_golden_path_repair(
+    trip_id: str, payload: GoldenPathRepairPreviewRequest, request: Request,
+) -> GoldenPathRepairPreviewResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().preview_golden_path_repair(
+            trip_id=trip_id, capability=get_trip_capability_from_request(request, trip_id), payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post("/{trip_id}/golden-path/repair/proposals/{proposal_id}/apply", response_model=GoldenPathRepairApplyResponse)
+def apply_golden_path_repair(
+    trip_id: str, proposal_id: str, payload: GoldenPathRepairApplyRequest, request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> GoldenPathRepairApplyResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        return get_trip_persistence_service().apply_golden_path_repair(
+            trip_id=trip_id, proposal_id=proposal_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            idempotency_key=x_idempotency_key, payload=payload,
         )
     except TripError as exc:
         return trip_error_response(exc)

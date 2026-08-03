@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from math import atan2, cos, radians, sin, sqrt
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -291,6 +292,8 @@ class TripMutationEngine:
                     command_index=index,
                     reason_code="invalid_mutation_command",
                 ) from exc
+        if envelope.repair is not None and any(getattr(command, "type", None) == "move_stop" for command in envelope.commands):
+            reslot_local_repair(snapshot, impact)
         normalize_snapshot_after_mutation(snapshot, impact)
         snapshot = ItineraryResponse.model_validate(snapshot).model_dump(mode="json")
         if itinerary_content_digest(snapshot) == before_digest:
@@ -492,6 +495,38 @@ def apply_move_stop(
     impact["moved_stop_ids"].append(command.stop_id)
     record_day_impact(impact, source_day.get("day"))
     record_day_impact(impact, target_day.get("day"))
+
+
+def reslot_local_repair(snapshot: dict[str, Any], impact: dict[str, Any]) -> None:
+    """Place the one moved activity in the receiving block without changing any other slot."""
+    moved_ids = set(impact.get("moved_stop_ids") or [])
+    if len(moved_ids) != 1:
+        raise MutationCommandFailedError(command_index=0, reason_code="local_repair_requires_one_move")
+    moved_id = next(iter(moved_ids))
+    located = require_stop(snapshot, moved_id)
+    _day, block, _index = located
+    item = located[1]["items"][located[2]]
+    block_start = minutes_from_hhmmss(str(block.get("start_time") or "00:00:00"))
+    block_end = minutes_from_hhmmss(str(block.get("end_time") or "23:59:00"))
+    occupied_end = max(
+        (minutes_from_hhmmss(str(other.get("end_time") or "00:00:00")) for other in block.get("items", []) if other.get("stable_id") != moved_id),
+        default=block_start,
+    )
+    start = max(block_start, occupied_end)
+    end = start + int(item.get("duration_minutes") or 0)
+    if end > block_end:
+        raise MutationCommandFailedError(command_index=0, reason_code="local_repair_target_capacity_exceeded")
+    item["start_time"] = hhmmss_from_minutes(start)
+    item["end_time"] = hhmmss_from_minutes(end)
+
+
+def minutes_from_hhmmss(value: str) -> int:
+    hour, minute, *_rest = value.split(":")
+    return int(hour) * 60 + int(minute)
+
+
+def hhmmss_from_minutes(value: int) -> str:
+    return f"{(value // 60) % 24:02d}:{value % 60:02d}:00"
 
 
 def enum_value(value: Any) -> str | None:
@@ -744,13 +779,27 @@ def normalize_snapshot_after_mutation(snapshot: dict[str, Any], impact: dict[str
     for day in snapshot.get("days", []):
         if int(day.get("day") or 0) not in affected:
             continue
-        previous_name = snapshot.get("planning_anchor_source", {}).get("source_name")
+        anchor = snapshot.get("planning_anchor_source", {})
+        previous_name = anchor.get("source_name")
+        previous_latitude = anchor.get("latitude")
+        previous_longitude = anchor.get("longitude")
         for block in day.get("blocks", []):
             for item in block.get("items", []):
                 item["travel_from_name"] = previous_name
-                item["travel_distance_m"] = None
-                item["travel_duration_s"] = None
+                if previous_latitude is None or previous_longitude is None:
+                    item["travel_distance_m"] = None
+                    item["travel_duration_s"] = None
+                    item["travel_calculation_status"] = "missing_anchor_coordinates"
+                else:
+                    distance_m = deterministic_route_distance_m(
+                        previous_latitude, previous_longitude, item.get("latitude"), item.get("longitude"),
+                    )
+                    item["travel_distance_m"] = distance_m
+                    item["travel_duration_s"] = deterministic_route_duration_s(distance_m)
+                    item["travel_calculation_status"] = "deterministic_local_estimate"
                 previous_name = item.get("name")
+                previous_latitude = item.get("latitude")
+                previous_longitude = item.get("longitude")
     snapshot["completion_recommendation"] = None
     snapshot["completion_intelligence"] = None
     # This is a pure deterministic recalculation over the mutated snapshot. It does
@@ -760,6 +809,27 @@ def normalize_snapshot_after_mutation(snapshot: dict[str, Any], impact: dict[str
     snapshot["planner_realism"] = analyze_planner_realism(
         ItineraryResponse.model_validate(snapshot)
     ).model_dump(mode="json")
+
+
+def deterministic_route_distance_m(
+    origin_latitude: Any, origin_longitude: Any, destination_latitude: Any, destination_longitude: Any,
+) -> int | None:
+    """Local great-circle estimate for a repaired leg; never an implied provider fact."""
+    try:
+        lat1, lon1, lat2, lon2 = map(float, (origin_latitude, origin_longitude, destination_latitude, destination_longitude))
+    except (TypeError, ValueError):
+        return None
+    phi1, phi2 = radians(lat1), radians(lat2)
+    delta_phi, delta_lambda = radians(lat2 - lat1), radians(lon2 - lon1)
+    value = sin(delta_phi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(delta_lambda / 2) ** 2
+    return round(6_371_000 * 2 * atan2(sqrt(value), sqrt(1 - value)))
+
+
+def deterministic_route_duration_s(distance_m: int | None) -> int | None:
+    if distance_m is None:
+        return None
+    # 18 km/h is an intentionally conservative local urban-transfer estimate.
+    return max(60, round(distance_m / 18_000 * 3600))
 
 
 def build_validation_report(

@@ -271,6 +271,7 @@ class ScheduledPOI(BaseModel):
     travel_from_name: str | None = None
     travel_distance_m: int | None = None
     travel_duration_s: int | None = None
+    travel_calculation_status: str | None = None
     selection_top_candidates: list[PlanningCandidateTrace] = Field(default_factory=list)
     selection_rejected_candidates: list[PlanningCandidateTrace] = Field(default_factory=list)
     poi_research: POIResearchSummary | None = None

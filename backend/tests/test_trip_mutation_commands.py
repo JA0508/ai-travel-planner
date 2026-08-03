@@ -61,7 +61,8 @@ class TripMutationCommandTests(unittest.TestCase):
         self.assertEqual(preview.validation_report["status"], "valid")
         self.assertIn("route_segments", preview.invalidated_surfaces)
         moved = find_item(preview.resulting_snapshot, "豫园")
-        self.assertIsNone(moved["travel_duration_s"])
+        self.assertEqual(moved["travel_calculation_status"], "deterministic_local_estimate")
+        self.assertIsNotNone(moved["travel_duration_s"])
 
     def test_reorder_day_preview_keeps_same_stop_set(self) -> None:
         snapshot = ensure_stable_item_ids(command_itinerary().model_dump(mode="json"))

@@ -409,6 +409,51 @@ class PersistedMutationApplyResponse(BaseModel):
     persistence: TripPersistenceInfo
 
 
+class GoldenPathRepairPreviewRequest(BaseModel):
+    """A deliberately narrow intent-only request for the golden-path repair."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision: str = Field(..., min_length=1)
+    target_day: int = Field(..., ge=1)
+    goal: Literal["relax_day"]
+
+
+class GoldenPathRepairApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision: str = Field(..., min_length=1)
+    proposal_digest: str = Field(..., min_length=1)
+
+
+class GoldenPathRepairProposal(BaseModel):
+    proposal_id: str
+    proposal_digest: str
+    base_revision: str
+    target_day: int
+    moved_activity_id: str
+    moved_activity_name: str
+    from_day: int
+    to_day: int
+    before: ItineraryResponse
+    after: ItineraryResponse
+    protection_summary: str
+    execution_evidence: dict[str, int]
+
+
+class GoldenPathRepairPreviewResponse(BaseModel):
+    trip: TripMetadata
+    current_revision: TripRevisionMetadata
+    proposal: GoldenPathRepairProposal
+
+
+class GoldenPathRepairApplyResponse(BaseModel):
+    trip: TripMetadata
+    current_revision: TripRevisionMetadata
+    itinerary: ItineraryResponse
+    persistence: TripPersistenceInfo
+
+
 class PlannerHandoffRunMetadata(BaseModel):
     id: str
     trip_id: str
