@@ -39,6 +39,17 @@ from app.schemas import (
 from app.services.intent_disambiguation import disambiguate_trip_intent
 from app.services.nl_parser import normalize_parsed_trip_intent, parse_trip_text
 from app.services.planning_state_transformer import build_planning_input_state
+from app.services.draft_intent_projection import DraftIntentProjectionError, project_confirmed_draft_intent
+from app.services.planning_run_creation import (
+    CreatedPlanningRun,
+    PlanningRunCreationError,
+    create_planning_run_from_confirmed_intent,
+)
+from app.services.place_identity_resolution import (
+    PlaceIdentityResolutionError,
+    confirm_place_identity,
+    discover_place_identities,
+)
 from .access import (
     generate_capability,
     generate_proposal_id,
@@ -113,9 +124,11 @@ from .intent_contracts import (
     intent_revision_metadata,
 )
 from .draft_intent_edits import (
+    ConfirmPlaceIdentityOperation,
     DraftClarificationResolveRequest,
     DraftIntentEditRequest,
     DraftIntentEditValidationError,
+    UpdateDestinationOperation,
     apply_operations_to_overrides,
     clarification_answer_to_operation,
 )
@@ -154,6 +167,7 @@ from .schemas import (
     PersistedMutationPreviewResponse,
     ApplyPlannerHandoffProposalRequest,
     DraftTripCreateResponse,
+    DraftIntentPlanningRunRequest,
     DraftTripDetailResponse,
     DraftIntentRevisionMetadata,
     DraftIntentEditResponse,
@@ -285,17 +299,30 @@ class TripPersistenceService:
         parent_id = parent.id if parent else None
         if payload.base_intent_revision_id != parent_id:
             raise StaleIntentRevisionError(trip_id=trip_id, provided_intent_revision_id=payload.base_intent_revision_id or "", current_intent_revision_id=parent_id or "")
-        candidates, states, preferences = self._intent_candidate_context(trip_id, payload)
+        # The persisted Draft source is the only direct-language authority. A
+        # caller cannot compile a different browser string into this Draft Trip.
+        direct_user_text = self.repository.get_draft_source_text(trip_id=trip_id)
+        compiler_payload = payload.model_copy(update={"direct_user_text": direct_user_text})
+        candidates, states, preferences = self._intent_candidate_context(trip_id, compiler_payload)
         refs, verification = self._verified_candidate_source_refs(trip_id, candidates)
         now = format_utc(self.clock())
-        parser_result = self._build_intent_proposal_parse_result(payload)
+        parser_result = self._build_intent_proposal_parse_result(compiler_payload)
+        discovery_city = (
+            compiler_payload.structured_overrides.city
+            if compiler_payload.structured_overrides and compiler_payload.structured_overrides.city
+            else None
+        )
+        place_identities = discover_place_identities(
+            direct_user_text=direct_user_text,
+            city=discovery_city,
+        )
         envelope = compile_source_linked_intent(
             trip_id=trip_id,
             base_revision_id=None,
             parent_intent_revision_id=parent_id,
             next_revision_number=0,
             created_at=now,
-            request=payload,
+            request=compiler_payload,
             parser_result=parser_result,
             existing_trip_snapshot={},
             parent_intent_snapshot=parent.envelope if parent else None,
@@ -304,6 +331,7 @@ class TripPersistenceService:
             candidate_preferences=preferences,
             verified_candidate_source_refs=refs,
             candidate_verification_states=verification,
+            place_identities=place_identities,
         )
         envelope.validation_report.update({"preplan_contract": True, "base_trip_revision_absent": True})
         record = DraftIntentRevisionRecord(
@@ -319,7 +347,7 @@ class TripPersistenceService:
             validation_report=envelope.validation_report,
             created_at=now,
         )
-        req_digest = request_digest({"operation": "compile_draft_trip_intent_envelope", "trip_id": trip_id, "parent": parent_id, "payload": payload.model_dump(mode="json")})
+        req_digest = request_digest({"operation": "compile_draft_trip_intent_envelope", "trip_id": trip_id, "parent": parent_id, "payload": compiler_payload.model_dump(mode="json")})
         stored, replay = self.repository.create_draft_intent_revision(
             revision=record,
             request_digest=req_digest,
@@ -348,6 +376,33 @@ class TripPersistenceService:
             parent_envelope = SourceLinkedTripIntentEnvelope.model_validate(parent.envelope)
             overrides = apply_operations_to_overrides(parent_envelope, payload.operations)
         except DraftIntentEditValidationError as exc:
+            raise DraftIntentEditError(exc.code) from exc
+        place_identities = list(parent_envelope.formal_contract.place_identities)
+        try:
+            for operation in payload.operations:
+                if isinstance(operation, ConfirmPlaceIdentityOperation):
+                    index = next(
+                        (
+                            item_index
+                            for item_index, identity in enumerate(place_identities)
+                            if identity.stable_id == operation.place_stable_id
+                        ),
+                        None,
+                    )
+                    if index is None:
+                        raise DraftIntentEditError("place_identity_not_found")
+                    place_identities[index] = confirm_place_identity(
+                        identity=place_identities[index],
+                        provider_place_id=operation.provider_place_id,
+                    )
+                elif isinstance(operation, UpdateDestinationOperation):
+                    # Destination changes invalidate old provider scope. Re-read
+                    # the persisted source rather than carrying a stale identity.
+                    place_identities = discover_place_identities(
+                        direct_user_text=self.repository.get_draft_source_text(trip_id=trip_id),
+                        city=operation.city,
+                    )
+        except PlaceIdentityResolutionError as exc:
             raise DraftIntentEditError(exc.code) from exc
         candidate_ids = sorted({
             *overrides.must_candidate_ids,
@@ -389,6 +444,7 @@ class TripPersistenceService:
             candidate_preferences=preferences,
             verified_candidate_source_refs=refs,
             candidate_verification_states=verification,
+            place_identities=place_identities,
         )
         operation_names = [operation.operation for operation in payload.operations]
         envelope.validation_report.update({
@@ -467,6 +523,41 @@ class TripPersistenceService:
             envelope=revision.envelope,
             revision=DraftIntentRevisionMetadata.from_record(revision),
         )
+
+    def create_draft_intent_planning_run(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        payload: DraftIntentPlanningRunRequest,
+    ) -> CreatedPlanningRun:
+        """Create the existing Planning Run from the latest confirmed Draft Intent."""
+
+        trip = self._require_trip_access(trip_id, capability)
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+            raise InvalidRevisionOperationError("Route generation is only available while this trip is a draft.")
+        latest = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+        if latest is None or latest.id != payload.draft_intent_revision_id:
+            raise StaleIntentRevisionError(
+                trip_id=trip_id,
+                provided_intent_revision_id=payload.draft_intent_revision_id,
+                current_intent_revision_id=latest.id if latest else "",
+            )
+        envelope = SourceLinkedTripIntentEnvelope.model_validate(latest.envelope)
+        try:
+            intent = project_confirmed_draft_intent(envelope)
+            return create_planning_run_from_confirmed_intent(
+                intent=intent,
+                source_context={
+                    "source": "draft_intent_revision",
+                    "draft_trip_id": trip_id,
+                    "draft_intent_revision_id": latest.id,
+                    "intent_semantic_digest": envelope.semantic_digest or "",
+                    "intent_lineage_digest": envelope.lineage_digest or "",
+                },
+            )
+        except (DraftIntentProjectionError, PlanningRunCreationError) as exc:
+            raise DraftIntentEditError(exc.code) from exc
 
     def resolve_draft_intent_clarification(
         self,

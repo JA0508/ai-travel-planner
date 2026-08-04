@@ -13,8 +13,8 @@ from app.trips.candidates import TripCandidateRecord
 from app.trips.digests import sha256_digest
 
 
-TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.4"
-TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v5"
+TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.5"
+TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v6"
 INTENT_PRECEDENCE_VERSION = "intent-precedence-v3"
 INTENT_READINESS_POLICY_VERSION = "intent-readiness-v3"
 INTENT_DATE_POLICY_VERSION = "intent-date-policy-v1"
@@ -568,6 +568,9 @@ class FormalTripIntentContract(BaseModel):
     departure_boundary: TravelBoundaryIntent | None = None
     availability_windows: list[AvailabilityWindowIntent] = Field(default_factory=list)
     fixed_events: list[FixedEventIntent] = Field(default_factory=list)
+    # This is the authoritative home for source-place resolution. It is kept in
+    # the immutable Draft Intent envelope, not mirrored as browser state.
+    place_identities: list[PlaceIdentity] = Field(default_factory=list)
     must_visit_places: list[PlacePreferenceIntent] = Field(default_factory=list)
     optional_places: list[PlacePreferenceIntent] = Field(default_factory=list)
     avoid_places: list[PlacePreferenceIntent] = Field(default_factory=list)
@@ -823,6 +826,40 @@ class PlannerReadyIntentPreview(BaseModel):
     transport_preferences: list[str] = Field(default_factory=list)
     fixed_events: list[IntentFixedEventValue] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
+
+
+class PlaceResolutionOption(BaseModel):
+    """A bounded provider candidate shown only while a user confirms a place."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider_place_id: str
+    canonical_name: str
+    address_summary: str | None = None
+    category: str | None = None
+    city: str | None = None
+
+
+class PlaceIdentity(BaseModel):
+    """Provider-authoritative identity attached to a source place mention."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stable_id: str
+    original_name: str
+    canonical_name: str | None = None
+    city: str | None = None
+    ownership: Literal["must", "optional", "fixed"]
+    fixed_event_id: str | None = None
+    resolution_status: Literal["verified", "ambiguous", "unresolved"]
+    provider: Literal["amap"] | None = None
+    provider_place_id: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    category: str | None = None
+    source_fragment_ids: list[str] = Field(default_factory=list)
+    confirmation_options: list[PlaceResolutionOption] = Field(default_factory=list, max_length=4)
+    resolution_confidence: float | None = Field(default=None, ge=0, le=1)
 
 
 class SourceLinkedTripIntentEnvelope(BaseModel):
@@ -1167,6 +1204,7 @@ def compile_source_linked_intent(
     candidate_preferences: dict[str, str],
     verified_candidate_source_refs: dict[str, list[IntentSourceReference]] | None = None,
     candidate_verification_states: dict[str, str] | None = None,
+    place_identities: list[PlaceIdentity] | None = None,
 ) -> SourceLinkedTripIntentEnvelope:
     field_candidates: list[_CandidateField] = []
     manual_override_priority_enforced = False
@@ -1263,6 +1301,31 @@ def compile_source_linked_intent(
                     options=[],
                 )
             )
+    identities = list(place_identities or [])
+    for identity in identities:
+        if identity.ownership not in {"must", "fixed"} or identity.resolution_status == "verified":
+            continue
+        clarification_code = (
+            "fixed_place_identity_not_verified"
+            if identity.ownership == "fixed"
+            else "must_place_identity_not_verified"
+        )
+        clarifications.append(
+            ClarificationQuestion(
+                question_id=f"clarify:{clarification_code}:{identity.stable_id}",
+                field_paths=[f"formal_contract.place_identities.{identity.stable_id}"],
+                answer_field_path=None,
+                answer_value_type=None,
+                resolution_kind=IntentClarificationResolutionKind.EDIT_CONTRACT,
+                editor_field_path="formal_contract.place_identities",
+                question=f"请确认“{identity.original_name}”具体是哪一个地点后再生成路线。",
+                priority=100,
+                blocking=True,
+                impact="planner_blocking",
+                reason_code=clarification_code,
+                options=[option.model_dump(mode="json") for option in identity.confirmation_options],
+            )
+        )
     fields = [*selected, *shadowed]
     planner_ready = _build_planner_ready(selected)
     validation_conflicts = _validate_selected_fields(selected, planner_ready)
@@ -1316,6 +1379,7 @@ def compile_source_linked_intent(
         readiness_policy=readiness_policy,
         verified_candidate_source_refs=verified_candidate_source_refs or {},
         candidate_verification_states=candidate_verification_states or {},
+        place_identities=identities,
     )
     provenance_graph = _build_provenance_graph(
         envelope_id=f"intent_revision:{trip_id}:{next_revision_number}",
@@ -1351,6 +1415,10 @@ def compile_source_linked_intent(
             if candidate_workflow_states.get(candidate.id) in {"rejected", "deferred"}
         ],
         "legacy_unverified_candidate_ids": legacy_candidate_ids,
+        "place_identity_count": len(identities),
+        "verified_place_identity_count": sum(
+            1 for identity in identities if identity.resolution_status == "verified"
+        ),
     }
     source_digest = sha256_digest(
         {
@@ -1358,6 +1426,7 @@ def compile_source_linked_intent(
             "parser": parser_result.model_dump(mode="json", exclude={"proposal"}),
             "candidate_ids": [candidate.id for candidate in candidates],
             "base_revision_id": base_revision_id,
+            "place_identities": [identity.model_dump(mode="json") for identity in identities],
         }
     )
     semantic_digest = _build_semantic_digest(
@@ -2539,6 +2608,7 @@ def _build_formal_contract(
     readiness_policy: IntentReadinessPolicy,
     verified_candidate_source_refs: dict[str, list[IntentSourceReference]],
     candidate_verification_states: dict[str, str],
+    place_identities: list[PlaceIdentity],
 ) -> FormalTripIntentContract:
     destinations: list[DestinationIntent] = []
     fixed_events: list[FixedEventIntent] = []
@@ -2751,6 +2821,7 @@ def _build_formal_contract(
         departure_boundary=departure_boundary,
         availability_windows=availability_windows,
         fixed_events=fixed_events,
+        place_identities=place_identities,
         must_visit_places=must_places,
         optional_places=optional_places,
         avoid_places=avoid_places,
@@ -3436,6 +3507,23 @@ def _semantic_formal_contract_payload(contract: FormalTripIntentContract) -> dic
             _semantic_model_payload(item)
             for item in contract.fixed_events
         ],
+        "place_identities": [
+            {
+                "stable_id": item.stable_id,
+                "original_name": item.original_name,
+                "canonical_name": item.canonical_name,
+                "city": item.city,
+                "ownership": item.ownership,
+                "fixed_event_id": item.fixed_event_id,
+                "resolution_status": item.resolution_status,
+                "provider": item.provider,
+                "provider_place_id": item.provider_place_id,
+                "latitude": item.latitude,
+                "longitude": item.longitude,
+                "category": item.category,
+            }
+            for item in contract.place_identities
+        ],
         "must_visit_places": [
             _semantic_model_payload(item)
             for item in contract.must_visit_places
@@ -3493,6 +3581,8 @@ def _formal_contract_has_no_any_annotations() -> bool:
         TravelBoundaryIntent,
         AvailabilityWindowIntent,
         FixedEventIntent,
+        PlaceIdentity,
+        PlaceResolutionOption,
         PlacePreferenceIntent,
         PaceIntent,
         TransportPreferenceIntent,

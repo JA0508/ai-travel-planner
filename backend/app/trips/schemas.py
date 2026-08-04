@@ -186,6 +186,14 @@ class PrePlanIntentLatestResponse(BaseModel):
     revision: DraftIntentRevisionMetadata
 
 
+class DraftIntentPlanningRunRequest(BaseModel):
+    """References one immutable intent revision; it never accepts browser intent data."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft_intent_revision_id: str = Field(..., min_length=1, max_length=120)
+
+
 class PrePlanHandoffPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -2,18 +2,23 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from datetime import datetime, timedelta, timezone
-from uuid import uuid4
-
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from app.api.routes.trips import get_trip_capability_from_request, set_trip_capability_cookie, validate_write_origin
 from app.schemas.plan_candidates import PlanCandidateRequest, PlanCandidateResponse, PlanningRunHistoryResponse, PlanningRunRecordResponse, SelectPlanCandidateRequest
 from app.schemas.trip_compiler import TripCompilerCompileRequest, TripCompilerCompileResponse, TripCompilerPlanRequest
-from app.services.constraint_planning import PLANNER_POLICY_VERSION, SNAPSHOT_CONTRACT_VERSION, build_planning_snapshot_manifest, canonical_digest, generate_candidates, intent_digest, itinerary_request_for_strategy
 from app.services.planning_run_dependencies import get_planning_run_repository
 from app.services.planning_run_repository import PlanningRunError
+from app.services.planning_run_access import (
+    planning_run_capability_hash as _planning_capability_hash,
+    set_planning_run_capability_cookie as _set_planning_run_capability_cookie,
+)
+from app.services.planning_run_creation import (
+    PlanningRunCreationError,
+    create_planning_run_from_confirmed_intent,
+)
+from app.services.constraint_planning import canonical_digest
 from app.services.trip_compiler import build_itinerary_request, compile_travel_intent
 from app.trips.dependencies import get_trip_persistence_service, get_trip_repository
 from app.trips.access import generate_capability, hash_capability, hash_idempotency_key
@@ -28,39 +33,22 @@ def compile_intent(payload: TripCompilerCompileRequest) -> TripCompilerCompileRe
     return compile_travel_intent(payload.text)
 
 
-PLANNING_RUN_COOKIE = "planning_run_capability"
-
-
-@router.post("/planning-runs", response_model=PlanningRunRecordResponse)
+@router.post("/planning-runs", response_model=PlanningRunRecordResponse, deprecated=True)
 def create_planning_run(payload: PlanCandidateRequest, response: Response) -> PlanningRunRecordResponse:
-    graph, cores, candidates, comparison = generate_candidates(payload.intent)
-    if cores:
+    # Compatibility only. The user-facing compiler now creates this run from a
+    # confirmed immutable Draft Intent revision; callers that still use this
+    # endpoint receive the same durable Planning Run contract during migration.
+    try:
+        created = create_planning_run_from_confirmed_intent(intent=payload.intent)
+    except PlanningRunCreationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": "hard_constraint_conflict", "message": "当前确认的信息无法同时满足。", "conflict_cores": [core.model_dump(mode="json") for core in cores]},
-        )
-    if not candidates:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="当前信息无法生成可执行路线候选。")
-    digest = intent_digest(payload.intent)
-    run_id = f"planning_run_{uuid4().hex}"
-    capability = generate_capability()
-    now = datetime.now(timezone.utc)
-    strategy_inputs = {candidate.id: itinerary_request_for_strategy(payload.intent, candidate.strategy).model_dump(mode="json") for candidate in candidates}
-    manifest, poi_snapshot, route_snapshot, strategy_manifest = build_planning_snapshot_manifest(
-        intent=payload.intent, graph=graph, candidates=candidates, strategy_inputs=strategy_inputs,
-    )
-    record = get_planning_run_repository().create(
-        run_id=run_id, capability_hash=hash_capability(capability), intent_digest=digest,
-        intent_json=payload.intent.model_dump(mode="json"), graph=graph, candidates=candidates,
-        comparison=comparison, strategy_inputs=strategy_inputs, planner_policy_version=PLANNER_POLICY_VERSION,
-        snapshot_contract_version=SNAPSHOT_CONTRACT_VERSION,
-        candidate_set_hash=canonical_digest([candidate.candidate_hash for candidate in candidates]),
-        poi_snapshot=poi_snapshot, route_snapshot=route_snapshot,
-        strategy_manifest=strategy_manifest, snapshot_manifest=manifest,
-        created_at=now.isoformat().replace("+00:00", "Z"), expires_at=(now + timedelta(minutes=10)).isoformat().replace("+00:00", "Z"),
-    )
-    _set_planning_run_capability_cookie(response, capability)
-    return record
+            detail={"code": exc.code, "message": str(exc), "conflict_cores": exc.conflict_cores},
+        ) from exc
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = '</trips/{trip_id}/preplan-intent/planning-run>; rel="successor-version"'
+    _set_planning_run_capability_cookie(response, created.capability)
+    return created.record
 
 
 @router.post("/plan-candidates", response_model=PlanCandidateResponse, deprecated=True)
@@ -152,20 +140,6 @@ def select_legacy_plan_candidate(
 ) -> TripPlanResponse:
     run_id = get_planning_run_repository().find_run_for_candidate(candidate_id=candidate_id, capability_hash=_planning_capability_hash(request))
     return select_plan_candidate(run_id, candidate_id, payload, request, response, x_idempotency_key)
-
-
-def _set_planning_run_capability_cookie(response: Response, capability: str) -> None:
-    from os import getenv
-
-    secure = getenv("TRIP_CAPABILITY_COOKIE_SECURE", "false").strip().lower() == "true"
-    response.set_cookie(key=PLANNING_RUN_COOKIE, value=capability, httponly=True, secure=secure, samesite="strict", path="/")
-
-
-def _planning_capability_hash(request: Request) -> str:
-    capability = request.cookies.get(PLANNING_RUN_COOKIE)
-    if not capability:
-        return ""
-    return hash_capability(capability)
 
 
 @router.post("/trips", response_model=TripPlanResponse, status_code=status.HTTP_201_CREATED)

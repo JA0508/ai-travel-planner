@@ -16,7 +16,7 @@ from app.trips.draft_intent_edits import DraftClarificationResolveRequest, Draft
 from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
 from app.trips.errors import StaleDraftRevisionError, StaleIntentRevisionError
 from app.trips.service import TripPersistenceService
-from app.trips.intent_contracts import CompileTripIntentRequest
+from app.trips.intent_contracts import CompileTripIntentRequest, PlaceIdentity, PlaceResolutionOption
 
 
 class DraftIntentEditingApiTests(unittest.TestCase):
@@ -206,6 +206,98 @@ class DraftIntentEditingApiTests(unittest.TestCase):
         )
         self.assertFalse(no_op.changed)
         self.assertEqual(len(repository.list_draft_intent_revisions(trip_id=trip_id)), 2)
+
+    def test_place_confirmation_appends_a_draft_revision_before_any_planning(self) -> None:
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": "我想去杭州玩两天，已经想去西湖。"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "place-confirm-create"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        trip_id = created.json()["trip"]["id"]
+        ambiguous = PlaceIdentity(
+            stable_id="place_west_lake",
+            original_name="西湖",
+            city="杭州",
+            ownership="must",
+            resolution_status="ambiguous",
+            source_fragment_ids=["source_direct"],
+            confirmation_options=[
+                PlaceResolutionOption(
+                    provider_place_id="amap-west-lake",
+                    canonical_name="西湖风景名胜区",
+                    address_summary="杭州市西湖区",
+                    category="风景名胜",
+                    city="杭州",
+                )
+            ],
+        )
+        with patch("app.trips.service.discover_place_identities", return_value=[ambiguous]), patch(
+            "app.trips.service.build_itinerary_response", side_effect=AssertionError("planner must not run")
+        ):
+            compiled = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/compile",
+                json={"base_intent_revision_id": None, "structured_overrides": {"city": "杭州", "trip_days": 2}},
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "place-confirm-compile"},
+            )
+        self.assertEqual(compiled.status_code, 201, compiled.text)
+        first = compiled.json()
+        self.assertEqual(first["envelope"]["planner_ready_status"], "needs_clarification")
+        self.assertEqual(first["envelope"]["formal_contract"]["place_identities"][0]["resolution_status"], "ambiguous")
+        self.assertTrue(any(item["reason_code"] == "must_place_identity_not_verified" for item in first["envelope"]["clarification_queue"]))
+        draft = self.client.get(f"/trips/{trip_id}/draft")
+        self.assertEqual(draft.status_code, 200, draft.text)
+
+        confirmed = ambiguous.model_copy(
+            update={
+                "resolution_status": "verified",
+                "provider": "amap",
+                "provider_place_id": "amap-west-lake",
+                "canonical_name": "西湖风景名胜区",
+                "latitude": 30.235,
+                "longitude": 120.148,
+                "confirmation_options": [],
+                "resolution_confidence": 1.0,
+            }
+        )
+        with patch("app.trips.service.confirm_place_identity", return_value=confirmed), patch(
+            "app.trips.service.build_itinerary_response", side_effect=AssertionError("planner must not run")
+        ):
+            edited = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/edits",
+                json={
+                    "base_intent_revision_id": first["revision"]["id"],
+                    "base_draft_version": draft.json()["trip"]["draft_version"],
+                    "operations": [{
+                        "operation": "confirm_place_identity",
+                        "place_stable_id": "place_west_lake",
+                        "provider_place_id": "amap-west-lake",
+                    }],
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "place-confirm-edit"},
+            )
+        self.assertEqual(edited.status_code, 201, edited.text)
+        body = edited.json()
+        self.assertTrue(body["changed"])
+        self.assertEqual(body["revision"]["parent_draft_intent_revision_id"], first["revision"]["id"])
+        self.assertEqual(body["envelope"]["formal_contract"]["place_identities"][0]["resolution_status"], "verified")
+        self.assertEqual(get_trip_repository().get_trip(trip_id).revision_count, 0)
+
+        stale_run = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/planning-run",
+            json={"draft_intent_revision_id": first["revision"]["id"]},
+            headers={"Origin": "http://testserver"},
+        )
+        self.assertEqual(stale_run.status_code, 409, stale_run.text)
+        self.assertEqual(stale_run.json()["error"]["code"], "stale_intent_revision")
+        planning_run = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/planning-run",
+            json={"draft_intent_revision_id": body["revision"]["id"]},
+            headers={"Origin": "http://testserver"},
+        )
+        self.assertEqual(planning_run.status_code, 200, planning_run.text)
+        self.assertGreaterEqual(len(planning_run.json()["candidates"]), 1)
+        self.assertIn("planning_run_capability", planning_run.headers["set-cookie"])
 
     def test_typed_destination_clarification_reuses_draft_revision_transaction(self) -> None:
         created = self.client.post(
