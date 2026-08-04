@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, time
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,6 +23,127 @@ from .intent_contracts import SourceLinkedTripIntentEnvelope
 
 PLANNER_HANDOFF_INPUT_SCHEMA_VERSION = "planner-handoff-input-v1"
 PLANNER_HANDOFF_POLICY_VERSION = "planner-handoff-policy-v1"
+
+
+class PlannerHandoffTraceSummary(BaseModel):
+    """A compact, read-only view of the trace stored with a frozen handoff."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision_count: int
+    accepted_decision_count: int
+    rejected_decision_count: int
+    warning_count: int
+    reason_codes: list[str] = Field(default_factory=list)
+
+
+class PlannerHandoffReviewSummary(BaseModel):
+    """Current applicability of a frozen handoff without rerunning the planner."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["apply_ready", "blocked", "stale", "unstable", "applied"]
+    can_apply: bool
+    intent_revision_id: str
+    current_intent_revision_id: str
+    base_trip_revision_id: str | None = None
+    current_trip_revision_id: str | None = None
+    readiness_status: str
+    blocking_reason_codes: list[str] = Field(default_factory=list)
+    warning_codes: list[str] = Field(default_factory=list)
+    trace: PlannerHandoffTraceSummary
+
+
+def build_handoff_review_summary(
+    *,
+    bound_intent_revision_id: str,
+    current_intent_revision_id: str,
+    base_trip_revision_id: str | None,
+    current_trip_revision_id: str | None,
+    run_status: str,
+    applied_revision_id: str | None,
+    trace_snapshot: dict[str, Any],
+    result_snapshot: dict[str, Any],
+    readiness_status: str,
+    readiness_blocking_reason_codes: list[str],
+    readiness_warning_codes: list[str],
+) -> PlannerHandoffReviewSummary:
+    """Summarize a stored handoff using only frozen data and current boundaries."""
+
+    trace = _handoff_trace_summary(trace_snapshot)
+    blocking_reason_codes = list(readiness_blocking_reason_codes)
+    warning_codes = list(readiness_warning_codes)
+
+    if applied_revision_id is not None or run_status == "applied":
+        status: Literal["apply_ready", "blocked", "stale", "unstable", "applied"] = "applied"
+        can_apply = False
+    elif bound_intent_revision_id != current_intent_revision_id:
+        status = "stale"
+        can_apply = False
+        blocking_reason_codes.append("intent_revision_advanced")
+    elif base_trip_revision_id != current_trip_revision_id:
+        status = "stale"
+        can_apply = False
+        blocking_reason_codes.append("base_revision_advanced")
+    else:
+        realism = result_snapshot.get("planner_realism") or {}
+        realism_issues = realism.get("issues") or []
+        if realism.get("status") == "unstable":
+            status = "unstable"
+            can_apply = False
+            blocking_reason_codes.extend(
+                issue["code"]
+                for issue in realism_issues
+                if isinstance(issue, dict) and isinstance(issue.get("code"), str)
+            )
+            if not realism_issues:
+                blocking_reason_codes.append("planner_realism_unstable")
+        elif readiness_status not in {"ready_for_planning", "ready_with_assumptions"}:
+            status = "blocked"
+            can_apply = False
+            blocking_reason_codes.append("intent_not_planner_ready")
+        elif run_status != "pending":
+            status = "blocked"
+            can_apply = False
+            blocking_reason_codes.append(f"handoff_run_{run_status}")
+        else:
+            status = "apply_ready"
+            can_apply = True
+
+    return PlannerHandoffReviewSummary(
+        status=status,
+        can_apply=can_apply,
+        intent_revision_id=bound_intent_revision_id,
+        current_intent_revision_id=current_intent_revision_id,
+        base_trip_revision_id=base_trip_revision_id,
+        current_trip_revision_id=current_trip_revision_id,
+        readiness_status=readiness_status,
+        blocking_reason_codes=_unique_codes(blocking_reason_codes),
+        warning_codes=_unique_codes(warning_codes),
+        trace=trace,
+    )
+
+
+def _handoff_trace_summary(trace_snapshot: dict[str, Any]) -> PlannerHandoffTraceSummary:
+    decisions = [item for item in trace_snapshot.get("decisions", []) if isinstance(item, dict)]
+    warnings = [item for item in trace_snapshot.get("warnings", []) if isinstance(item, dict)]
+    reason_codes = [
+        code
+        for item in decisions
+        for code in item.get("reason_codes", [])
+        if isinstance(code, str)
+    ]
+    return PlannerHandoffTraceSummary(
+        decision_count=len(decisions),
+        accepted_decision_count=sum(item.get("decision") == "accepted" for item in decisions),
+        rejected_decision_count=sum(item.get("decision") == "rejected" for item in decisions),
+        warning_count=len(warnings),
+        reason_codes=_unique_codes(reason_codes),
+    )
+
+
+def _unique_codes(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
 
 
 class PlannerHandoffSourceLink(BaseModel):
