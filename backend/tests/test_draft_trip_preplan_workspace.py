@@ -117,6 +117,12 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(second.status_code, 201, second.text)
         run = preview.json()["handoff"]
+        inspection = self.client.get(f"/trips/{trip_id}/preplan-handoff/runs/{run['id']}")
+        self.assertEqual(inspection.status_code, 200, inspection.text)
+        self.assertEqual(inspection.json()["latest_draft_intent_revision_id"], second.json()["revision"]["id"])
+        self.assertEqual(inspection.json()["preview_status"], "stale")
+        self.assertEqual(inspection.json()["stale_reason"], "draft_intent_advanced")
+        self.assertEqual(inspection.json()["handoff"]["draft_intent_revision_id"], first)
         stale = self.client.post(
             f"/trips/{trip_id}/preplan-handoff/runs/{run['id']}/apply",
             json={"draft_intent_revision_id": first, "handoff_digest": run["trace_digest"]},

@@ -4,7 +4,7 @@ import copy
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from uuid import uuid4
 
 from app.api.routes.itinerary import (
@@ -164,6 +164,7 @@ from .schemas import (
     PrePlanHandoffPreviewRequest,
     PrePlanHandoffPreviewResponse,
     PrePlanHandoffRunMetadata,
+    PrePlanHandoffRunStatusResponse,
     PrePlanIntentCompileResponse,
     PlannerHandoffApplyResponse,
     PlannerHandoffPreviewRequest,
@@ -559,6 +560,28 @@ class TripPersistenceService:
         )
         run = self.repository.create_preplan_handoff_run(run=run)
         return PrePlanHandoffPreviewResponse(trip=TripMetadata.from_record(trip), draft_intent_revision_id=draft.id, handoff=PrePlanHandoffRunMetadata.from_record(run), itinerary=stored_itinerary, source_links=[item.model_dump(mode="json") for item in handoff.handoff.source_links])
+
+    def get_preplan_handoff_run_status(self, *, trip_id: str, run_id: str, capability: str | None) -> PrePlanHandoffRunStatusResponse:
+        trip = self._require_trip_access(trip_id, capability)
+        run = self.repository.get_preplan_handoff_run(trip_id=trip_id, run_id=run_id)
+        latest = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+        latest_id = latest.id if latest is not None else ""
+        if run.status == "applied":
+            preview_status: Literal["current", "stale", "applied"] = "applied"
+            stale_reason = None
+        elif run.draft_intent_revision_id != latest_id:
+            preview_status = "stale"
+            stale_reason = "draft_intent_advanced"
+        else:
+            preview_status = "current"
+            stale_reason = None
+        return PrePlanHandoffRunStatusResponse(
+            trip=TripMetadata.from_record(trip),
+            latest_draft_intent_revision_id=latest_id,
+            handoff=PrePlanHandoffRunMetadata.from_record(run),
+            preview_status=preview_status,
+            stale_reason=stale_reason,
+        )
 
     def apply_preplan_handoff(self, *, trip_id: str, run_id: str, capability: str | None, idempotency_key: str | None, payload: PrePlanHandoffApplyRequest) -> PrePlanHandoffApplyResponse:
         if not idempotency_key or not idempotency_key.strip():

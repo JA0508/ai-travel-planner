@@ -243,6 +243,16 @@ class PrePlanHandoffPreviewResponse(BaseModel):
     source_links: list[dict]
 
 
+class PrePlanHandoffRunStatusResponse(BaseModel):
+    """Read-only freshness state for a frozen Draft Trip preview."""
+
+    trip: TripMetadata
+    latest_draft_intent_revision_id: str
+    handoff: PrePlanHandoffRunMetadata
+    preview_status: Literal["current", "stale", "applied"]
+    stale_reason: Literal["draft_intent_advanced"] | None = None
+
+
 class PrePlanHandoffApplyResponse(BaseModel):
     trip: TripMetadata
     current_revision: TripRevisionMetadata

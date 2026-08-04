@@ -6,6 +6,7 @@ import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
 import type { IntentClarification, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel, getPrePlanClarificationControl, type PrePlanClarificationControl } from "./prePlanConfirmationModel";
+import { buildPrePlanHandoffStatus, userFacingPrePlanHandoffError } from "./plannerHandoffModel";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 import type {
@@ -25,6 +26,7 @@ type DraftIntentResponse = {
 };
 
 type PreviewResponse = {
+  draft_intent_revision_id: string;
   handoff: { id: string; trace_digest: string };
   itinerary: ItineraryResponse;
 };
@@ -99,9 +101,13 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     [intent],
   );
   const busy = bootstrap === "compiling" || operation !== "idle" || pendingEdit !== null;
-  const canGeneratePreview = Boolean(view?.canGeneratePreview && !sourcesChanged && !preview);
+  const previewStatus = useMemo(
+    () => preview ? buildPrePlanHandoffStatus({ previewIntentRevisionId: preview.draft_intent_revision_id, latestIntentRevisionId }) : null,
+    [latestIntentRevisionId, preview],
+  );
+  const canGeneratePreview = Boolean(view?.canGeneratePreview && !sourcesChanged && (!preview || previewStatus?.canGenerateReplacement));
   const previewHasExecutionConflict = preview?.itinerary?.planner_realism?.status === "unstable";
-  const canApplyPreview = Boolean(preview && intent && !sourcesChanged && !previewHasExecutionConflict);
+  const canApplyPreview = Boolean(preview && intent && !sourcesChanged && !previewHasExecutionConflict && previewStatus?.canApply);
 
   useEffect(() => {
     void refreshCandidates();
@@ -158,7 +164,6 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     setIntent(result.data);
     setLatestIntentRevisionId(result.data.revision.id);
     void refreshLatestIntent();
-    setPreview(null);
     setSourcesChanged(false);
     setBootstrap("ready");
     setFeedback(null);
@@ -201,7 +206,6 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     setIntent({ envelope: latest.envelope, revision: latest.revision });
     setLatestIntentRevisionId(latest.revision.id);
     setDraftVersion(latest.trip.draft_version);
-    setPreview(null);
     setSourcesChanged(false);
   }
 
@@ -247,7 +251,6 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       setIntent({ envelope: result.data.envelope, revision: result.data.revision });
       setLatestIntentRevisionId(result.data.revision.id);
       setDraftVersion(result.data.draft_version);
-      setPreview(null);
       setSourcesChanged(false);
       setPendingEdit(null);
       setRetryableRequest(null);
@@ -358,19 +361,22 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
   }
 
   async function apply() {
-    if (!intent || !preview || sourcesChanged) return;
+    if (!intent || !preview || sourcesChanged || !previewStatus?.canApply) return;
     setOperation("applying");
     setFeedback({ tone: "info", message: "正在保存第一版行程……" });
     const result = await postTripJson<ApplyResponse>(
       TRIP_API_ENDPOINTS.applyPrePlanHandoff(tripId, preview.handoff.id),
-      { draft_intent_revision_id: intent.revision.id, handoff_digest: preview.handoff.trace_digest },
+      { draft_intent_revision_id: preview.draft_intent_revision_id, handoff_digest: preview.handoff.trace_digest },
       "暂时无法保存行程，你确认的信息已经保留。",
       "服务暂时不可用，你确认的信息不会丢失。",
       { headers: { "X-Idempotency-Key": `draft-handoff:${preview.handoff.id}:${preview.handoff.trace_digest.slice(0, 16)}` } },
     );
     setOperation("idle");
     if (!result.ok) {
-      setFeedback({ tone: "error", message: userFacingRequestError(result.code, "暂时无法保存行程，你确认的信息已经保留。") });
+      if (result.code === "stale_intent_revision") {
+        await refreshLatestIntent();
+      }
+      setFeedback({ tone: "error", message: userFacingPrePlanHandoffError(result.code) ?? userFacingRequestError(result.code, "暂时无法保存行程，你确认的信息已经保留。") });
       return;
     }
     onApplied(result.data);
@@ -383,10 +389,12 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     setFeedback({ tone: "info", message: "已更新导入资料；重新整理后会纳入行程信息。" });
   }
 
-  const primaryLabel = preview ? "确认并生成行程" : "生成路线预览";
-  const primaryDisabled = busy || (!preview && !canGeneratePreview) || (Boolean(preview) && !canApplyPreview);
+  const primaryLabel = previewStatus?.kind === "stale" ? "重新生成路线预览" : preview ? "确认并生成行程" : "生成路线预览";
+  const primaryDisabled = busy || (previewStatus?.canApply ? !canApplyPreview : !canGeneratePreview);
   const primaryHint = sourcesChanged
     ? "导入资料已更新，请先重新整理旅行信息。"
+    : previewStatus?.kind === "stale"
+      ? previewStatus.message
     : previewHasExecutionConflict
       ? "这版路线仍有执行冲突，请先返回修改旅行信息后再生成。"
     : view?.actionHint ?? "正在整理你的旅行需求。";
@@ -419,14 +427,14 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
         <details className="uc-intent-card uc-intent-details"><summary><span><strong>查看依据</strong><small>按需查看输入和导入资料</small></span><span aria-hidden="true">展开</span></summary><SourceDetails directUserText={directUserText} sourceLines={view.sourceLines} candidates={candidates} selectedCandidateIds={selectedCandidateIds} onSelectCandidate={selectCandidate} onRefresh={() => void compileIntent()} onImportChanged={() => { void refreshCandidates(); setSourcesChanged(true); setPreview(null); setFeedback({ tone: "info", message: "已更新导入资料；重新整理后会纳入行程信息。" }); }} busy={busy} tripId={tripId} /></details>
       </> : null}
 
-      {preview ? <ExecutableRoutePreview itinerary={preview.itinerary} variant="draft" /> : null}
+      {preview && previewStatus ? <><PrePlanHandoffStatusPanel status={previewStatus} currentRevisionNumber={intent?.revision.revision_number ?? null} /><ExecutableRoutePreview itinerary={preview.itinerary} variant="draft" /></> : null}
 
       {staleConflict ? <StaleConflictPanel conflict={staleConflict} onViewLatest={() => { setFeedback({ tone: "info", message: "已显示最新行程信息；你的修改仍保留，可以重新应用。" }); }} onReapply={reapplyStaleEdit} onDiscard={() => { setStaleConflict(null); setActiveEditor(null); setFormDraft(null); setEditorError(null); setRestorePrimaryFocus(true); }} disabled={Boolean(pendingEdit)} /> : null}
 
       {feedback ? <p role={feedback.tone === "error" ? "alert" : "status"} className={feedback.tone === "error" ? "uc-intent-feedback uc-intent-feedback--error" : "uc-intent-feedback"}>{feedback.message}</p> : null}
       {retryableRequest && editorError ? <button type="button" className="uc-intent-secondary" onClick={retryNetworkRequest} disabled={Boolean(pendingEdit)}>重新提交</button> : null}
 
-      {view ? <footer className="uc-intent-actions"><button type="button" className="uc-intent-secondary" onClick={onCancel} disabled={busy}>返回修改需求</button><div><p>{primaryHint}</p><button id="preplan-primary-action" type="button" className="uc-intent-primary" onClick={() => { if (preview) void apply(); else void buildPreview(); }} disabled={primaryDisabled}>{operation === "previewing" ? "正在生成预览……" : operation === "applying" ? "正在保存行程……" : primaryLabel}</button></div></footer> : null}
+      {view ? <footer className="uc-intent-actions"><button type="button" className="uc-intent-secondary" onClick={onCancel} disabled={busy}>返回修改需求</button><div><p>{primaryHint}</p><button id="preplan-primary-action" type="button" className="uc-intent-primary" onClick={() => { if (previewStatus?.canApply) void apply(); else void buildPreview(); }} disabled={primaryDisabled}>{operation === "previewing" ? "正在生成预览……" : operation === "applying" ? "正在保存行程……" : primaryLabel}</button></div></footer> : null}
     </main>
   );
 }
@@ -437,6 +445,11 @@ function LoadingState() {
 
 function RetryState({ onRetry }: { onRetry: () => void }) {
   return <section className="uc-intent-card uc-intent-card--attention" role="alert"><strong>暂时无法整理旅行信息，你的输入已经保留。</strong><span>服务恢复后可以重新识别，无需重新填写。</span><button type="button" className="uc-intent-secondary" onClick={onRetry}>重新识别</button></section>;
+}
+
+function PrePlanHandoffStatusPanel({ status, currentRevisionNumber }: { status: ReturnType<typeof buildPrePlanHandoffStatus>; currentRevisionNumber: number | null }) {
+  if (status.kind === "current") return <section className="uc-intent-card" data-preplan-handoff-status="current"><strong>路线预览对应当前草稿</strong><span>{currentRevisionNumber ? `这份预览基于当前第 ${currentRevisionNumber} 版行程信息，可以确认后生成正式行程。` : status.message}</span></section>;
+  return <section className="uc-intent-card uc-intent-card--attention" data-preplan-handoff-status="stale" role="status"><strong>路线预览已过期</strong><span>{currentRevisionNumber ? `行程信息已更新为第 ${currentRevisionNumber} 版；旧预览不能保存。请重新生成路线预览。` : status.message}</span></section>;
 }
 
 function FixedArrangementSummary({ arrangements }: { arrangements: Array<{ title: string; detail: string }> }) {
