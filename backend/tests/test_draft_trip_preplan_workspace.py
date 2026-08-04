@@ -117,9 +117,13 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(second.status_code, 201, second.text)
         run = preview.json()["handoff"]
-        with patch("app.trips.service.build_itinerary_response", side_effect=AssertionError("summary reads must not rerun planner")):
+        with patch("app.trips.service.build_itinerary_response", side_effect=AssertionError("summary reads must not rerun planner")) as planner:
             inspection = self.client.get(f"/trips/{trip_id}/preplan-handoff/runs/{run['id']}")
+            second_inspection = self.client.get(f"/trips/{trip_id}/preplan-handoff/runs/{run['id']}")
+        planner.assert_not_called()
         self.assertEqual(inspection.status_code, 200, inspection.text)
+        self.assertEqual(second_inspection.status_code, 200, second_inspection.text)
+        self.assertEqual(second_inspection.json()["review_summary"], inspection.json()["review_summary"])
         self.assertEqual(inspection.json()["latest_draft_intent_revision_id"], second.json()["revision"]["id"])
         self.assertEqual(inspection.json()["preview_status"], "stale")
         self.assertEqual(inspection.json()["stale_reason"], "draft_intent_advanced")
