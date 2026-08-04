@@ -491,7 +491,14 @@ class TripPersistenceService:
             raise ClarificationAlreadyResolvedError()
         if not question.blocking or question.resolution_kind.value not in {"inline_answer", "edit_contract"}:
             raise DraftIntentEditError("clarification_not_editable")
-        operation = clarification_answer_to_operation(payload.answer)
+        try:
+            operation = clarification_answer_to_operation(
+                question_reason_code=question.reason_code,
+                question_editor_field_path=question.editor_field_path,
+                answer=payload.answer,
+            )
+        except DraftIntentEditValidationError as exc:
+            raise DraftIntentEditError(exc.code) from exc
         try:
             return self.edit_draft_intent(
                 trip_id=trip_id,

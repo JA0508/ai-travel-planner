@@ -5,7 +5,7 @@ import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
 import type { IntentClarification, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
-import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
+import { buildPrePlanConfirmationViewModel, getPrePlanClarificationControl, type PrePlanClarificationControl } from "./prePlanConfirmationModel";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 import type {
@@ -489,7 +489,7 @@ function CriticalEditorForm({ editor, draft, pending, error, onChange, onSave, o
 function ClarificationCard({ question, pending, onResolve }: { question: IntentClarification; pending: boolean; onResolve: (id: string, answer: DraftClarificationAnswer, draft: CriticalIntentFormDraft) => void }) {
   const [draft, setDraft] = useState<CriticalIntentFormDraft>({});
   const [error, setError] = useState<string | null>(null);
-  const kind = clarificationInputKind(question.reason_code);
+  const kind = getPrePlanClarificationControl(question);
   if (!kind) return <article><strong>还需要确认一项信息</strong><span>{question.question}</span><button type="button" className="uc-intent-secondary">返回修改需求</button></article>;
   const submit = () => {
     const answer = clarificationAnswerForKind(kind, draft);
@@ -500,6 +500,7 @@ function ClarificationCard({ question, pending, onResolve }: { question: IntentC
   return <article className="uc-intent-clarification"><strong>{clarificationTitle(kind)}</strong><span>{clarificationDetail(kind)}</span>
     {kind === "destination" ? <label>目的地<input value={draft.city ?? ""} onChange={(event) => setDraft({ ...draft, city: event.target.value })} placeholder="例如：杭州" disabled={pending} /></label> : null}
     {kind === "trip_days" ? <><label>旅行天数<input inputMode="numeric" type="number" min="1" max="60" value={draft.tripDays ?? ""} onChange={(event) => setDraft({ ...draft, tripDays: event.target.value })} disabled={pending} /></label><span>也可以改为填写具体日期。</span></> : null}
+    {kind === "pace" ? <label>旅行节奏<select value={draft.pace ?? "relaxed"} onChange={(event) => setDraft({ ...draft, pace: event.target.value as CriticalIntentFormDraft["pace"] })} disabled={pending}><option value="relaxed">轻松</option><option value="balanced">适中</option><option value="intensive">紧凑</option></select></label> : null}
     {kind === "date_range" ? <div className="uc-intent-editor-grid"><label>开始日期<input type="date" value={draft.startDate ?? ""} onChange={(event) => setDraft({ ...draft, startDate: event.target.value })} disabled={pending} /></label><label>结束日期<input type="date" value={draft.endDate ?? ""} onChange={(event) => setDraft({ ...draft, endDate: event.target.value })} disabled={pending} /></label></div> : null}
     {kind === "date_choice" ? <><label>以什么为准<select value={draft.startDate ? "date_range" : "trip_days"} onChange={(event) => setDraft({ ...draft, startDate: event.target.value === "date_range" ? draft.startDate : "" })} disabled={pending}><option value="trip_days">旅行天数</option><option value="date_range">具体日期</option></select></label>{draft.startDate !== "" ? <div className="uc-intent-editor-grid"><label>开始日期<input type="date" value={draft.startDate ?? ""} onChange={(event) => setDraft({ ...draft, startDate: event.target.value })} disabled={pending} /></label><label>结束日期<input type="date" value={draft.endDate ?? ""} onChange={(event) => setDraft({ ...draft, endDate: event.target.value })} disabled={pending} /></label></div> : <label>旅行天数<input type="number" min="1" max="60" value={draft.tripDays ?? ""} onChange={(event) => setDraft({ ...draft, tripDays: event.target.value })} disabled={pending} /></label>}</> : null}
     {error ? <p className="uc-intent-feedback uc-intent-feedback--error" role="alert">{error}</p> : null}
@@ -522,19 +523,12 @@ function operationForEditor(editor: CriticalEditor, draft: CriticalIntentFormDra
   return draft.pace ? { operation: "update_pace", pace: draft.pace } : null;
 }
 
-function clarificationInputKind(code: string): "destination" | "trip_days" | "date_range" | "date_choice" | null {
-  if (["destination_missing", "missing_destination", "destination_conflict"].includes(code)) return "destination";
-  if (["trip_length_missing", "missing_trip_length", "trip_dates_missing"].includes(code)) return "trip_days";
-  if (code === "relative_date_requires_anchor") return "date_range";
-  if (["date_conflict", "date_range_conflict", "date_invalid"].includes(code)) return "date_choice";
-  return null;
-}
-
-function clarificationTitle(kind: NonNullable<ReturnType<typeof clarificationInputKind>>): string { return { destination: "请填写这次旅行的目的地", trip_days: "请填写旅行日期或天数", date_range: "请确认具体出发日期", date_choice: "请确认旅行日期或天数" }[kind]; }
-function clarificationDetail(kind: NonNullable<ReturnType<typeof clarificationInputKind>>): string { return { destination: "目的地决定路线范围和可安排的地点。", trip_days: "我们需要知道可用于安排行程的时间。", date_range: "相对日期需要一个明确的日历参考。", date_choice: "日期和天数目前不一致，需要你指定一个安排依据。" }[kind]; }
-function clarificationAnswerForKind(kind: NonNullable<ReturnType<typeof clarificationInputKind>>, draft: CriticalIntentFormDraft): DraftClarificationAnswer | null {
+function clarificationTitle(kind: PrePlanClarificationControl): string { return { destination: "请填写这次旅行的目的地", trip_days: "请填写旅行日期或天数", pace: "请确认旅行节奏", date_range: "请确认具体出发日期", date_choice: "请确认旅行日期或天数" }[kind]; }
+function clarificationDetail(kind: PrePlanClarificationControl): string { return { destination: "目的地决定路线范围和可安排的地点。", trip_days: "我们需要知道可用于安排行程的时间。", pace: "旅行节奏会影响每天的安排密度。", date_range: "相对日期需要一个明确的日历参考。", date_choice: "请调整旅行日期或天数，让固定安排能安全纳入路线。" }[kind]; }
+function clarificationAnswerForKind(kind: PrePlanClarificationControl, draft: CriticalIntentFormDraft): DraftClarificationAnswer | null {
   if (kind === "destination" && draft.city?.trim()) return { answer_type: "destination", city: draft.city.trim() };
   if (kind === "trip_days") { const trip_days = Number(draft.tripDays); return Number.isInteger(trip_days) && trip_days > 0 ? { answer_type: "trip_days", trip_days } : null; }
+  if (kind === "pace" && draft.pace) return { answer_type: "pace", pace: draft.pace };
   if (kind === "date_range" && draft.startDate && draft.endDate) return { answer_type: "date_range", start_date: draft.startDate, end_date: draft.endDate, timezone: "Asia/Shanghai" };
   if (kind === "date_choice") { if (draft.startDate && draft.endDate) return { answer_type: "date_policy_choice", policy: "date_range", start_date: draft.startDate, end_date: draft.endDate, timezone: "Asia/Shanghai" }; const trip_days = Number(draft.tripDays); return Number.isInteger(trip_days) && trip_days > 0 ? { answer_type: "date_policy_choice", policy: "trip_days", trip_days } : null; }
   return null;
@@ -543,6 +537,7 @@ function clarificationAnswerForKind(kind: NonNullable<ReturnType<typeof clarific
 function operationForClarification(answer: DraftClarificationAnswer): DraftIntentEditOperation {
   if (answer.answer_type === "destination") return { operation: "update_destination", city: answer.city, timezone: answer.timezone };
   if (answer.answer_type === "trip_days") return { operation: "update_trip_days", trip_days: answer.trip_days };
+  if (answer.answer_type === "pace") return { operation: "update_pace", pace: answer.pace };
   if (answer.answer_type === "date_range") return { operation: "update_date_policy", start_date: answer.start_date, end_date: answer.end_date, timezone: answer.timezone };
   return answer.policy === "trip_days" ? { operation: "update_trip_days", trip_days: answer.trip_days } : { operation: "update_date_policy", start_date: answer.start_date, end_date: answer.end_date, timezone: answer.timezone };
 }

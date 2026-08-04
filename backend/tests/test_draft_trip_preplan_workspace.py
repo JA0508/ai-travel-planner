@@ -125,6 +125,57 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         self.assertEqual(stale.status_code, 409, stale.text)
         self.assertEqual(stale.json()["error"]["code"], "stale_intent_revision")
 
+    def test_resolving_fixed_event_clarification_updates_the_preview_blocker(self) -> None:
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": "去上海一天，第二天有预约。"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-fixed-event-blocker"},
+        )
+        trip_id = created.json()["trip"]["id"]
+        compiled = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/compile",
+            json={
+                "base_intent_revision_id": None,
+                "structured_overrides": {
+                    "city": "上海",
+                    "trip_days": 1,
+                    "fixed_events": [{"name": "第二天预约", "fixed_day": 2}],
+                },
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-fixed-event-compile"},
+        )
+        self.assertEqual(compiled.status_code, 201, compiled.text)
+        intent_id = compiled.json()["revision"]["id"]
+        blocked = self.client.post(f"/trips/{trip_id}/preplan-handoff/preview", json={"draft_intent_revision_id": intent_id})
+        self.assertEqual(blocked.status_code, 422, blocked.text)
+        self.assertEqual(blocked.json()["error"]["code"], "planner_handoff_blocked")
+        self.assertEqual(blocked.json()["error"]["reason_code"], "intent_not_planner_ready")
+
+        question = next(
+            item
+            for item in compiled.json()["envelope"]["clarification_queue"]
+            if item["reason_code"] == "fixed_event_outside_trip_dates"
+        )
+        latest = self.client.get(f"/trips/{trip_id}/preplan-intent")
+        resolved = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/clarifications/{question['question_id']}/resolve",
+            json={
+                "base_intent_revision_id": intent_id,
+                "base_draft_version": latest.json()["trip"]["draft_version"],
+                "answer": {"answer_type": "date_policy_choice", "policy": "trip_days", "trip_days": 2},
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-fixed-event-resolve"},
+        )
+        self.assertEqual(resolved.status_code, 201, resolved.text)
+
+        preview = self.client.post(
+            f"/trips/{trip_id}/preplan-handoff/preview",
+            json={"draft_intent_revision_id": resolved.json()["revision"]["id"]},
+        )
+        self.assertEqual(preview.status_code, 422, preview.text)
+        self.assertEqual(preview.json()["error"]["code"], "planner_handoff_blocked")
+        self.assertEqual(preview.json()["error"]["reason_code"], "fixed_event_identity_not_verified")
+
     def test_unstable_route_preview_cannot_create_revision_one(self) -> None:
         created = self.client.post(
             "/trips/drafts",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
+import { buildPrePlanConfirmationViewModel, getPrePlanClarificationControl } from "./prePlanConfirmationModel";
 import type { SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 
 function envelope(overrides: Partial<SourceLinkedTripIntentEnvelope> = {}): SourceLinkedTripIntentEnvelope {
@@ -45,4 +45,31 @@ test("fixed arrangements stay visible in the plain-language confirmation summary
     },
   }));
   assert.deepEqual(view.fixedArrangements, [{ title: "博物馆预约", detail: "第 2 天 · 上海博物馆" }]);
+});
+
+test("contract-edit blockers reuse the matching pre-plan editor", () => {
+  assert.equal(
+    getPrePlanClarificationControl({
+      question_id: "fixed-event", field_paths: ["time.fixed_events"], answer_field_path: null, answer_value_type: null,
+      resolution_kind: "edit_contract", editor_field_path: "time.fixed_events", question: "Fixed event is outside the trip.",
+      priority: 98, blocking: true, impact: "planner_blocking", reason_code: "fixed_event_outside_trip_dates", options: [],
+    }),
+    "date_choice",
+  );
+  assert.equal(
+    getPrePlanClarificationControl({
+      question_id: "pace-conflict", field_paths: ["trip.pace"], answer_field_path: null, answer_value_type: null,
+      resolution_kind: "edit_contract", editor_field_path: "trip.pace", question: "Choose the pace.",
+      priority: 95, blocking: true, impact: "planner_blocking", reason_code: "same_priority_conflict", options: [],
+    }),
+    "pace",
+  );
+  assert.equal(
+    getPrePlanClarificationControl({
+      question_id: "legacy-date", field_paths: ["trip.trip_days"], answer_field_path: "trip.trip_days", answer_value_type: "integer",
+      resolution_kind: "inline_answer", editor_field_path: "trip.trip_days", question: "How long is the trip?",
+      priority: 70, blocking: true, impact: "planner_blocking", reason_code: "trip_dates_missing", options: [],
+    }),
+    "trip_days",
+  );
 });

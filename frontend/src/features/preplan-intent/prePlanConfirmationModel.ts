@@ -16,6 +16,23 @@ export type PrePlanConfirmationViewModel = {
   actionHint: string;
 };
 
+export type PrePlanClarificationControl = "destination" | "trip_days" | "pace" | "date_range" | "date_choice";
+
+export function getPrePlanClarificationControl(question: IntentClarification): PrePlanClarificationControl | null {
+  if (["destination_missing", "missing_destination", "destination_conflict"].includes(question.reason_code)) return "destination";
+  if (["trip_length_missing", "missing_trip_length", "trip_dates_missing"].includes(question.reason_code)) return "trip_days";
+  if (question.reason_code === "relative_date_requires_anchor") return "date_range";
+  if (["date_conflict", "date_range_conflict", "date_invalid", "fixed_event_outside_trip_dates"].includes(question.reason_code)) return "date_choice";
+  if (question.reason_code !== "same_priority_conflict") return null;
+  const controls: Record<string, PrePlanClarificationControl> = {
+    "trip.city": "destination",
+    "trip.trip_days": "trip_days",
+    "trip.pace": "pace",
+    "trip.date_policy": "date_choice",
+  };
+  return controls[question.editor_field_path ?? ""] ?? null;
+}
+
 export function buildPrePlanConfirmationViewModel(
   envelope: SourceLinkedTripIntentEnvelope,
 ): PrePlanConfirmationViewModel {

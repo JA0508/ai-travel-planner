@@ -154,6 +154,11 @@ class TripDaysClarificationAnswer(_ClarificationAnswer):
     trip_days: int = Field(..., ge=1, le=60)
 
 
+class PaceClarificationAnswer(_ClarificationAnswer):
+    answer_type: Literal["pace"]
+    pace: Literal["relaxed", "balanced", "intensive"]
+
+
 class DateRangeClarificationAnswer(_ClarificationAnswer):
     answer_type: Literal["date_range"]
     start_date: date
@@ -187,6 +192,7 @@ class DatePolicyChoiceClarificationAnswer(_ClarificationAnswer):
 DraftClarificationAnswer = Annotated[
     DestinationClarificationAnswer
     | TripDaysClarificationAnswer
+    | PaceClarificationAnswer
     | DateRangeClarificationAnswer
     | DatePolicyChoiceClarificationAnswer,
     Field(discriminator="answer_type"),
@@ -202,29 +208,67 @@ class DraftClarificationResolveRequest(BaseModel):
 
 
 def clarification_answer_to_operation(
+    *,
+    question_reason_code: str,
+    question_editor_field_path: str | None,
     answer: DraftClarificationAnswer,
 ) -> DraftIntentEditOperation:
     """Translate a typed answer into the one authoritative Draft edit command."""
 
     if isinstance(answer, DestinationClarificationAnswer):
-        return UpdateDestinationOperation(operation="update_destination", city=answer.city, timezone=answer.timezone)
-    if isinstance(answer, TripDaysClarificationAnswer):
-        return UpdateTripDaysOperation(operation="update_trip_days", trip_days=answer.trip_days)
-    if isinstance(answer, DateRangeClarificationAnswer):
-        return UpdateDatePolicyOperation(
+        operation: DraftIntentEditOperation = UpdateDestinationOperation(
+            operation="update_destination",
+            city=answer.city,
+            timezone=answer.timezone,
+        )
+    elif isinstance(answer, TripDaysClarificationAnswer):
+        operation = UpdateTripDaysOperation(operation="update_trip_days", trip_days=answer.trip_days)
+    elif isinstance(answer, PaceClarificationAnswer):
+        operation = UpdatePaceOperation(operation="update_pace", pace=answer.pace)
+    elif isinstance(answer, DateRangeClarificationAnswer):
+        operation = UpdateDatePolicyOperation(
             operation="update_date_policy",
             start_date=answer.start_date,
             end_date=answer.end_date,
             timezone=answer.timezone,
         )
-    if answer.policy == "trip_days":
-        return UpdateTripDaysOperation(operation="update_trip_days", trip_days=answer.trip_days or 1)
-    return UpdateDatePolicyOperation(
-        operation="update_date_policy",
-        start_date=answer.start_date,
-        end_date=answer.end_date,
-        timezone=answer.timezone,
-    )
+    elif answer.policy == "trip_days":
+        operation = UpdateTripDaysOperation(operation="update_trip_days", trip_days=answer.trip_days or 1)
+    else:
+        operation = UpdateDatePolicyOperation(
+            operation="update_date_policy",
+            start_date=answer.start_date,
+            end_date=answer.end_date,
+            timezone=answer.timezone,
+        )
+
+    if operation.operation not in _allowed_clarification_operations(
+        reason_code=question_reason_code,
+        editor_field_path=question_editor_field_path,
+    ):
+        raise DraftIntentEditValidationError("clarification_answer_not_applicable")
+    return operation
+
+
+def _allowed_clarification_operations(*, reason_code: str, editor_field_path: str | None) -> set[str]:
+    """Keep clarification answers scoped to the contract field they can resolve."""
+
+    if reason_code in {"missing_destination", "destination_missing", "destination_conflict"}:
+        return {"update_destination"}
+    if reason_code in {"missing_trip_length", "trip_length_missing", "trip_dates_missing"}:
+        return {"update_trip_days"}
+    if reason_code in {"date_conflict", "date_invalid", "date_range_conflict", "relative_date_requires_anchor"}:
+        return {"update_date_policy", "update_trip_days"}
+    if reason_code == "fixed_event_outside_trip_dates":
+        return {"update_date_policy", "update_trip_days"}
+    if reason_code == "same_priority_conflict":
+        return {
+            "trip.city": {"update_destination"},
+            "trip.trip_days": {"update_trip_days"},
+            "trip.pace": {"update_pace"},
+            "trip.date_policy": {"update_date_policy", "update_trip_days"},
+        }.get(editor_field_path or "", set())
+    return set()
 
 
 class DraftIntentEditValidationError(ValueError):
