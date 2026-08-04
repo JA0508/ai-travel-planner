@@ -69,4 +69,6 @@ test("pre-plan workspace keeps a stale frozen preview visible and requires repla
   assert.match(source, /重新生成路线预览/);
   assert.match(source, /preview\.draft_intent_revision_id/);
   assert.match(source, /userFacingPrePlanHandoffError/);
+  assert.match(source, /PlannerTraceReviewPanel/);
+  assert.match(source, /review_summary/);
 });

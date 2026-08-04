@@ -58,6 +58,7 @@ export function ExecutableRoutePreview({
 }: Props) {
   const loads = useMemo(() => buildDayLoads(itinerary), [itinerary]);
   const risks = useMemo(() => buildUserFacingRisks(itinerary, loads), [itinerary, loads]);
+  const evidence = useMemo(() => buildRouteEvidence(itinerary), [itinerary]);
   const [repair, setRepair] = useState<RepairState>({ status: "idle" });
   const canRepair = variant === "saved" && Boolean(tripId && baseRevisionId && onApplied);
 
@@ -117,6 +118,15 @@ export function ExecutableRoutePreview({
 
       {risks.length ? <section className="erp-risks" role="alert"><strong>需要留意</strong>{risks.map((risk) => <p key={risk}>{risk}</p>)}</section> : null}
 
+      <details className="erp-why" data-route-planning-evidence>
+        <summary>查看规划依据</summary>
+        <div>
+          <p>{evidence.confirmedCount} 项来自你的地点或固定安排。</p>
+          <p>{evidence.suggestedCount} 项系统补充是路线建议，不等同于已确认的事实。</p>
+          {evidence.unexplainedCount ? <p>{evidence.unexplainedCount} 项暂时没有可验证的安排说明，已在地点卡片中明确标注。</p> : null}
+        </div>
+      </details>
+
       <div className="erp-days">
         {itinerary.days.map((day) => {
           const load = loads.find((entry) => entry.day === day.day);
@@ -160,6 +170,15 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function isSystemSuggested(item: RoutePreviewItinerary["days"][number]["blocks"][number]["items"][number]) {
   return item.source_type === "auto_seeded_poi" || item.source_type === "auto_seeded_meal" || item.source_type === "auto_filled";
+}
+
+function buildRouteEvidence(itinerary: RoutePreviewItinerary) {
+  const items = itinerary.days.flatMap((day) => day.blocks.flatMap((block) => block.items));
+  return {
+    confirmedCount: items.filter((item) => item.is_fixed || item.source_type === "user_seed" || item.source_type === "user_fixed").length,
+    suggestedCount: items.filter(isSystemSuggested).length,
+    unexplainedCount: items.filter((item) => !item.placement_reason).length,
+  };
 }
 
 function DayReasons({ items }: { items: RoutePreviewItinerary["days"][number]["blocks"][number]["items"] }) {

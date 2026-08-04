@@ -7,6 +7,8 @@ import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace"
 import type { IntentClarification, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel, getPrePlanClarificationControl, type PrePlanClarificationControl } from "./prePlanConfirmationModel";
 import { buildPrePlanHandoffStatus, userFacingPrePlanHandoffError } from "./plannerHandoffModel";
+import { PlannerTraceReviewPanel } from "./PlannerTraceReviewPanel";
+import { markPlannerHandoffReviewStale, type PlannerHandoffReviewSummary } from "./plannerTraceReviewModel";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 import type {
@@ -29,12 +31,14 @@ type PreviewResponse = {
   draft_intent_revision_id: string;
   handoff: { id: string; trace_digest: string };
   itinerary: ItineraryResponse;
+  review_summary: PlannerHandoffReviewSummary;
 };
 
 type ApplyResponse = {
   trip: TripMetadata;
   current_revision: TripRevisionMetadata;
   itinerary: ItineraryResponse;
+  review_summary: PlannerHandoffReviewSummary;
 };
 
 type CandidateListResponse = {
@@ -105,9 +109,13 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     () => preview ? buildPrePlanHandoffStatus({ previewIntentRevisionId: preview.draft_intent_revision_id, latestIntentRevisionId }) : null,
     [latestIntentRevisionId, preview],
   );
+  const reviewSummary = useMemo(
+    () => preview ? previewStatus?.kind === "stale" ? markPlannerHandoffReviewStale(preview.review_summary) : preview.review_summary : null,
+    [preview, previewStatus?.kind],
+  );
   const canGeneratePreview = Boolean(view?.canGeneratePreview && !sourcesChanged && (!preview || previewStatus?.canGenerateReplacement));
-  const previewHasExecutionConflict = preview?.itinerary?.planner_realism?.status === "unstable";
-  const canApplyPreview = Boolean(preview && intent && !sourcesChanged && !previewHasExecutionConflict && previewStatus?.canApply);
+  const previewHasExecutionConflict = reviewSummary?.status === "unstable" || preview?.itinerary?.planner_realism?.status === "unstable";
+  const canApplyPreview = Boolean(preview && intent && !sourcesChanged && reviewSummary?.can_apply && !previewHasExecutionConflict && previewStatus?.canApply);
 
   useEffect(() => {
     void refreshCandidates();
@@ -427,7 +435,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
         <details className="uc-intent-card uc-intent-details"><summary><span><strong>查看依据</strong><small>按需查看输入和导入资料</small></span><span aria-hidden="true">展开</span></summary><SourceDetails directUserText={directUserText} sourceLines={view.sourceLines} candidates={candidates} selectedCandidateIds={selectedCandidateIds} onSelectCandidate={selectCandidate} onRefresh={() => void compileIntent()} onImportChanged={() => { void refreshCandidates(); setSourcesChanged(true); setPreview(null); setFeedback({ tone: "info", message: "已更新导入资料；重新整理后会纳入行程信息。" }); }} busy={busy} tripId={tripId} /></details>
       </> : null}
 
-      {preview && previewStatus ? <><PrePlanHandoffStatusPanel status={previewStatus} currentRevisionNumber={intent?.revision.revision_number ?? null} /><ExecutableRoutePreview itinerary={preview.itinerary} variant="draft" /></> : null}
+      {preview && previewStatus ? <><PrePlanHandoffStatusPanel status={previewStatus} currentRevisionNumber={intent?.revision.revision_number ?? null} />{reviewSummary ? <PlannerTraceReviewPanel summary={reviewSummary} /> : null}<ExecutableRoutePreview itinerary={preview.itinerary} variant="draft" /></> : null}
 
       {staleConflict ? <StaleConflictPanel conflict={staleConflict} onViewLatest={() => { setFeedback({ tone: "info", message: "已显示最新行程信息；你的修改仍保留，可以重新应用。" }); }} onReapply={reapplyStaleEdit} onDiscard={() => { setStaleConflict(null); setActiveEditor(null); setFormDraft(null); setEditorError(null); setRestorePrimaryFocus(true); }} disabled={Boolean(pendingEdit)} /> : null}
 

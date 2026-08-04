@@ -22,6 +22,8 @@ test("route preview renders a readable day timeline without internal handoff met
   assert.match(html, /预计移动/);
   assert.match(html, /活动时长/);
   assert.match(html, /为什么这样安排/);
+  assert.match(html, /查看规划依据/);
+  assert.match(html, /系统补充是路线建议/);
   assert.doesNotMatch(html, /trace_digest/);
   assert.doesNotMatch(html, /handoff ID/);
 });
