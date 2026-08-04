@@ -11,6 +11,12 @@ export type CandidateMetrics = {
   max_daily_activity_minutes: number;
   free_buffer_minutes: number;
   missing_travel_data: boolean;
+  minimum_daily_slack_minutes: number;
+  rushed_day_count: number;
+  infeasible_day_count: number;
+  risk_count: number;
+  travel_data_completeness: "complete" | "partial" | "missing";
+  daily_windows: { day: number; available_start: string; available_end: string; available_window_minutes: number; activity_minutes: number; travel_minutes: number; slack_minutes: number }[];
 };
 
 export type PlanCandidate = {
@@ -27,16 +33,23 @@ export type PlanCandidateResponse = {
   intent_digest: string;
   candidates: PlanCandidate[];
   comparison: { candidate_id: string; highlights: string[] }[];
+  planning_run_id: string;
+  status: "generated" | "selecting" | "selected" | "expired" | "invalidated";
+  expires_at: string;
 };
 
-export function PlanCandidateComparison({ response, selectedId, busy, error, onSelect, onConfirm, onBack }: {
+export type PlanningRecord = { summary: string[]; evidence: { label: string; kind: string }[]; status: string; selected_candidate_id: string | null; trip_id: string | null };
+
+export function PlanCandidateComparison({ response, selectedId, busy, error, record, onSelect, onConfirm, onBack, onViewRecord }: {
   response: PlanCandidateResponse;
   selectedId: string;
   busy: boolean;
   error: string | null;
+  record: PlanningRecord | null;
   onSelect: (candidateId: string) => void;
   onConfirm: () => void;
   onBack: () => void;
+  onViewRecord: () => void;
 }) {
   const selected = response.candidates.find((candidate) => candidate.id === selectedId) ?? response.candidates[0];
   return <main className="tc-page tc-candidate-page">
@@ -47,12 +60,12 @@ export function PlanCandidateComparison({ response, selectedId, busy, error, onS
         const highlights = response.comparison.find((item) => item.candidate_id === candidate.id)?.highlights ?? [];
         return <button type="button" key={candidate.id} className={`tc-candidate-card${active ? " is-selected" : ""}`} aria-pressed={active} onClick={() => onSelect(candidate.id)} disabled={busy}>
           <span className="tc-candidate-tag">{active ? "已选择" : "路线方案"}</span><strong>{candidate.title}</strong><span>{candidate.tradeoff_summary}</span>
-          <dl><div><dt>必去</dt><dd>{candidate.metrics.must_coverage}</dd></div><div><dt>可调整</dt><dd>{candidate.metrics.optional_coverage}</dd></div><div><dt>弹性时间</dt><dd>{Math.floor(candidate.metrics.free_buffer_minutes / 60)}h</dd></div></dl>
+          <dl><div><dt>必去</dt><dd>{candidate.metrics.must_coverage}</dd></div><div><dt>可调整</dt><dd>{candidate.metrics.optional_coverage}</dd></div><div><dt>每天弹性</dt><dd>{candidate.metrics.minimum_daily_slack_minutes}m</dd></div></dl>
           <ul>{highlights.slice(0, 2).map((highlight) => <li key={highlight}>{highlight}</li>)}</ul>
         </button>;
       })}
     </section>
-    <section className="tc-selected-route"><div><p className="tc-eyebrow">你选择的路线</p><h2>{selected.title}</h2><p>{selected.itinerary.days.map((day) => `第 ${day.day} 天 ${day.blocks.flatMap((block) => block.items).map((item) => item.name).slice(0, 3).join(" · ")}`).join(" / ")}</p></div><details className="tc-source"><summary>查看依据</summary><p>这条路线按你确认的目的地、天数、固定安排和必去地点生成。原始描述与后续确认会一起保留为这次规划的依据。</p></details></section>
+    <section className="tc-selected-route" aria-label="完整路线预览"><div><p className="tc-eyebrow">完整路线</p><h2>{selected.title}</h2>{selected.itinerary.days.map((day) => <section className="tc-day-route" key={day.day}><h3>第 {day.day} 天</h3>{day.blocks.flatMap((block) => block.items).map((item) => <div className="tc-route-item" key={item.stable_id ?? `${day.day}:${item.start_time}:${item.name}`}><time>{item.start_time ?? "待定"}</time><span><strong>{item.name}</strong><small>{item.is_fixed ? "固定安排" : item.source_label ?? "系统补充"} · {item.duration_minutes ?? 0} 分钟</small></span></div>)}</section>)}</div><aside><details className="tc-source"><summary>查看依据</summary><p>每项安排都来自你确认的地点、时间和固定安排；系统补充会明确标为系统建议。</p></details><button type="button" className="tc-link-button" onClick={onViewRecord}>查看规划记录</button>{record ? <section className="tc-planning-record"><h3>这次规划</h3>{record.summary.map((item) => <p key={item}>{item}</p>)}{record.evidence.slice(0, 5).map((item) => <p className="tc-record-evidence" key={`${item.kind}:${item.label}`}>“{item.label}” · {item.kind}</p>)}</section> : null}</aside></section>
     {error ? <p className="tc-candidate-error" role="alert">{error}</p> : null}
     <footer className="tc-confirm-footer"><span>确认后才会保存为第一版行程。</span><button type="button" className="tc-primary" onClick={onConfirm} disabled={busy}>{busy ? "正在保存这条路线" : "确认并保存这条路线"}</button></footer>
   </main>;

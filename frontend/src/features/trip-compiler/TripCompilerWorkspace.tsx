@@ -7,7 +7,7 @@ import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { RoutePreviewItinerary } from "@/features/executable-route-preview/routePreviewModel";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
-import { PlanCandidateComparison, type PlanCandidateResponse } from "./PlanCandidateComparison";
+import { PlanCandidateComparison, type PlanCandidateResponse, type PlanningRecord } from "./PlanCandidateComparison";
 
 type Ownership = "user_fixed" | "user_must" | "user_optional" | "system_suggested";
 type Pace = "relaxed" | "balanced" | "intensive";
@@ -38,14 +38,18 @@ type TravelIntent = {
 type CompileResponse = { intent: TravelIntent; status: "ready" | "needs_confirmation" | "hard_conflict"; conflicts: string[]; conflict_cores: unknown[] };
 type PlanResponse = { trip: TripMetadata; current_revision: TripRevisionMetadata; itinerary: RoutePreviewItinerary };
 type CurrentTripResponse = { trip: TripMetadata; current_revision: TripRevisionMetadata; itinerary: RoutePreviewItinerary };
+type PersistedPlanningRunResponse = PlanCandidateResponse & { confirmed_intent: TravelIntent; trip_id: string | null };
 
 type WorkspaceState =
   | { status: "input" }
   | { status: "compiling" }
   | { status: "confirm"; intent: TravelIntent }
   | { status: "planning"; intent: TravelIntent }
-  | { status: "candidates"; intent: TravelIntent; response: PlanCandidateResponse; selectedId: string; error: string | null }
-  | { status: "selecting_candidate"; intent: TravelIntent; response: PlanCandidateResponse; selectedId: string }
+  | { status: "restoring_run" }
+  | { status: "expired_run" }
+  | { status: "saved_run"; tripId: string }
+  | { status: "candidates"; intent: TravelIntent; response: PlanCandidateResponse; selectedId: string; error: string | null; record: PlanningRecord | null }
+  | { status: "selecting_candidate"; intent: TravelIntent; response: PlanCandidateResponse; selectedId: string; record: PlanningRecord | null }
   | { status: "route"; trip: TripMetadata; revision: TripRevisionMetadata; itinerary: RoutePreviewItinerary; intent: TravelIntent | null }
   | { status: "hard_conflict"; intent: TravelIntent; conflicts: string[] }
   | { status: "network_error"; message: string; returnTo: "input" | "confirm"; intent?: TravelIntent };
@@ -65,9 +69,11 @@ export function TripCompilerWorkspace() {
   const [state, setState] = useState<WorkspaceState>({ status: "input" });
 
   useEffect(() => {
-    const tripId = new URLSearchParams(window.location.search).get("trip");
-    if (!tripId) return;
-    void loadSavedTrip(tripId);
+    const params = new URLSearchParams(window.location.search);
+    const tripId = params.get("trip");
+    const planningRunId = params.get("planning_run");
+    if (tripId) void loadSavedTrip(tripId);
+    else if (planningRunId) void loadPlanningRun(planningRunId);
   }, []);
 
   async function loadSavedTrip(tripId: string) {
@@ -77,6 +83,24 @@ export function TripCompilerWorkspace() {
       return;
     }
     setState({ status: "route", trip: result.data.trip, revision: result.data.current_revision, itinerary: result.data.itinerary, intent: null });
+  }
+
+  async function loadPlanningRun(runId: string) {
+    setState({ status: "restoring_run" });
+    const result = await getTripJson<PersistedPlanningRunResponse>(TRIP_API_ENDPOINTS.getTripCompilerPlanningRun(runId), "暂时无法恢复这批路线方案。", "无法连接后端接口。");
+    if (!result.ok) {
+      setState({ status: "network_error", message: result.message, returnTo: "input" });
+      return;
+    }
+    if (result.data.status === "expired") {
+      setState({ status: "expired_run" });
+      return;
+    }
+    if (result.data.status === "selected" && result.data.trip_id) {
+      setState({ status: "saved_run", tripId: result.data.trip_id });
+      return;
+    }
+    setState({ status: "candidates", intent: result.data.confirmed_intent, response: result.data, selectedId: result.data.candidates[0]?.id ?? "", error: null, record: null });
   }
 
   async function compile(event: FormEvent) {
@@ -107,33 +131,49 @@ export function TripCompilerWorkspace() {
       setState({ status: "network_error", message: result.message, returnTo: "confirm", intent });
       return;
     }
-    setState({ status: "candidates", intent, response: result.data, selectedId: result.data.candidates[0].id, error: null });
+    window.history.replaceState({}, "", `/trip-compiler?planning_run=${encodeURIComponent(result.data.planning_run_id)}`);
+    setState({ status: "candidates", intent, response: result.data, selectedId: result.data.candidates[0].id, error: null, record: null });
   }
 
   async function selectCandidate(intent: TravelIntent, response: PlanCandidateResponse, selectedId: string) {
     const candidate = response.candidates.find((item) => item.id === selectedId);
     if (!candidate) return;
-    setState({ status: "selecting_candidate", intent, response, selectedId });
+    setState({ status: "selecting_candidate", intent, response, selectedId, record: null });
     const result = await postTripJson<PlanResponse>(
-      TRIP_API_ENDPOINTS.selectTripCompilerCandidate(candidate.id),
+      TRIP_API_ENDPOINTS.selectTripCompilerCandidate(response.planning_run_id, candidate.id),
       { candidate_hash: candidate.candidate_hash, intent_digest: response.intent_digest },
       "暂时无法保存这条路线。你的路线方案还在这里。",
       "无法连接后端接口。",
       { headers: { "X-Idempotency-Key": `trip-candidate:${crypto.randomUUID()}` } },
     );
     if (!result.ok) {
-      setState({ status: "candidates", intent, response, selectedId, error: result.message });
+      setState({ status: "candidates", intent, response, selectedId, error: result.message, record: null });
       return;
     }
     window.history.replaceState({}, "", `/trip-compiler?trip=${encodeURIComponent(result.data.trip.id)}`);
     setState({ status: "route", trip: result.data.trip, revision: result.data.current_revision, itinerary: result.data.itinerary, intent });
   }
 
+  async function loadPlanningRecord(current: Extract<WorkspaceState, { status: "candidates" | "selecting_candidate" }>) {
+    const result = await getTripJson<PlanningRecord>(TRIP_API_ENDPOINTS.getTripCompilerPlanningRecord(current.response.planning_run_id), "暂时无法读取规划记录。", "无法连接后端接口。");
+    if (!result.ok) return;
+    if (current.status === "candidates") setState({ ...current, record: result.data });
+  }
+
   if (state.status === "route") {
     return <RouteScreen trip={state.trip} revision={state.revision} itinerary={state.itinerary} intent={state.intent} onApplied={(response) => setState({ status: "route", trip: response.trip, revision: response.current_revision, itinerary: response.itinerary, intent: state.intent })} />;
   }
+  if (state.status === "restoring_run") {
+    return <RunStatusScreen title="正在恢复你刚才比较的路线" detail="路线方案已经保存，不需要重新生成。" />;
+  }
+  if (state.status === "expired_run") {
+    return <RunStatusScreen title="这批路线方案已经过期。" detail="为了避免使用旧数据，请重新生成。" action="重新生成路线方案" onAction={() => setState({ status: "input" })} />;
+  }
+  if (state.status === "saved_run") {
+    return <RunStatusScreen title="这套路线已经保存。" detail="你可以继续查看和调整已保存的行程。" action="打开已保存行程" onAction={() => void loadSavedTrip(state.tripId)} />;
+  }
   if (state.status === "candidates" || state.status === "selecting_candidate") {
-    return <><PlanCandidateComparison response={state.response} selectedId={state.selectedId} busy={state.status === "selecting_candidate"} error={state.status === "candidates" ? state.error : null} onSelect={(selectedId) => state.status === "candidates" && setState({ ...state, selectedId, error: null })} onConfirm={() => selectCandidate(state.intent, state.response, state.selectedId)} onBack={() => setState({ status: "confirm", intent: state.intent })} /><TripCompilerStyles /></>;
+    return <><PlanCandidateComparison response={state.response} selectedId={state.selectedId} busy={state.status === "selecting_candidate"} error={state.status === "candidates" ? state.error : null} record={state.record} onSelect={(selectedId) => state.status === "candidates" && setState({ ...state, selectedId, error: null })} onConfirm={() => selectCandidate(state.intent, state.response, state.selectedId)} onBack={() => setState({ status: "confirm", intent: state.intent })} onViewRecord={() => void loadPlanningRecord(state)} /><TripCompilerStyles /></>;
   }
   if (state.status === "confirm" || state.status === "planning") {
     return <IntentConfirmation intent={state.intent} busy={state.status === "planning"} onBack={() => setState({ status: "input" })} onPlan={plan} />;
@@ -145,6 +185,10 @@ export function TripCompilerWorkspace() {
     return <main className="tc-page"><section className="tc-conflict" role="alert"><p>连接出现问题</p><h1>{state.message}</h1><button type="button" onClick={() => state.returnTo === "confirm" && state.intent ? setState({ status: "confirm", intent: state.intent }) : setState({ status: "input" })}>返回继续修改</button></section><TripCompilerStyles /></main>;
   }
   return <InputScreen text={text} onText={setText} onSubmit={compile} busy={state.status === "compiling"} />;
+}
+
+function RunStatusScreen({ title, detail, action, onAction }: { title: string; detail: string; action?: string; onAction?: () => void }) {
+  return <main className="tc-page"><section className="tc-conflict tc-run-status" aria-live="polite"><p>路线方案</p><h1>{title}</h1><p>{detail}</p>{action && onAction ? <button type="button" onClick={onAction}>{action}</button> : null}</section><TripCompilerStyles /></main>;
 }
 
 function InputScreen({ text, onText, onSubmit, busy }: { text: string; onText: (value: string) => void; onSubmit: (event: FormEvent) => void; busy: boolean }) {

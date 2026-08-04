@@ -17,7 +17,7 @@ function installGate(page: Page) {
 function observeCandidateRequests(page: Page) {
   let count = 0;
   page.on("request", (request) => {
-    if (request.method() === "POST" && request.url().includes("/trip-compiler/plan-candidates")) count += 1;
+    if (request.method() === "POST" && request.url().includes("/trip-compiler/planning-runs")) count += 1;
   });
   return () => count;
 }
@@ -36,10 +36,16 @@ test("Trip Compiler Scenario A: compares server candidates before saving one exe
   await expect(page.getByText("西湖", { exact: true })).toBeVisible();
   await expect(page.getByText("龙井村", { exact: true })).toBeVisible();
   await expect(page.getByText("中国茶叶博物馆", { exact: true })).toBeVisible();
-  const planned = page.waitForResponse((response) => response.url().includes("/trip-compiler/plan-candidates") && response.request().method() === "POST");
+  const planned = page.waitForResponse((response) => response.url().includes("/trip-compiler/planning-runs") && response.request().method() === "POST");
   await page.getByRole("button", { name: "生成我的行程骨架" }).click();
   expect((await planned).status()).toBe(200);
   await expect(page.getByRole("heading", { name: "选一条更符合这次旅行的安排。" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "完整路线预览" })).toContainText("第 1 天");
+  await page.getByRole("button", { name: "查看规划记录" }).click();
+  await expect(page.getByRole("heading", { name: "这次规划" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "选一条更符合这次旅行的安排。" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "完整路线预览" })).toContainText("第 2 天");
   await expect(page.getByRole("button", { name: "确认并保存这条路线" })).toBeVisible();
   const selected = page.waitForResponse((response) => response.url().includes("/select") && response.request().method() === "POST");
   await page.getByRole("button", { name: "确认并保存这条路线" }).click();
@@ -48,6 +54,24 @@ test("Trip Compiler Scenario A: compares server candidates before saving one exe
   await expect(page.getByRole("region", { name: "可执行路线预览" })).toBeVisible();
   await expect(page.getByText("必去", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("系统补充", { exact: false }).first()).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  assertClean();
+});
+
+test("Trip Compiler Scenario E: mobile restores a persisted candidate comparison without horizontal overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const assertClean = installGate(page);
+  await page.goto("/trip-compiler");
+  await page.getByLabel("这趟旅行，你已经知道些什么？").fill(hangzhou);
+  await page.getByRole("button", { name: "整理我的旅行想法" }).click();
+  await page.getByRole("button", { name: "生成我的行程骨架" }).click();
+  await expect(page.getByRole("region", { name: "完整路线预览" })).toContainText("第 1 天");
+  const alternatives = page.getByRole("button", { name: /保留更多想去地点|留出更多空白|少走一些路/ });
+  if (await alternatives.count() > 1) {
+    await alternatives.nth(1).click();
+  }
+  await page.reload();
+  await expect(page.getByRole("region", { name: "完整路线预览" })).toContainText("第 2 天");
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   assertClean();
 });
