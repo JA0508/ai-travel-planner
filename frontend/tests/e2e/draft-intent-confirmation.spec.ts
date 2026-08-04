@@ -282,8 +282,10 @@ test("Scenario F: previews and applies a local relaxation without regenerating t
   await routePreview.getByRole("button", { name: "让这一天轻松一些" }).click();
   expect((await previewRepair).status()).toBe(200);
   const review = page.getByRole("dialog", { name: "调整预览" });
-  await expect(review).toContainText(/系统建议将“武林夜市”从第 1 天移动到第 2 天/);
+  await expect(review).toContainText(/系统建议将“.+”从第 1 天移动到第 2 天/);
   await expect(review.getByText("固定安排没有移动；你明确想去的地点没有删除；没有重新生成全部行程。")).toBeVisible();
+  const movedStop = (await review.textContent())?.match(/系统建议将“(.+)”从第 1 天移动到第 2 天/)?.[1];
+  expect(movedStop).toBeTruthy();
 
   const applyRepair = page.waitForResponse((response) => response.url().includes("/mutation-proposals/") && response.url().includes("/apply") && response.request().method() === "POST");
   await review.getByRole("button", { name: "应用这次调整" }).click();
@@ -296,9 +298,9 @@ test("Scenario F: previews and applies a local relaxation without regenerating t
   expect(afterRepair.trip_revisions.map((revision) => revision.revision_number)).toEqual([1, 2]);
   expect(afterRepair.trip_revisions[1].source_type).toBe("route_edit");
   expect(afterRepair.trip_revisions[1].parent_revision_id).toBe(afterRepair.trip_revisions[0].id);
-  expect(flattenedStopNames(afterRepair.trip_revisions[0].snapshot)).toContain("武林夜市");
-  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 1)).not.toContain("武林夜市");
-  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 2)).toContain("武林夜市");
+  expect(flattenedStopNames(afterRepair.trip_revisions[0].snapshot)).toContain(movedStop);
+  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 1)).not.toContain(movedStop);
+  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 2)).toContain(movedStop);
   await assertViewportFits(page);
   gate.assertClean();
 });

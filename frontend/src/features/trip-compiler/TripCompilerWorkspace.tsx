@@ -7,7 +7,7 @@ import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { RoutePreviewItinerary } from "@/features/executable-route-preview/routePreviewModel";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
-import { PlanCandidateComparison, type PlanCandidateResponse } from "./PlanCandidateComparison";
+import { PlanCandidateComparison, type PlanCandidateResponse, type PlanningRecord } from "./PlanCandidateComparison";
 
 type Ownership = "user_fixed" | "user_must" | "user_optional" | "system_suggested";
 type Pace = "relaxed" | "balanced" | "intensive";
@@ -38,14 +38,18 @@ type TravelIntent = {
 type CompileResponse = { intent: TravelIntent; status: "ready" | "needs_confirmation" | "hard_conflict"; conflicts: string[]; conflict_cores: unknown[] };
 type PlanResponse = { trip: TripMetadata; current_revision: TripRevisionMetadata; itinerary: RoutePreviewItinerary };
 type CurrentTripResponse = { trip: TripMetadata; current_revision: TripRevisionMetadata; itinerary: RoutePreviewItinerary };
+type PersistedPlanningRunResponse = PlanCandidateResponse & { confirmed_intent: TravelIntent; trip_id: string | null };
 
 type WorkspaceState =
   | { status: "input" }
   | { status: "compiling" }
   | { status: "confirm"; intent: TravelIntent }
   | { status: "planning"; intent: TravelIntent }
-  | { status: "candidates"; intent: TravelIntent; response: PlanCandidateResponse; selectedId: string; error: string | null }
-  | { status: "selecting_candidate"; intent: TravelIntent; response: PlanCandidateResponse; selectedId: string }
+  | { status: "restoring_run" }
+  | { status: "expired_run" }
+  | { status: "saved_run"; tripId: string }
+  | { status: "candidates"; intent: TravelIntent; response: PlanCandidateResponse; selectedId: string; error: string | null; record: PlanningRecord | null }
+  | { status: "selecting_candidate"; intent: TravelIntent; response: PlanCandidateResponse; selectedId: string; record: PlanningRecord | null }
   | { status: "route"; trip: TripMetadata; revision: TripRevisionMetadata; itinerary: RoutePreviewItinerary; intent: TravelIntent | null }
   | { status: "hard_conflict"; intent: TravelIntent; conflicts: string[] }
   | { status: "network_error"; message: string; returnTo: "input" | "confirm"; intent?: TravelIntent };
@@ -65,9 +69,11 @@ export function TripCompilerWorkspace() {
   const [state, setState] = useState<WorkspaceState>({ status: "input" });
 
   useEffect(() => {
-    const tripId = new URLSearchParams(window.location.search).get("trip");
-    if (!tripId) return;
-    void loadSavedTrip(tripId);
+    const params = new URLSearchParams(window.location.search);
+    const tripId = params.get("trip");
+    const planningRunId = params.get("planning_run");
+    if (tripId) void loadSavedTrip(tripId);
+    else if (planningRunId) void loadPlanningRun(planningRunId);
   }, []);
 
   async function loadSavedTrip(tripId: string) {
@@ -77,6 +83,24 @@ export function TripCompilerWorkspace() {
       return;
     }
     setState({ status: "route", trip: result.data.trip, revision: result.data.current_revision, itinerary: result.data.itinerary, intent: null });
+  }
+
+  async function loadPlanningRun(runId: string) {
+    setState({ status: "restoring_run" });
+    const result = await getTripJson<PersistedPlanningRunResponse>(TRIP_API_ENDPOINTS.getTripCompilerPlanningRun(runId), "暂时无法恢复这批路线方案。", "无法连接后端接口。");
+    if (!result.ok) {
+      setState({ status: "network_error", message: result.message, returnTo: "input" });
+      return;
+    }
+    if (result.data.status === "expired") {
+      setState({ status: "expired_run" });
+      return;
+    }
+    if (result.data.status === "selected" && result.data.trip_id) {
+      setState({ status: "saved_run", tripId: result.data.trip_id });
+      return;
+    }
+    setState({ status: "candidates", intent: result.data.confirmed_intent, response: result.data, selectedId: result.data.candidates[0]?.id ?? "", error: null, record: null });
   }
 
   async function compile(event: FormEvent) {
@@ -107,33 +131,49 @@ export function TripCompilerWorkspace() {
       setState({ status: "network_error", message: result.message, returnTo: "confirm", intent });
       return;
     }
-    setState({ status: "candidates", intent, response: result.data, selectedId: result.data.candidates[0].id, error: null });
+    window.history.replaceState({}, "", `/trip-compiler?planning_run=${encodeURIComponent(result.data.planning_run_id)}`);
+    setState({ status: "candidates", intent, response: result.data, selectedId: result.data.candidates[0].id, error: null, record: null });
   }
 
   async function selectCandidate(intent: TravelIntent, response: PlanCandidateResponse, selectedId: string) {
     const candidate = response.candidates.find((item) => item.id === selectedId);
     if (!candidate) return;
-    setState({ status: "selecting_candidate", intent, response, selectedId });
+    setState({ status: "selecting_candidate", intent, response, selectedId, record: null });
     const result = await postTripJson<PlanResponse>(
-      TRIP_API_ENDPOINTS.selectTripCompilerCandidate(candidate.id),
+      TRIP_API_ENDPOINTS.selectTripCompilerCandidate(response.planning_run_id, candidate.id),
       { candidate_hash: candidate.candidate_hash, intent_digest: response.intent_digest },
       "暂时无法保存这条路线。你的路线方案还在这里。",
       "无法连接后端接口。",
       { headers: { "X-Idempotency-Key": `trip-candidate:${crypto.randomUUID()}` } },
     );
     if (!result.ok) {
-      setState({ status: "candidates", intent, response, selectedId, error: result.message });
+      setState({ status: "candidates", intent, response, selectedId, error: result.message, record: null });
       return;
     }
     window.history.replaceState({}, "", `/trip-compiler?trip=${encodeURIComponent(result.data.trip.id)}`);
     setState({ status: "route", trip: result.data.trip, revision: result.data.current_revision, itinerary: result.data.itinerary, intent });
   }
 
+  async function loadPlanningRecord(current: Extract<WorkspaceState, { status: "candidates" | "selecting_candidate" }>) {
+    const result = await getTripJson<PlanningRecord>(TRIP_API_ENDPOINTS.getTripCompilerPlanningRecord(current.response.planning_run_id), "暂时无法读取规划记录。", "无法连接后端接口。");
+    if (!result.ok) return;
+    if (current.status === "candidates") setState({ ...current, record: result.data });
+  }
+
   if (state.status === "route") {
     return <RouteScreen trip={state.trip} revision={state.revision} itinerary={state.itinerary} intent={state.intent} onApplied={(response) => setState({ status: "route", trip: response.trip, revision: response.current_revision, itinerary: response.itinerary, intent: state.intent })} />;
   }
+  if (state.status === "restoring_run") {
+    return <RunStatusScreen title="正在恢复你刚才比较的路线" detail="路线方案已经保存，不需要重新生成。" />;
+  }
+  if (state.status === "expired_run") {
+    return <RunStatusScreen title="这批路线方案已经过期。" detail="为了避免使用旧数据，请重新生成。" action="重新生成路线方案" onAction={() => setState({ status: "input" })} />;
+  }
+  if (state.status === "saved_run") {
+    return <RunStatusScreen title="这套路线已经保存。" detail="你可以继续查看和调整已保存的行程。" action="打开已保存行程" onAction={() => void loadSavedTrip(state.tripId)} />;
+  }
   if (state.status === "candidates" || state.status === "selecting_candidate") {
-    return <><PlanCandidateComparison response={state.response} selectedId={state.selectedId} busy={state.status === "selecting_candidate"} error={state.status === "candidates" ? state.error : null} onSelect={(selectedId) => state.status === "candidates" && setState({ ...state, selectedId, error: null })} onConfirm={() => selectCandidate(state.intent, state.response, state.selectedId)} onBack={() => setState({ status: "confirm", intent: state.intent })} /><TripCompilerStyles /></>;
+    return <><PlanCandidateComparison response={state.response} selectedId={state.selectedId} busy={state.status === "selecting_candidate"} error={state.status === "candidates" ? state.error : null} record={state.record} onSelect={(selectedId) => state.status === "candidates" && setState({ ...state, selectedId, error: null })} onConfirm={() => selectCandidate(state.intent, state.response, state.selectedId)} onBack={() => setState({ status: "confirm", intent: state.intent })} onViewRecord={() => void loadPlanningRecord(state)} /><TripCompilerStyles /></>;
   }
   if (state.status === "confirm" || state.status === "planning") {
     return <IntentConfirmation intent={state.intent} busy={state.status === "planning"} onBack={() => setState({ status: "input" })} onPlan={plan} />;
@@ -145,6 +185,10 @@ export function TripCompilerWorkspace() {
     return <main className="tc-page"><section className="tc-conflict" role="alert"><p>连接出现问题</p><h1>{state.message}</h1><button type="button" onClick={() => state.returnTo === "confirm" && state.intent ? setState({ status: "confirm", intent: state.intent }) : setState({ status: "input" })}>返回继续修改</button></section><TripCompilerStyles /></main>;
   }
   return <InputScreen text={text} onText={setText} onSubmit={compile} busy={state.status === "compiling"} />;
+}
+
+function RunStatusScreen({ title, detail, action, onAction }: { title: string; detail: string; action?: string; onAction?: () => void }) {
+  return <main className="tc-page"><section className="tc-conflict tc-run-status" aria-live="polite"><p>路线方案</p><h1>{title}</h1><p>{detail}</p>{action && onAction ? <button type="button" onClick={onAction}>{action}</button> : null}</section><TripCompilerStyles /></main>;
 }
 
 function InputScreen({ text, onText, onSubmit, busy }: { text: string; onText: (value: string) => void; onSubmit: (event: FormEvent) => void; busy: boolean }) {
@@ -194,7 +238,7 @@ function RouteScreen({ trip, revision, itinerary, intent, onApplied }: { trip: T
 }
 
 function TripCompilerStyles() {
-  return <style>{`
+  return <><style>{`
     .tc-page{--tc-ink:#182126;--tc-muted:#637078;--tc-line:#d9ded8;--tc-paper:#fffefa;--tc-warm:#f5f1e8;--tc-accent:#356f62;max-width:1120px;margin:0 auto;padding:72px 28px 112px;color:var(--tc-ink)}.tc-input-page{min-height:calc(100vh - 78px);display:grid;grid-template-columns:minmax(0,.9fr) minmax(460px,1.1fr);align-items:center;gap:62px}.tc-eyebrow{margin:0 0 12px;color:var(--tc-accent);font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.tc-input-copy h1,.tc-confirm-header h1,.tc-route-header h1,.tc-conflict h1{margin:0;font-family:Georgia,"Times New Roman",serif;font-size:clamp(38px,4vw,61px);line-height:1.05;letter-spacing:0}.tc-input-copy>p:not(.tc-eyebrow),.tc-confirm-header>div>p:not(.tc-eyebrow),.tc-route-header p{color:var(--tc-muted);font-size:17px;line-height:1.7}.tc-composer,.tc-section,.tc-conflict,.tc-route-header,.tc-candidate-card,.tc-selected-route{border:1px solid var(--tc-line);border-radius:8px;background:var(--tc-paper)}.tc-composer{padding:22px;box-shadow:0 18px 40px rgba(37,44,38,.07)}.tc-composer label,.tc-section h2{display:block;margin:0 0 10px;font-size:15px;font-weight:800}.tc-composer textarea{width:100%;min-height:300px;box-sizing:border-box;resize:vertical;border:0;border-bottom:1px solid var(--tc-line);background:transparent;padding:8px 0 17px;color:var(--tc-ink);font:inherit;font-size:16px;line-height:1.65;outline:none}.tc-composer textarea:focus{border-color:var(--tc-accent)}.tc-primary,.tc-composer>button{margin-top:18px;border:0;border-radius:7px;background:var(--tc-ink);color:white;padding:14px 18px;font:inherit;font-weight:800;cursor:pointer}.tc-primary:disabled,.tc-composer>button:disabled{opacity:.5;cursor:wait}.tc-example-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:17px}.tc-example-row button,.tc-link-button,.tc-place-list button,.tc-fixed-list button,.tc-inline-form button{border:0;background:none;color:var(--tc-accent);font:inherit;font-size:13px;font-weight:700;cursor:pointer;padding:3px}.tc-confirm-page,.tc-route-page{max-width:1160px}.tc-confirm-header,.tc-route-header{display:flex;justify-content:space-between;gap:28px;align-items:flex-end;margin-bottom:26px}.tc-confirm-header{padding:0 0 26px;border-bottom:1px solid var(--tc-line)}.tc-confirm-header h1{font-size:42px}.tc-link-button{white-space:nowrap;border-bottom:1px solid currentColor}.tc-confirm-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(260px,.7fr);gap:18px}.tc-main-column,.tc-side-column{display:grid;align-content:start;gap:16px}.tc-section{padding:20px}.tc-section>p{margin:0 0 14px;color:var(--tc-muted);line-height:1.55}.tc-field-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.tc-field-grid label,.tc-fixed-list label{display:grid;gap:6px;color:var(--tc-muted);font-size:12px;font-weight:700}.tc-field-grid input,.tc-field-grid select,.tc-inline-form input,.tc-fixed-list input{box-sizing:border-box;min-width:0;width:100%;border:1px solid var(--tc-line);border-radius:5px;background:#fff;padding:9px;color:var(--tc-ink);font:inherit}.tc-place-list,.tc-plain-list{list-style:none;margin:0;padding:0}.tc-place-list{display:grid;gap:8px}.tc-place-list li{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid #edf0ec}.tc-place-list span{display:flex;gap:8px}.tc-empty{color:var(--tc-muted)}.tc-inline-form{display:flex;gap:8px}.tc-inline-form button{border:1px solid var(--tc-line);border-radius:5px;white-space:nowrap;padding:8px 10px}.tc-fixed-list{display:grid;gap:10px}.tc-fixed-list>div{display:grid;grid-template-columns:1.2fr repeat(3,minmax(82px,.55fr)) auto;gap:8px;align-items:end;padding:12px;background:var(--tc-warm);border-radius:6px}.tc-fixed-list strong{padding-bottom:8px}.tc-token-list{display:flex;gap:7px;flex-wrap:wrap}.tc-token-list span{display:flex;gap:6px;align-items:center;border-radius:999px;background:#e7eee9;color:#315e50;padding:6px 9px;font-size:13px}.tc-token-list button{border:0;background:none;color:inherit;cursor:pointer;font-size:16px;line-height:1}.tc-plain-list{display:grid;gap:9px;color:var(--tc-muted);line-height:1.5}.tc-plain-list li{padding-left:12px;border-left:2px solid #c5d8d1}.tc-confirm-needed{background:#fbf7ef}.tc-confirm-needed ul{display:grid;gap:10px;margin:0;padding-left:20px;line-height:1.5}.tc-blocking{color:#9b372f;font-weight:700}.tc-source{font-size:13px;color:var(--tc-muted)}.tc-source summary{cursor:pointer;font-weight:800;color:var(--tc-ink)}.tc-source p{white-space:pre-wrap;line-height:1.6}.tc-confirm-footer{position:sticky;bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:18px;margin-top:22px;padding:14px 16px;border:1px solid var(--tc-line);border-radius:8px;background:rgba(255,254,250,.96);box-shadow:0 12px 28px rgba(24,33,38,.1);color:var(--tc-muted);font-size:14px}.tc-route-header{padding:28px 30px}.tc-route-header h1{font-size:42px}.tc-route-header span{color:var(--tc-muted);font-size:14px}.tc-saved{border:1px solid #bcd0c3;border-radius:999px;background:#edf6ef;color:#386347;padding:9px 12px;font-weight:800;white-space:nowrap}.tc-conflict{max-width:700px;margin:12vh auto;padding:34px}.tc-conflict>p:first-child{margin:0 0 10px;color:#9b372f;font-weight:800}.tc-conflict h1{font-size:42px;margin-bottom:18px}.tc-conflict button{border:0;border-radius:7px;background:var(--tc-ink);color:#fff;padding:12px 15px;font-weight:800;cursor:pointer;margin-top:14px}.tc-candidate-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.tc-candidate-card{display:grid;gap:12px;text-align:left;padding:20px;color:var(--tc-ink);font:inherit;cursor:pointer;transition:border-color .15s,transform .15s}.tc-candidate-card:hover,.tc-candidate-card:focus-visible,.tc-candidate-card.is-selected{border-color:var(--tc-accent);outline:none}.tc-candidate-card.is-selected{box-shadow:inset 0 0 0 1px var(--tc-accent);background:#f5faf7}.tc-candidate-card strong{font-family:Georgia,"Times New Roman",serif;font-size:25px}.tc-candidate-card>span:not(.tc-candidate-tag){color:var(--tc-muted);line-height:1.5}.tc-candidate-tag{width:max-content;color:var(--tc-accent);font-size:12px;font-weight:800}.tc-candidate-card dl{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:4px 0}.tc-candidate-card dl div{background:var(--tc-warm);padding:8px}.tc-candidate-card dt{color:var(--tc-muted);font-size:11px}.tc-candidate-card dd{margin:4px 0 0;font-weight:800}.tc-candidate-card ul{margin:0;padding-left:16px;color:var(--tc-muted);font-size:13px;line-height:1.55}.tc-selected-route{display:grid;gap:14px;margin-top:18px;padding:22px}.tc-selected-route h2{margin:0;font-family:Georgia,"Times New Roman",serif;font-size:29px}.tc-selected-route p{color:var(--tc-muted);line-height:1.6}.tc-candidate-error{margin:14px 0;color:#9b372f;font-weight:700}@media(max-width:760px){.tc-page{padding:38px 16px 92px}.tc-input-page{display:grid;grid-template-columns:1fr;gap:30px;align-content:start}.tc-input-copy h1{font-size:42px}.tc-composer{padding:16px}.tc-composer textarea{min-height:250px}.tc-confirm-header,.tc-route-header{display:grid;align-items:start}.tc-confirm-header h1,.tc-route-header h1{font-size:35px}.tc-confirm-grid,.tc-candidate-grid{grid-template-columns:1fr}.tc-field-grid{grid-template-columns:1fr}.tc-fixed-list>div{grid-template-columns:1fr 1fr}.tc-fixed-list strong{grid-column:1/-1}.tc-confirm-footer{align-items:start;display:grid;bottom:8px}.tc-confirm-footer .tc-primary{width:100%;margin:0}.tc-route-header{padding:21px}.tc-inline-form{display:grid}.tc-inline-form button{width:max-content}.tc-place-list li{display:grid}.tc-place-list span{justify-content:start}.tc-conflict{margin:7vh auto}.tc-conflict h1{font-size:34px}}
-  `}</style>;
+  `}</style><style>{`.tc-candidate-page .tc-confirm-footer{position:static}`}</style></>;
 }

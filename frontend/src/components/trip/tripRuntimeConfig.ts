@@ -139,9 +139,13 @@ export const TRIP_API_ENDPOINTS = {
   parseTripIntent: buildApiUrl("/parse-trip-intent"),
   compileTripCompilerIntent: buildApiUrl("/trip-compiler/intents/compile"),
   planTripCompilerIntent: buildApiUrl("/trip-compiler/trips"),
-  generateTripCompilerCandidates: buildApiUrl("/trip-compiler/plan-candidates"),
-  selectTripCompilerCandidate: (candidateId: string) =>
-    buildApiUrl(`/trip-compiler/plan-candidates/${encodeURIComponent(candidateId)}/select`),
+  generateTripCompilerCandidates: buildApiUrl("/trip-compiler/planning-runs"),
+  getTripCompilerPlanningRun: (runId: string) =>
+    buildApiUrl(`/trip-compiler/planning-runs/${encodeURIComponent(runId)}`),
+  getTripCompilerPlanningRecord: (runId: string) =>
+    buildApiUrl(`/trip-compiler/planning-runs/${encodeURIComponent(runId)}/record`),
+  selectTripCompilerCandidate: (runId: string, candidateId: string) =>
+    buildApiUrl(`/trip-compiler/planning-runs/${encodeURIComponent(runId)}/candidates/${encodeURIComponent(candidateId)}/select`),
   parsePlanningState: buildApiUrl("/parse-planning-state"),
   previewAvailability: buildApiUrl("/preview-availability"),
 } as const;

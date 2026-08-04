@@ -32,6 +32,7 @@ const backendEnvironment = {
 
 export default defineConfig({
   testDir: "tests/e2e",
+  testMatch: "draft-intent-confirmation.spec.ts",
   fullyParallel: false,
   workers: 1,
   timeout: 45_000,

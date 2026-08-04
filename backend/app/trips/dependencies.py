@@ -39,3 +39,10 @@ def get_trip_persistence_service() -> TripPersistenceService:
 
 def reset_trip_repository_cache_for_tests() -> None:
     get_trip_repository.cache_clear()
+    # Planning Runs use the same SQLite store but have their own dependency cache.
+    # Clearing both keeps each test's temporary database isolated.
+    try:
+        from app.services.planning_run_dependencies import reset_planning_run_repository_cache_for_tests
+        reset_planning_run_repository_cache_for_tests()
+    except ImportError:
+        pass

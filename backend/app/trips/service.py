@@ -139,7 +139,6 @@ from .planner_handoff import (
 from .mutation_commands import (
     TripMutationCommandEnvelope,
     TripMutationEngine,
-    build_relax_day_envelope,
     ensure_stable_item_ids,
 )
 from .repository import TripRepository
@@ -1469,6 +1468,14 @@ class TripPersistenceService:
                 "command_digest": preview.command_digest,
             }
         )
+        # A controlled patch is derived from an existing revision, not a new
+        # planner run. Preserve the original planning lineage on its proposal
+        # and resulting revision so a later repair remains traceable to the
+        # candidate selection that created Revision 1.
+        root_planner_run_id = base_revision.planner_run_id
+        root_planner_version = base_revision.planner_version
+        root_trace_schema_version = base_revision.trace_schema_version
+        root_trace_digest = base_revision.trace_digest
         proposal_digest = mutation_proposal_digest(
             proposal_schema_version=TRIP_MUTATION_PROPOSAL_SCHEMA_VERSION,
             trip_id=trip_id,
@@ -1478,10 +1485,10 @@ class TripPersistenceService:
             request_digest=req_digest,
             preview_snapshot_schema_version=TRIP_SNAPSHOT_SCHEMA_VERSION,
             preview_content_digest=preview.content_digest,
-            planner_run_id=None,
-            planner_version=None,
-            trace_schema_version=None,
-            trace_digest=None,
+            planner_run_id=root_planner_run_id,
+            planner_version=root_planner_version,
+            trace_schema_version=root_trace_schema_version,
+            trace_digest=root_trace_digest,
             validation_report=preview.validation_report,
             expires_at=expires_at,
             execution_kind="typed_command",
@@ -1503,10 +1510,10 @@ class TripPersistenceService:
                 preview_snapshot=preview.resulting_snapshot,
                 preview_content_digest=preview.content_digest,
                 proposal_digest=proposal_digest,
-                planner_run_id=None,
-                planner_version=None,
-                trace_schema_version=None,
-                trace_digest=None,
+                planner_run_id=root_planner_run_id,
+                planner_version=root_planner_version,
+                trace_schema_version=root_trace_schema_version,
+                trace_digest=root_trace_digest,
                 validation_report=preview.validation_report,
                 execution_kind="typed_command",
                 command_schema_version=TRIP_MUTATION_COMMAND_SCHEMA_VERSION,
@@ -1551,7 +1558,12 @@ class TripPersistenceService:
                 base_revision_id=payload.base_revision_id,
                 current_revision_id=trip.current_revision_id,
             )
-        envelope, repair_summary = build_relax_day_envelope(
+        # The golden-path selector is the canonical safe local repair policy. It
+        # chooses a movable system suggestion and lets the typed command engine
+        # re-slot it in the receiving day; do not retain a second time-slot policy.
+        from .golden_path_repair import build_relax_day_envelope as build_safe_relax_day_envelope
+
+        envelope, repair_selection = build_safe_relax_day_envelope(
             snapshot=base_revision.itinerary_snapshot,
             base_revision_id=payload.base_revision_id,
             target_day=payload.target_day,
@@ -1562,7 +1574,19 @@ class TripPersistenceService:
             capability=capability,
             payload=PersistedMutationPreviewRequest.model_validate(envelope.model_dump(mode="json")),
         )
-        result.impact_summary["local_repair"] = repair_summary
+        result.impact_summary["local_repair"] = {
+            "action": "move",
+            "stop_name": repair_selection.stop_name,
+            "from_day": repair_selection.from_day,
+            "to_day": repair_selection.to_day,
+            "ownership": "system_suggested",
+            "protected": {
+                "fixed_mutations": 0,
+                "must_moves": 0,
+                "must_deletions": 0,
+                "full_planner_calls": 0,
+            },
+        }
         return result
 
     def preview_golden_path_repair(self, *, trip_id: str, capability: str | None, payload):
@@ -1988,6 +2012,8 @@ class TripPersistenceService:
             ).hexdigest(),
             "invalidated_surfaces": proposal.invalidated_surfaces,
         }
+        if proposal.planner_run_id is not None:
+            operation_metadata["root_planning_run_id"] = proposal.planner_run_id
         if proposal.mutation_kind == "candidate_admission":
             candidate_id = first_candidate_id_from_commands(proposal.commands or [])
             if candidate_id:
