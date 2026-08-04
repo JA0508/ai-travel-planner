@@ -65,14 +65,7 @@ def compile_travel_intent(text: str) -> TripCompilerCompileResponse:
 def build_itinerary_request(intent: TravelIntent) -> ItineraryRequest:
     """Map the confirmed compiler contract into the established scheduler input."""
 
-    if not intent.destination or not intent.trip_days:
-        raise ValueError("destination and trip_days are required before planning")
-    if not TRIP_COMPILER_MIN_DAYS <= intent.trip_days <= TRIP_COMPILER_MAX_DAYS:
-        raise ValueError(f"AI Trip Compiler V1 supports {TRIP_COMPILER_MIN_DAYS} to {TRIP_COMPILER_MAX_DAYS} days.")
-    if intent.has_blocking_unresolved_items:
-        raise ValueError("intent has unresolved blocking information")
-    if any(event.day is None or event.start_time is None or event.end_time is None for event in intent.fixed_events):
-        raise ValueError("fixed events require a day and a complete time range")
+    validate_confirmed_intent(intent)
     scenic = [
         ScenicSpotInput(name=place.name, intent_ownership=place.ownership)
         for place in [*intent.must_visit_places, *intent.optional_places]
@@ -108,6 +101,59 @@ def build_itinerary_request(intent: TravelIntent) -> ItineraryRequest:
         travel_mode=intent.travel_mode,
         auto_fill_sparse_days=True,
     )
+
+
+def validate_confirmed_intent(intent: TravelIntent) -> None:
+    """Validate the editable compiler contract before it enters Draft Trip admission."""
+
+    if not intent.destination or not intent.trip_days:
+        raise ValueError("destination and trip_days are required before planning")
+    if not TRIP_COMPILER_MIN_DAYS <= intent.trip_days <= TRIP_COMPILER_MAX_DAYS:
+        raise ValueError(f"AI Trip Compiler V1 supports {TRIP_COMPILER_MIN_DAYS} to {TRIP_COMPILER_MAX_DAYS} days.")
+    if intent.has_blocking_unresolved_items:
+        raise ValueError("intent has unresolved blocking information")
+    if any(event.day is None or event.start_time is None or event.end_time is None for event in intent.fixed_events):
+        raise ValueError("fixed events require a day and a complete time range")
+
+
+def build_preplan_draft_text(intent: TravelIntent) -> str:
+    """Preserve confirmed compiler fields as labelled, user-reviewable Draft input."""
+
+    validate_confirmed_intent(intent)
+    place_names = _unique([
+        *(item.name for item in intent.must_visit_places),
+        *(item.name for item in intent.optional_places),
+    ])
+    preference_values = _unique([
+        *(item.value for item in intent.preferences),
+        {"relaxed": "轻松", "balanced": "适中", "intensive": "紧凑"}[intent.pace],
+    ])
+    lines = [
+        f"城市：{intent.destination}",
+        f"行程天数：{intent.trip_days} 天",
+        f"景点：{'、'.join(place_names)}" if place_names else None,
+        *[
+            f"固定安排：{event.day} {event.start_time}-{event.end_time} {event.name}"
+            for event in intent.fixed_events
+        ],
+        f"偏好：{'、'.join(preference_values)}" if preference_values else None,
+        *[
+            f"可用时间：{constraint.value}"
+            for constraint in intent.constraints
+            if constraint.kind == "availability"
+        ],
+        *[
+            f"到达锚点：{constraint.value}"
+            for constraint in intent.constraints
+            if constraint.kind == "arrival"
+        ],
+        *[
+            f"离开锚点：{constraint.value}"
+            for constraint in intent.constraints
+            if constraint.kind == "departure"
+        ],
+    ]
+    return "\n".join(item for item in lines if item)
 
 
 def _places(parsed: ParsedTripIntentResponse, text: str, source_ids: list[str]) -> tuple[list[TripCompilerPlace], list[TripCompilerPlace]]:

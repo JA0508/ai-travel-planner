@@ -5,6 +5,8 @@ import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
+import { PrePlanIntentWorkspace } from "@/features/preplan-intent/PrePlanIntentWorkspace";
+import { buildPrePlanDraftTextFromCompilerIntent } from "@/features/preplan-intent/prePlanDraftInput";
 import type { RoutePreviewItinerary } from "@/features/executable-route-preview/routePreviewModel";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 
@@ -35,14 +37,15 @@ type TravelIntent = {
   travel_mode: string | null;
 };
 type CompileResponse = { intent: TravelIntent; status: "ready" | "needs_confirmation" | "hard_conflict"; conflicts: string[] };
-type PlanResponse = { trip: TripMetadata; current_revision: TripRevisionMetadata; itinerary: RoutePreviewItinerary };
+type DraftTripResponse = { trip: TripMetadata };
 type CurrentTripResponse = { trip: TripMetadata; current_revision: TripRevisionMetadata; itinerary: RoutePreviewItinerary };
 
 type WorkspaceState =
   | { status: "input" }
   | { status: "compiling" }
   | { status: "confirm"; intent: TravelIntent }
-  | { status: "planning"; intent: TravelIntent }
+  | { status: "creating_draft"; intent: TravelIntent }
+  | { status: "draft"; tripId: string; directUserText: string; intent: TravelIntent }
   | { status: "route"; trip: TripMetadata; revision: TripRevisionMetadata; itinerary: RoutePreviewItinerary; intent: TravelIntent | null }
   | { status: "hard_conflict"; intent: TravelIntent; conflicts: string[] }
   | { status: "network_error"; message: string; returnTo: "input" | "confirm"; intent?: TravelIntent };
@@ -92,28 +95,34 @@ export function TripCompilerWorkspace() {
     setState({ status: "confirm", intent: result.data.intent });
   }
 
-  async function plan(intent: TravelIntent) {
-    setState({ status: "planning", intent });
-    const result = await postTripJson<PlanResponse>(
-      TRIP_API_ENDPOINTS.planTripCompilerIntent,
-      { intent },
-      "暂时无法生成路线。你的确认信息还在这里。",
+  async function createDraft(intent: TravelIntent) {
+    const directUserText = buildPrePlanDraftTextFromCompilerIntent(intent);
+    setState({ status: "creating_draft", intent });
+    const result = await postTripJson<DraftTripResponse>(
+      TRIP_API_ENDPOINTS.createDraftTrip,
+      { direct_user_text: directUserText },
+      "暂时无法创建行程草稿。你的确认信息还在这里。",
       "无法连接后端接口。",
-      { headers: { "X-Idempotency-Key": `trip-compiler:${crypto.randomUUID()}` } },
+      { headers: { "X-Idempotency-Key": `trip-compiler-draft:${crypto.randomUUID()}` } },
     );
     if (!result.ok) {
       setState({ status: "network_error", message: result.message, returnTo: "confirm", intent });
       return;
     }
-    window.history.replaceState({}, "", `/trip-compiler?trip=${encodeURIComponent(result.data.trip.id)}`);
-    setState({ status: "route", trip: result.data.trip, revision: result.data.current_revision, itinerary: result.data.itinerary, intent });
+    setState({ status: "draft", tripId: result.data.trip.id, directUserText, intent });
   }
 
   if (state.status === "route") {
     return <RouteScreen trip={state.trip} revision={state.revision} itinerary={state.itinerary} intent={state.intent} onApplied={(response) => setState({ status: "route", trip: response.trip, revision: response.current_revision, itinerary: response.itinerary, intent: state.intent })} />;
   }
-  if (state.status === "confirm" || state.status === "planning") {
-    return <IntentConfirmation intent={state.intent} busy={state.status === "planning"} onBack={() => setState({ status: "input" })} onPlan={plan} />;
+  if (state.status === "draft") {
+    return <PrePlanIntentWorkspace tripId={state.tripId} directUserText={state.directUserText} onCancel={() => setState({ status: "confirm", intent: state.intent })} onApplied={(response) => {
+      window.history.replaceState({}, "", `/trip-compiler?trip=${encodeURIComponent(response.trip.id)}`);
+      setState({ status: "route", trip: response.trip, revision: response.current_revision, itinerary: response.itinerary, intent: state.intent });
+    }} />;
+  }
+  if (state.status === "confirm" || state.status === "creating_draft") {
+    return <IntentConfirmation intent={state.intent} busy={state.status === "creating_draft"} onBack={() => setState({ status: "input" })} onPlan={createDraft} />;
   }
   if (state.status === "hard_conflict") {
     return <main className="tc-page"><section className="tc-conflict" role="alert"><p>暂时无法生成可执行路线</p><h1>当前安排存在冲突。</h1>{state.conflicts.map((conflict) => <p key={conflict}>{conflict}</p>)}<button type="button" onClick={() => setState({ status: "confirm", intent: state.intent })}>修改旅行信息</button></section><TripCompilerStyles /></main>;
@@ -147,7 +156,7 @@ function IntentConfirmation({ intent: initialIntent, busy, onBack, onPlan }: { i
     setIntent({ ...intent, optional_places: [...intent.optional_places, { stable_id: `manual_${Date.now()}`, name: value, ownership: "user_optional", confidence: 1, source_fragment_ids: source ? [source.stable_id] : [] }] });
     setNewPlace("");
   }
-  return <main className="tc-page tc-confirm-page"><header className="tc-confirm-header"><div><p className="tc-eyebrow">确认行程信息</p><h1>这些是我从你的旅行想法里理解到的。</h1><p>确认重要信息，系统会以这些内容为基础规划路线。</p></div><button type="button" className="tc-link-button" onClick={onBack} disabled={busy}>返回修改原始描述</button></header><div className="tc-confirm-grid"><section className="tc-main-column"><section className="tc-section"><h2>基础信息</h2><div className="tc-field-grid"><label>目的地<input value={intent.destination ?? ""} onChange={(event) => setIntent({ ...intent, destination: event.target.value || null })} /></label><label>出行天数<input type="number" min="1" max="3" value={intent.trip_days ?? ""} onChange={(event) => setIntent({ ...intent, trip_days: event.target.value ? asTripCompilerTripDays(Number(event.target.value)) : null })} /><small>当前版本支持 1–3 天。</small></label><label>行程节奏<select value={intent.pace} onChange={(event) => setIntent({ ...intent, pace: event.target.value as Pace })}><option value="relaxed">轻松</option><option value="balanced">均衡</option><option value="intensive">紧凑</option></select></label></div></section><PlaceSection title="必去" subtitle="这些地点会被优先保留。" places={intent.must_visit_places} onMove={(place) => updatePlace(place, "user_optional")} onRemove={removePlace} moveLabel="改为可调整" /><PlaceSection title="想去，但可以调整" subtitle="时间不够时，系统会优先调整这些地点。" places={intent.optional_places} onMove={(place) => updatePlace(place, "user_must")} onRemove={removePlace} moveLabel="设为必去" /><section className="tc-section"><h2>新增地点</h2><div className="tc-inline-form"><input aria-label="新增地点" value={newPlace} onChange={(event) => setNewPlace(event.target.value)} placeholder="例如：龙井村" /><button type="button" onClick={addPlace}>加入为可调整</button></div></section><FixedEvents events={intent.fixed_events} tripDays={intent.trip_days} onChange={(events) => setIntent({ ...intent, fixed_events: events })} /><section className="tc-section"><h2>偏好</h2><div className="tc-token-list">{intent.preferences.map((item) => <span key={item.stable_id}>{item.value}<button aria-label={`删除偏好 ${item.value}`} type="button" onClick={() => setIntent({ ...intent, preferences: intent.preferences.filter((preference) => preference.stable_id !== item.stable_id) })}>×</button></span>) || <p>暂未识别到明确偏好。</p>}</div></section></section><aside className="tc-side-column"><section className="tc-section"><h2>限制条件</h2>{intent.constraints.length ? <ul className="tc-plain-list">{intent.constraints.map((item) => <li key={item.stable_id}>{item.value}</li>)}</ul> : <p>暂未识别到额外时间限制。</p>}</section>{intent.avoid_items.length ? <section className="tc-section"><h2>需要避开</h2><ul className="tc-plain-list">{intent.avoid_items.map((item) => <li key={item.stable_id}>{item.value}</li>)}</ul></section> : null}<section className="tc-section tc-confirm-needed"><h2>还需要你确认</h2>{intent.unresolved_items.length ? <ul>{intent.unresolved_items.map((item) => <li className={item.blocking ? "tc-blocking" : ""} key={item.stable_id}>{item.question}</li>)}</ul> : <p>关键信息已经齐全。</p>}</section>{source ? <details className="tc-source"><summary>查看来源</summary><p>{source.text}</p></details> : null}</aside></div><footer className="tc-confirm-footer"><span>{canPlan ? "确认后会开始计算时间、地点和交通衔接。" : !fixedEventsFitTrip ? "固定安排要落在本次旅行的天数范围内。" : "请先补充标注为必填的信息。"}</span><button type="button" className="tc-primary" onClick={() => onPlan(intent)} disabled={!canPlan || busy}>{busy ? "正在计算时间、地点和交通衔接" : "生成我的行程骨架"}</button></footer><TripCompilerStyles /></main>;
+  return <main className="tc-page tc-confirm-page"><header className="tc-confirm-header"><div><p className="tc-eyebrow">确认行程信息</p><h1>这些是我从你的旅行想法里理解到的。</h1><p>确认重要信息后，系统会先建立行程草稿并审核来源，再生成路线。</p></div><button type="button" className="tc-link-button" onClick={onBack} disabled={busy}>返回修改原始描述</button></header><div className="tc-confirm-grid"><section className="tc-main-column"><section className="tc-section"><h2>基础信息</h2><div className="tc-field-grid"><label>目的地<input value={intent.destination ?? ""} onChange={(event) => setIntent({ ...intent, destination: event.target.value || null })} /></label><label>出行天数<input type="number" min="1" max="3" value={intent.trip_days ?? ""} onChange={(event) => setIntent({ ...intent, trip_days: event.target.value ? asTripCompilerTripDays(Number(event.target.value)) : null })} /><small>当前版本支持 1–3 天。</small></label><label>行程节奏<select value={intent.pace} onChange={(event) => setIntent({ ...intent, pace: event.target.value as Pace })}><option value="relaxed">轻松</option><option value="balanced">均衡</option><option value="intensive">紧凑</option></select></label></div></section><PlaceSection title="必去" subtitle="这些地点会被优先保留。" places={intent.must_visit_places} onMove={(place) => updatePlace(place, "user_optional")} onRemove={removePlace} moveLabel="改为可调整" /><PlaceSection title="想去，但可以调整" subtitle="时间不够时，系统会优先调整这些地点。" places={intent.optional_places} onMove={(place) => updatePlace(place, "user_must")} onRemove={removePlace} moveLabel="设为必去" /><section className="tc-section"><h2>新增地点</h2><div className="tc-inline-form"><input aria-label="新增地点" value={newPlace} onChange={(event) => setNewPlace(event.target.value)} placeholder="例如：龙井村" /><button type="button" onClick={addPlace}>加入为可调整</button></div></section><FixedEvents events={intent.fixed_events} tripDays={intent.trip_days} onChange={(events) => setIntent({ ...intent, fixed_events: events })} /><section className="tc-section"><h2>偏好</h2><div className="tc-token-list">{intent.preferences.map((item) => <span key={item.stable_id}>{item.value}<button aria-label={`删除偏好 ${item.value}`} type="button" onClick={() => setIntent({ ...intent, preferences: intent.preferences.filter((preference) => preference.stable_id !== item.stable_id) })}>×</button></span>) || <p>暂未识别到明确偏好。</p>}</div></section></section><aside className="tc-side-column"><section className="tc-section"><h2>限制条件</h2>{intent.constraints.length ? <ul className="tc-plain-list">{intent.constraints.map((item) => <li key={item.stable_id}>{item.value}</li>)}</ul> : <p>暂未识别到额外时间限制。</p>}</section>{intent.avoid_items.length ? <section className="tc-section"><h2>需要避开</h2><ul className="tc-plain-list">{intent.avoid_items.map((item) => <li key={item.stable_id}>{item.value}</li>)}</ul></section> : null}<section className="tc-section tc-confirm-needed"><h2>还需要你确认</h2>{intent.unresolved_items.length ? <ul>{intent.unresolved_items.map((item) => <li className={item.blocking ? "tc-blocking" : ""} key={item.stable_id}>{item.question}</li>)}</ul> : <p>关键信息已经齐全。</p>}</section>{source ? <details className="tc-source"><summary>查看来源</summary><p>{source.text}</p></details> : null}</aside></div><footer className="tc-confirm-footer"><span>{canPlan ? "确认后会先进入草稿与来源审核，再计算时间、地点和交通衔接。" : !fixedEventsFitTrip ? "固定安排要落在本次旅行的天数范围内。" : "请先补充标注为必填的信息。"}</span><button type="button" className="tc-primary" onClick={() => onPlan(intent)} disabled={!canPlan || busy}>{busy ? "正在创建行程草稿" : "继续确认行程信息"}</button></footer><TripCompilerStyles /></main>;
 }
 
 function PlaceSection({ title, subtitle, places, onMove, onRemove, moveLabel }: { title: string; subtitle: string; places: Place[]; onMove: (place: Place) => void; onRemove: (place: Place) => void; moveLabel: string }) {

@@ -13,6 +13,18 @@ export type PrePlanDraftInput = {
   travelMode: string | null;
 };
 
+type CompilerIntentDraftInput = {
+  destination: string | null;
+  trip_days: number | null;
+  pace: "relaxed" | "balanced" | "intensive";
+  must_visit_places: Array<{ name: string }>;
+  optional_places: Array<{ name: string }>;
+  fixed_events: Array<{ name: string; day: number | null; start_time: string | null; end_time: string | null }>;
+  preferences: Array<{ value: string }>;
+  constraints: Array<{ kind: string; value: string }>;
+  travel_mode: string | null;
+};
+
 /** Preserve structured form boundaries as source language for the draft intent compiler. */
 export function buildPrePlanDraftText(input: PrePlanDraftInput): string {
   return [
@@ -29,4 +41,40 @@ export function buildPrePlanDraftText(input: PrePlanDraftInput): string {
     `旅行节奏：${input.pacingLabel}。`,
     input.travelMode ? `主要交通偏好：${input.travelMode}。` : null,
   ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+/** Keep the compiler confirmation path on the same labelled Draft Trip input boundary. */
+export function buildPrePlanDraftTextFromCompilerIntent(intent: CompilerIntentDraftInput): string {
+  const places = uniqueValues([
+    ...intent.must_visit_places.map((place) => place.name),
+    ...intent.optional_places.map((place) => place.name),
+  ]);
+  const fixedEvents = intent.fixed_events
+    .filter((event) => event.day !== null && event.start_time && event.end_time)
+    .map((event) => `${event.day} ${event.start_time}-${event.end_time} ${event.name}`);
+
+  return buildPrePlanDraftText({
+    directText: [
+      intent.destination ? `城市：${intent.destination}` : "",
+      places.length ? `景点：${places.join("、")}` : "",
+    ].filter(Boolean).join("\n"),
+    tripDays: intent.trip_days ? String(intent.trip_days) : "",
+    scenicSpots: [],
+    restaurants: [],
+    fixedEventsText: fixedEvents.join("；"),
+    availabilityWindowsText: intent.constraints
+      .filter((constraint) => constraint.kind === "availability")
+      .map((constraint) => constraint.value)
+      .join("；"),
+    arrivalAnchor: intent.constraints.find((constraint) => constraint.kind === "arrival")?.value ?? "",
+    departureAnchor: intent.constraints.find((constraint) => constraint.kind === "departure")?.value ?? "",
+    hotel: "",
+    preferences: uniqueValues(intent.preferences.map((preference) => preference.value)),
+    pacingLabel: { relaxed: "轻松节奏", balanced: "平衡节奏", intensive: "紧凑节奏" }[intent.pace],
+    travelMode: intent.travel_mode,
+  });
+}
+
+function uniqueValues(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }

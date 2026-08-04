@@ -19,10 +19,13 @@ test("trip compiler starts with one clear text input and no technical fields", (
   assert.doesNotMatch(html, /schema version/i);
 });
 
-test("live compiler never imports fixtures or creates a route in the browser", () => {
+test("live compiler enters the shared draft admission workspace before route generation", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /compileTripCompilerIntent/);
-  assert.match(source, /planTripCompilerIntent/);
+  assert.match(source, /createDraftTrip/);
+  assert.match(source, /PrePlanIntentWorkspace/);
+  assert.match(source, /buildPrePlanDraftTextFromCompilerIntent/);
+  assert.doesNotMatch(source, /planTripCompilerIntent/);
   assert.match(source, /postTripJson/);
   assert.match(source, /getTripJson/);
   assert.match(source, /ExecutableRoutePreview/);
