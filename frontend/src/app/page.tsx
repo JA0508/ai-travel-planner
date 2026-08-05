@@ -4852,6 +4852,7 @@ function buildRegenerationSemanticsViewModel(
                 variant="saved"
                 tripId={tripPersistence.tripId}
                 baseRevisionId={tripPersistence.currentRevisionId}
+                plannerRunId={tripPersistence.plannerRunId}
                 onApplied={(applied) => {
                   setResult(applied.itinerary as ItineraryResponse);
                   rememberPersistedTrip(applied.trip, applied.current_revision);

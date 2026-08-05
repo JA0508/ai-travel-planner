@@ -33,6 +33,26 @@ test("missing destination uses plain language and blocks the primary action", ()
   assert.doesNotMatch(view.blockers[0]?.detail ?? "", /missing_destination/);
 });
 
+test("missing schedulable place blocks the preview with a product-facing reason", () => {
+  const base = envelope();
+  const view = buildPrePlanConfirmationViewModel(envelope({
+    planner_ready_status: "needs_clarification",
+    formal_contract: {
+      ...base.formal_contract,
+      readiness: {
+        ...base.formal_contract.readiness,
+        status: "needs_clarification",
+        planner_contract_complete: false,
+        blocking_issue_codes: ["no_planner_anchor"],
+      },
+    },
+  }));
+
+  assert.equal(view.canGeneratePreview, false);
+  assert.equal(view.blockers[0]?.title, "还需要确认至少一个计划地点");
+  assert.doesNotMatch(view.blockers[0]?.detail ?? "", /no_planner_anchor/);
+});
+
 test("fixed arrangements stay visible in the plain-language confirmation summary", () => {
   const base = envelope();
   const view = buildPrePlanConfirmationViewModel(envelope({

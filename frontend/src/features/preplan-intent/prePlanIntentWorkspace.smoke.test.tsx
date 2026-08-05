@@ -72,3 +72,10 @@ test("pre-plan workspace keeps a stale frozen preview visible and requires repla
   assert.match(source, /PlannerTraceReviewPanel/);
   assert.match(source, /review_summary/);
 });
+
+test("pre-plan workspace surfaces readiness blockers that do not have an inline clarification editor", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /view\.blockers\.length/);
+  assert.match(source, /blocker\.title/);
+  assert.match(source, /还没有确认可排入路线的地点/);
+});

@@ -25,6 +25,8 @@ export const TRIP_API_ENDPOINTS = {
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-handoff/preview`),
   applyPrePlanHandoff: (tripId: string, runId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-handoff/runs/${encodeURIComponent(runId)}/apply`),
+  getPrePlanHandoffRunStatus: (tripId: string, runId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-handoff/runs/${encodeURIComponent(runId)}`),
   getTrip: (tripId: string) => buildApiUrl(`/trips/${encodeURIComponent(tripId)}`),
   listTripRevisions: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/revisions`),

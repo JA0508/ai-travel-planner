@@ -2464,17 +2464,23 @@ def _build_typed_assumptions(fields: list[IntentField], preview: PlannerReadyInt
                 explanation="Trip length is unresolved and must be clarified before deterministic planning.",
             )
         )
-    if not preview.must_place_candidate_ids:
+    has_schedulable_anchor = any(
+        field.field_path in {"poi.must_candidates", "poi.optional_candidates"}
+        or field.field_path == "time.fixed_events"
+        for field in fields
+        if field.status == IntentFieldStatus.SELECTED
+    )
+    if not has_schedulable_anchor:
         assumptions.append(
             IntentAssumption(
-                assumption_id=f"asm_{sha256_digest({'field_path': 'poi.must_candidates', 'reason': 'empty_reviewed_candidate_set'})[:16]}",
+                assumption_id=f"asm_{sha256_digest({'field_path': 'poi.must_candidates', 'reason': 'no_planner_anchor'})[:16]}",
                 field_path="poi.must_candidates",
                 assumption_type="empty_reviewed_candidate_set",
                 value=[],
-                has_assumed_value=True,
-                blocks_planner_ready=False,
-                reason_code="no_reviewed_must_candidates",
-                explanation="No reviewed must-visit TripCandidate has been selected yet.",
+                has_assumed_value=False,
+                blocks_planner_ready=True,
+                reason_code="no_planner_anchor",
+                explanation="At least one reviewed place or fixed arrangement location is required before deterministic planning.",
             )
         )
     for field in fields:

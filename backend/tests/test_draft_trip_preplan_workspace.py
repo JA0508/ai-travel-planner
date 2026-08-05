@@ -60,12 +60,14 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         self.assertEqual(reloaded_draft.status_code, 200, reloaded_draft.text)
         self.assertEqual(reloaded_draft.json()["direct_user_text"], "我想去西安玩两天。")
 
+        candidate = register_verified_draft_candidate(self.client, trip_id, "first")
+
         compiled = self.client.post(
             f"/trips/{trip_id}/preplan-intent/compile",
             json={
                 "base_trip_revision_id": None,
                 "base_intent_revision_id": None,
-                "structured_overrides": {"city": "西安", "trip_days": 2, "pace": "relaxed"},
+                "structured_overrides": {"city": "西安", "trip_days": 2, "pace": "relaxed", "must_candidate_ids": [candidate["id"]]},
             },
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-intent-one"},
         )
@@ -91,6 +93,13 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         self.assertEqual(applied.status_code, 200, applied.text)
         self.assertEqual(applied.json()["current_revision"]["revision_number"], 1)
         self.assertEqual(applied.json()["trip"]["planning_phase"], "planned")
+        self.assertEqual(applied.json()["current_revision"]["planner_run_id"], run["id"])
+
+        saved_evidence = self.client.get(f"/trips/{trip_id}/preplan-handoff/runs/{run['id']}")
+        self.assertEqual(saved_evidence.status_code, 200, saved_evidence.text)
+        self.assertEqual(saved_evidence.json()["handoff"]["applied_revision_id"], applied.json()["current_revision"]["id"])
+        self.assertEqual(saved_evidence.json()["review_summary"]["status"], "applied")
+        self.assertEqual(saved_evidence.json()["review_summary"]["intent_revision_id"], intent_id)
 
         replay = self.client.post(
             f"/trips/{trip_id}/preplan-handoff/runs/{run['id']}/apply",
@@ -100,19 +109,53 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 200, replay.text)
         self.assertTrue(replay.json()["persistence"]["idempotent_replay"])
 
+    def test_draft_without_a_schedulable_anchor_is_blocked_before_planning(self) -> None:
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": "我想去西安玩两天。"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-no-anchor"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        trip_id = created.json()["trip"]["id"]
+
+        compiled = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/compile",
+            json={
+                "base_intent_revision_id": None,
+                "direct_user_text": "我想去西安玩两天。",
+                "structured_overrides": {"city": "西安", "trip_days": 2},
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-no-anchor-compile"},
+        )
+        self.assertEqual(compiled.status_code, 201, compiled.text)
+        body = compiled.json()
+        self.assertEqual(body["envelope"]["planner_ready_status"], "needs_clarification")
+        self.assertIn("no_planner_anchor", body["envelope"]["formal_contract"]["readiness"]["blocking_issue_codes"])
+
+        with patch("app.trips.service.build_itinerary_response", side_effect=AssertionError("no-anchor drafts must not invoke the planner")) as planner:
+            preview = self.client.post(
+                f"/trips/{trip_id}/preplan-handoff/preview",
+                json={"draft_intent_revision_id": body["revision"]["id"]},
+            )
+        planner.assert_not_called()
+        self.assertEqual(preview.status_code, 422, preview.text)
+        self.assertEqual(preview.json()["error"]["code"], "planner_handoff_blocked")
+        self.assertEqual(preview.json()["error"]["reason_code"], "intent_not_planner_ready")
+
     def test_newer_draft_intent_invalidates_older_preview(self) -> None:
         created = self.client.post("/trips/drafts", json={"direct_user_text": "我想去西安玩两天。"}, headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-xian-two"})
         trip_id = created.json()["trip"]["id"]
+        candidate = register_verified_draft_candidate(self.client, trip_id, "stale")
         first = self.client.post(
             f"/trips/{trip_id}/preplan-intent/compile",
-            json={"base_intent_revision_id": None, "structured_overrides": {"city": "西安", "trip_days": 2}},
+            json={"base_intent_revision_id": None, "structured_overrides": {"city": "西安", "trip_days": 2, "must_candidate_ids": [candidate["id"]]}},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-intent-two"},
         ).json()["revision"]["id"]
         with patch("app.trips.service.build_itinerary_response", return_value=simple_itinerary(2)):
             preview = self.client.post(f"/trips/{trip_id}/preplan-handoff/preview", json={"draft_intent_revision_id": first})
         second = self.client.post(
             f"/trips/{trip_id}/preplan-intent/compile",
-            json={"base_intent_revision_id": first, "structured_overrides": {"city": "西安", "trip_days": 3}},
+            json={"base_intent_revision_id": first, "structured_overrides": {"city": "西安", "trip_days": 3, "must_candidate_ids": [candidate["id"]]}},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-intent-three"},
         )
         self.assertEqual(second.status_code, 201, second.text)
@@ -196,9 +239,10 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-unstable"},
         )
         trip_id = created.json()["trip"]["id"]
+        candidate = register_verified_draft_candidate(self.client, trip_id, "unstable")
         compiled = self.client.post(
             f"/trips/{trip_id}/preplan-intent/compile",
-            json={"base_intent_revision_id": None, "structured_overrides": {"city": "西安", "trip_days": 2}},
+            json={"base_intent_revision_id": None, "structured_overrides": {"city": "西安", "trip_days": 2, "must_candidate_ids": [candidate["id"]]}},
             headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-unstable-intent"},
         )
         intent_id = compiled.json()["revision"]["id"]
@@ -228,3 +272,20 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         self.assertEqual(applied.status_code, 422, applied.text)
         self.assertEqual(applied.json()["error"]["code"], "invalid_revision_operation")
         self.assertEqual(self.client.get(f"/trips/{trip_id}/revisions").json()["revisions"], [])
+
+
+def register_verified_draft_candidate(client: TestClient, trip_id: str, suffix: str) -> dict:
+    response = client.post(
+        f"/trips/{trip_id}/candidates",
+        json={
+            "candidate_type": "place",
+            "display_name": f"西安城墙 {suffix}",
+            "canonical_place_id": f"amap:xian-wall:{suffix}",
+            "coordinates": {"latitude": 34.258, "longitude": 108.948},
+            "estimated_duration_minutes": 90,
+            "source_kind": "manual_entry",
+        },
+        headers={"Origin": "http://testserver", "X-Idempotency-Key": f"draft-verified-candidate:{suffix}"},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["candidate"]

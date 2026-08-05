@@ -42,3 +42,12 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.doesNotMatch(source, /buildDayRelaxationPlan/);
   assert.doesNotMatch(source, /move_stop/);
 });
+
+test("saved route preview reads frozen pre-plan evidence by the persisted planner run id", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /plannerRunId/);
+  assert.match(source, /getPrePlanHandoffRunStatus/);
+  assert.match(source, /data-frozen-handoff-evidence/);
+  assert.match(source, /根据已保存路线内容归纳/);
+  assert.match(source, /buildFrozenHandoffEvidenceView/);
+});
