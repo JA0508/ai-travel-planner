@@ -94,6 +94,8 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         preview_item = preview.json()["itinerary"]["days"][0]["blocks"][0]["items"][0]
         self.assertEqual(preview_item["canonical_place_id"], candidate["canonical_place_id"])
         self.assertEqual(preview_item["provider_place_id"], candidate["provider_place_id"])
+        self.assertTrue(preview_item["candidate_provenance"]["authority"])
+        self.assertTrue(preview_item["candidate_provenance"]["confirmed"])
 
         with patch("app.trips.service.build_itinerary_response", side_effect=AssertionError("apply must not rerun planner")):
             applied = self.client.post(
@@ -112,6 +114,10 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         persisted_item = resumed.json()["itinerary"]["days"][0]["blocks"][0]["items"][0]
         self.assertEqual(persisted_item["canonical_place_id"], candidate["canonical_place_id"])
         self.assertEqual(persisted_item["provider_place_id"], candidate["provider_place_id"])
+        self.assertEqual(
+            persisted_item["candidate_provenance"]["authority"],
+            preview_item["candidate_provenance"]["authority"],
+        )
 
         saved_evidence = self.client.get(f"/trips/{trip_id}/preplan-handoff/runs/{run['id']}")
         self.assertEqual(saved_evidence.status_code, 200, saved_evidence.text)

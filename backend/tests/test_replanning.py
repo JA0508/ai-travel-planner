@@ -19,7 +19,7 @@ from app.api.routes.itinerary import (
     stable_trace_candidate_id,
 )
 from app.core.scheduler import Scheduler, SchedulingError, stable_candidate_id
-from app.planner.trace import stable_subject_id
+from app.planner.trace import PlannerInputSnapshot, PlannerTraceCollector, stable_subject_id
 from app.schemas import (
     AvailabilityWindow,
     DayItinerary,
@@ -794,17 +794,23 @@ class ConversationalReplanningTests(unittest.TestCase):
             city="上海",
         )
         hotel = HotelStay(name="人民广场酒店", city="上海", latitude=31.2304, longitude=121.4737)
+        trace_collector = PlannerTraceCollector(
+            planner_run_id="identity-route-test",
+            input_summary=PlannerInputSnapshot(city="上海", scenic_seed_count=1),
+            strict=True,
+        )
 
         with patch(
             "app.core.scheduler.get_route",
             return_value={"distance_m": 1200, "duration_s": 720},
-        ):
+        ) as get_route:
             itinerary = Scheduler().build_schedule(
                 scenic_spots=normalized,
                 restaurants=[],
                 hotel=hotel,
                 planning_anchor_source=PlanningAnchorSource(source_type="provided_hotel", source_name=hotel.name),
                 trip_days=1,
+                trace_collector=trace_collector,
             )
 
         scheduled = next(
@@ -816,6 +822,23 @@ class ConversationalReplanningTests(unittest.TestCase):
         self.assertEqual(scheduled.candidate_id, "cand_bund")
         self.assertEqual(scheduled.canonical_place_id, "amap:bund")
         self.assertEqual(scheduled.provider_place_id, "B000A83M61")
+        self.assertTrue(
+            any(
+                call.kwargs["dest_lat"] == 31.2401 and call.kwargs["dest_lng"] == 121.4903
+                for call in get_route.call_args_list
+            )
+        )
+        expected_destination_id = stable_subject_id(
+            "candidate",
+            "amap:bund",
+            "B000A83M61",
+            31.2401,
+            121.4903,
+        )
+        self.assertIn(
+            expected_destination_id,
+            [route.destination_id for route in trace_collector.provider_summary.routes],
+        )
 
     def test_optional_poi_normalization_falls_back_to_local_catalog_without_amap(self) -> None:
         raw_poi = RawPOIInput(name="上海博物馆")
