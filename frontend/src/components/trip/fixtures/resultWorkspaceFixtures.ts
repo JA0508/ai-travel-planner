@@ -5,6 +5,7 @@ import type {
   ScheduledItemLike,
 } from "../MobileEditRouteWorkspace";
 import type { BuildTripReadinessViewModelInput } from "../readiness/tripReadinessModel";
+import type { RouteWorkspaceExecutionTrust } from "@/features/trip-workspace/routeWorkspaceViewModel";
 
 type FixturePlannerRealism = NonNullable<BuildTripReadinessViewModelInput["plannerRealism"]>;
 type FixtureCompletion = NonNullable<BuildTripReadinessViewModelInput["completion"]>;
@@ -19,6 +20,7 @@ export type ResultWorkspaceFixture = {
   itinerary: ItineraryLike;
   completion: FixtureCompletion | null;
   plannerRealism: FixturePlannerRealism | null;
+  executionTrust: RouteWorkspaceExecutionTrust;
   boundaryExplanation: FixtureBoundary;
   planningAssumptions: FixtureAssumptions;
   routePreviewMap: RoutePreviewMap;
@@ -211,8 +213,9 @@ function buildFixture(
             detail: "良渚博物院到杭州东站的路线段较长，可能压缩离站缓冲。",
             day: 3,
           }]
-        : [],
+      : [],
     },
+    executionTrust: buildExecutionTrustFixture(options),
     boundaryExplanation: {
       arrival_anchor_influenced: true,
       arrival_anchor_name: "杭州东站",
@@ -226,6 +229,75 @@ function buildFixture(
     },
     routePreviewMap: options.missingRoutes ? {} : buildRoutePreviewMap(options.routeRisk),
     poiDetailFixtures: options.missingPoi ? buildPartialPoiDetails() : buildCompletePoiDetails(),
+  };
+}
+
+function buildExecutionTrustFixture(options: {
+  plannerStatus: string;
+  routeRisk: boolean;
+  missingRoutes?: boolean;
+}): RouteWorkspaceExecutionTrust {
+  const routeFact = options.missingRoutes
+    ? {
+        key: "route-facts-missing",
+        category: "route",
+        status: "missing",
+        source_kind: "missing_data",
+        verification_status: "unavailable",
+        freshness_status: "unknown",
+        label: "路线事实缺失",
+        detail: "部分路线段没有可验证的 provider 数据，当前时间与距离仅用于规划估算。",
+        count: 2,
+      }
+    : {
+        key: "route-facts",
+        category: "route",
+        status: "confirmed",
+        source_kind: "provider",
+        verification_status: "provider_returned",
+        freshness_status: "unknown",
+        label: "路线事实",
+        detail: "这些路线段在规划时获得 provider 返回；新鲜度未记录，不能视为实时路况。",
+        count: 5,
+      };
+  const conflict = options.routeRisk
+    ? [{
+        key: "execution-conflicts",
+        category: "execution",
+        status: "conflicting",
+        source_kind: "deterministic",
+        verification_status: "not_applicable",
+        freshness_status: "not_applicable",
+        label: "执行冲突",
+        detail: "确定性检查发现离开前移动和时间边界冲突，需要先调整。",
+        count: 1,
+      }]
+    : [];
+
+  return {
+    status: options.routeRisk ? "blocked" : options.missingRoutes ? "needs_attention" : "ready",
+    headline: options.routeRisk
+      ? "当前路线存在执行冲突，先处理阻断项再按路线出行。"
+      : options.missingRoutes
+        ? "路线骨架可以继续查看，但仍有需要复核的执行事实。"
+        : "路线骨架已形成；provider 事实的新鲜度未记录，出发前仍应复核。",
+    blocking_reasons: options.routeRisk ? ["良渚博物院到杭州东站的路线段较长，可能压缩离站缓冲。"] : [],
+    warning_reasons: options.missingRoutes ? ["部分路线没有可验证的 provider 数据，出发前应复核移动时间。"] : [],
+    facts: [
+      ...conflict,
+      routeFact,
+      {
+        key: "system-suggestions",
+        category: "schedule",
+        status: "heuristic",
+        source_kind: "heuristic",
+        verification_status: "not_applicable",
+        freshness_status: "not_applicable",
+        label: "系统补充",
+        detail: "这些停留点和排序是系统建议，用于补齐路线，不等同于用户已确认的事实。",
+        count: 3,
+      },
+    ],
   };
 }
 

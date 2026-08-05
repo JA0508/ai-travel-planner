@@ -725,6 +725,36 @@ class PlannerRealismSummary(BaseModel):
     daily_loads: list[DailyRouteLoad] = Field(default_factory=list)
 
 
+class ExecutionTrustFact(BaseModel):
+    """A persisted, user-facing boundary for one class of execution evidence."""
+
+    key: str
+    category: Literal["place", "route", "fixed_event", "schedule", "execution"]
+    status: Literal["confirmed", "stale", "missing", "conflicting", "heuristic", "unknown"]
+    source_kind: Literal["provider", "user", "deterministic", "heuristic", "missing_data"]
+    verification_status: Literal[
+        "user_confirmed",
+        "provider_returned",
+        "unavailable",
+        "not_applicable",
+        "unknown",
+    ]
+    freshness_status: Literal["fresh", "stale", "unknown", "not_applicable"]
+    label: str
+    detail: str
+    count: int = Field(..., ge=0)
+
+
+class ExecutionTrustSummary(BaseModel):
+    """Read-only execution evidence derived from a completed planning result."""
+
+    status: Literal["ready", "needs_attention", "blocked"]
+    headline: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    warning_reasons: list[str] = Field(default_factory=list)
+    facts: list[ExecutionTrustFact] = Field(default_factory=list)
+
+
 class ItineraryResponse(BaseModel):
     trip_days: int = Field(..., ge=1)
     hotel: HotelStay | None = None
@@ -737,6 +767,7 @@ class ItineraryResponse(BaseModel):
     stay_recommendation: StayRecommendation | None = None
     departure_recommendation: DepartureRecommendation | None = None
     planner_realism: PlannerRealismSummary | None = None
+    execution_trust: ExecutionTrustSummary | None = None
     boundary_explanation: BoundaryInfluenceExplanation = Field(
         default_factory=BoundaryInfluenceExplanation
     )

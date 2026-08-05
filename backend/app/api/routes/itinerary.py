@@ -97,6 +97,7 @@ from app.services.nl_parser import normalize_parsed_trip_intent, parse_trip_text
 from app.services.poi_discovery_provider import get_poi_discovery_capability
 from app.services.poi_research_summary import attach_poi_research_summaries
 from app.services.planner_realism_analyzer import analyze_planner_realism
+from app.services.execution_trust import build_execution_trust_summary
 from app.services.planning_state_transformer import (
     build_planning_input_state,
     classify_preference_state,
@@ -813,7 +814,7 @@ def refresh_completion_task_itinerary_surfaces(
         trip_intent = trip_intent.model_copy(
             update={"completion_candidate_history": completion_candidate_history}
         )
-    return itinerary.model_copy(
+    response = itinerary.model_copy(
         update={
             "trip_intent": trip_intent,
             "planning_assumptions": planning_assumptions,
@@ -1203,6 +1204,14 @@ def build_itinerary_response(
             "stay_recommendation": stay_recommendation,
             "departure_recommendation": departure_recommendation,
             "planner_realism": planner_realism,
+        }
+    )
+    return response.model_copy(
+        update={
+            "execution_trust": build_execution_trust_summary(
+                itinerary=response,
+                provider_summary=trace_collector.provider_summary if trace_collector is not None else None,
+            )
         }
     )
 

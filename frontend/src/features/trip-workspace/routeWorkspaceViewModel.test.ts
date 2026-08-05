@@ -7,6 +7,7 @@ import {
 } from "../../components/trip/fixtures/resultWorkspaceFixtures.ts";
 import {
   buildRouteWorkspaceContainerViewModel,
+  buildRouteWorkspaceExecutionTrustViewModel,
   buildRouteWorkspaceSheetCopy,
   type RouteWorkspaceItinerary,
 } from "./routeWorkspaceViewModel.ts";
@@ -31,6 +32,8 @@ test("builds stable shell and overview state for an executable fixture", () => {
   assert.equal(viewModel.overview.pendingTaskCount, 0);
   assert.equal(viewModel.overview.autoFilledCount, 4);
   assert.equal(viewModel.overview.intentLine, "西湖文化线");
+  assert.equal(viewModel.executionTrust.status, "ready");
+  assert.equal(viewModel.executionTrust.contextFacts[0]?.stateLabel, "已记录");
 });
 
 test("keeps route-risk fixtures in attention state without changing the itinerary contract", () => {
@@ -72,6 +75,69 @@ test("documents every workspace action sheet copy", () => {
   assert.match(buildRouteWorkspaceSheetCopy("more").description ?? "", /住宿/);
 });
 
+test("keeps missing, stale, conflicting, and heuristic execution facts distinct", () => {
+  const trust = buildRouteWorkspaceExecutionTrustViewModel({
+    status: "needs_attention",
+    headline: "路线仍有待核实的执行事实。",
+    blocking_reasons: [],
+    warning_reasons: ["部分路线没有可验证的 provider 数据。"],
+    facts: [
+      {
+        key: "route-data",
+        category: "route",
+        status: "missing",
+        source_kind: "missing_data",
+        verification_status: "unavailable",
+        freshness_status: "unknown",
+        label: "路线数据",
+        detail: "两段路线只使用了本地估算。",
+        count: 2,
+      },
+      {
+        key: "place-data",
+        category: "place",
+        status: "stale",
+        source_kind: "provider",
+        verification_status: "provider_returned",
+        freshness_status: "stale",
+        label: "地点详情",
+        detail: "地点信息需要刷新后再确认。",
+        count: 1,
+      },
+      {
+        key: "execution-conflict",
+        category: "execution",
+        status: "conflicting",
+        source_kind: "deterministic",
+        verification_status: "not_applicable",
+        freshness_status: "not_applicable",
+        label: "执行冲突",
+        detail: "离开前的移动和时间边界冲突。",
+        count: 1,
+      },
+      {
+        key: "system-suggestions",
+        category: "schedule",
+        status: "heuristic",
+        source_kind: "heuristic",
+        verification_status: "not_applicable",
+        freshness_status: "not_applicable",
+        label: "系统补充",
+        detail: "这些停留点是系统建议。",
+        count: 3,
+      },
+    ],
+  });
+
+  assert.equal(trust.statusLabel, "需要处理");
+  assert.equal(trust.blockingFacts[0]?.stateLabel, "存在冲突");
+  assert.equal(trust.warningFacts[0]?.stateLabel, "信息缺失");
+  assert.equal(trust.warningFacts[1]?.stateLabel, "已过期");
+  assert.equal(trust.contextFacts[0]?.stateLabel, "系统判断");
+  assert.match(trust.warningFacts[0]?.freshnessLabel ?? "", /未记录/);
+  assert.match(trust.contextFacts[0]?.detail ?? "", /不等同于用户确认/);
+});
+
 type FixtureLike = ReturnType<typeof getResultWorkspaceFixture>;
 
 function adaptFixture(fixture: FixtureLike): RouteWorkspaceItinerary {
@@ -79,6 +145,7 @@ function adaptFixture(fixture: FixtureLike): RouteWorkspaceItinerary {
     ...fixture.itinerary,
     trip_days: fixture.tripDays,
     planner_realism: fixture.plannerRealism,
+    execution_trust: fixture.executionTrust,
     completion_intelligence: fixture.completion,
   };
 }

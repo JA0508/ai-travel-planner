@@ -9,6 +9,26 @@ type RouteWorkspacePlannerRealism = {
   headline?: string | null;
 } | null;
 
+export type RouteWorkspaceExecutionTrustFact = {
+  key: string;
+  category: "place" | "route" | "fixed_event" | "schedule" | "execution" | string;
+  status: "confirmed" | "stale" | "missing" | "conflicting" | "heuristic" | "unknown" | string;
+  source_kind: "provider" | "user" | "deterministic" | "heuristic" | "missing_data" | string;
+  verification_status: "user_confirmed" | "provider_returned" | "unavailable" | "not_applicable" | "unknown" | string;
+  freshness_status: "fresh" | "stale" | "unknown" | "not_applicable" | string;
+  label: string;
+  detail: string;
+  count: number;
+};
+
+export type RouteWorkspaceExecutionTrust = {
+  status?: "ready" | "needs_attention" | "blocked" | string | null;
+  headline?: string | null;
+  blocking_reasons?: string[] | null;
+  warning_reasons?: string[] | null;
+  facts?: RouteWorkspaceExecutionTrustFact[] | null;
+} | null;
+
 type RouteWorkspaceCompletionIntelligence = {
   trip_completeness?: number | null;
   action_tasks?: unknown[] | null;
@@ -29,6 +49,7 @@ type RouteWorkspaceDepartureRecommendation = {
 export type RouteWorkspaceItinerary = ItineraryLike & {
   trip_days: number;
   planner_realism?: RouteWorkspacePlannerRealism;
+  execution_trust?: RouteWorkspaceExecutionTrust;
   completion_intelligence?: RouteWorkspaceCompletionIntelligence;
   stay_recommendation?: RouteWorkspaceStayRecommendation;
   departure_recommendation?: RouteWorkspaceDepartureRecommendation;
@@ -58,6 +79,30 @@ export type RouteWorkspaceShellViewModel = {
 export type RouteWorkspaceContainerViewModel = {
   shell: RouteWorkspaceShellViewModel;
   overview: RouteWorkspaceOverview;
+  executionTrust: RouteWorkspaceExecutionTrustViewModel;
+};
+
+export type RouteWorkspaceExecutionTrustFactViewModel = {
+  key: string;
+  label: string;
+  detail: string;
+  count: number;
+  stateLabel: string;
+  sourceLabel: string;
+  verificationLabel: string;
+  freshnessLabel: string;
+  tone: "stable" | "attention" | "blocked" | "neutral";
+};
+
+export type RouteWorkspaceExecutionTrustViewModel = {
+  status: "ready" | "needs_attention" | "blocked";
+  statusLabel: string;
+  headline: string;
+  blockingReasons: string[];
+  warningReasons: string[];
+  blockingFacts: RouteWorkspaceExecutionTrustFactViewModel[];
+  warningFacts: RouteWorkspaceExecutionTrustFactViewModel[];
+  contextFacts: RouteWorkspaceExecutionTrustFactViewModel[];
 };
 
 export function buildRouteWorkspaceContainerViewModel({
@@ -84,7 +129,105 @@ export function buildRouteWorkspaceContainerViewModel({
       executionLine,
       weakestDay,
     }),
+    executionTrust: buildRouteWorkspaceExecutionTrustViewModel(
+      itinerary.execution_trust,
+      itinerary.planner_realism,
+    ),
   };
+}
+
+export function buildRouteWorkspaceExecutionTrustViewModel(
+  trust: RouteWorkspaceExecutionTrust | undefined | null,
+  plannerRealism?: RouteWorkspacePlannerRealism,
+): RouteWorkspaceExecutionTrustViewModel {
+  const status = normalizeExecutionTrustStatus(trust?.status, plannerRealism?.status);
+  const facts = (trust?.facts ?? []).map(buildExecutionTrustFactViewModel);
+  const blockingFacts = facts.filter((fact) => fact.tone === "blocked");
+  const warningFacts = facts.filter((fact) => fact.tone === "attention");
+  const contextFacts = facts.filter((fact) => fact.tone === "stable" || fact.tone === "neutral");
+
+  return {
+    status,
+    statusLabel:
+      status === "ready" ? "执行依据可查看" : status === "blocked" ? "需要先处理" : "需要处理",
+    headline:
+      trust?.headline ??
+      (status === "blocked"
+        ? "当前路线存在执行冲突，先处理阻断项再出行。"
+        : status === "needs_attention"
+          ? "路线仍有需要复核的执行事实。"
+          : "这版路线没有保存独立的事实新鲜度记录。"),
+    blockingReasons: trust?.blocking_reasons ?? [],
+    warningReasons: trust?.warning_reasons ?? [],
+    blockingFacts,
+    warningFacts,
+    contextFacts,
+  };
+}
+
+function buildExecutionTrustFactViewModel(
+  fact: RouteWorkspaceExecutionTrustFact,
+): RouteWorkspaceExecutionTrustFactViewModel {
+  const status = fact.status;
+  const state = executionFactState(status);
+  const isHeuristic = status === "heuristic" || fact.source_kind === "heuristic";
+  const heuristicBoundary = "系统判断不等同于用户确认事实。";
+  const alreadyStatesHeuristicBoundary = /不等同于用户(?:已)?确认的?事实/.test(fact.detail);
+
+  return {
+    key: fact.key,
+    label: fact.label,
+    detail: isHeuristic
+      ? alreadyStatesHeuristicBoundary ? fact.detail : `${fact.detail} ${heuristicBoundary}`
+      : fact.detail,
+    count: fact.count,
+    stateLabel: state.stateLabel,
+    sourceLabel: executionSourceLabel(fact.source_kind),
+    verificationLabel: executionVerificationLabel(fact.verification_status),
+    freshnessLabel: executionFreshnessLabel(fact.freshness_status),
+    tone: state.tone,
+  };
+}
+
+function normalizeExecutionTrustStatus(
+  status?: string | null,
+  plannerStatus?: string | null,
+): RouteWorkspaceExecutionTrustViewModel["status"] {
+  if (status === "blocked" || plannerStatus === "unstable") return "blocked";
+  if (status === "needs_attention" || plannerStatus === "needs_repair") return "needs_attention";
+  return "ready";
+}
+
+function executionFactState(status: string): Pick<RouteWorkspaceExecutionTrustFactViewModel, "stateLabel" | "tone"> {
+  if (status === "conflicting") return { stateLabel: "存在冲突", tone: "blocked" };
+  if (status === "missing") return { stateLabel: "信息缺失", tone: "attention" };
+  if (status === "stale") return { stateLabel: "已过期", tone: "attention" };
+  if (status === "heuristic") return { stateLabel: "系统判断", tone: "neutral" };
+  if (status === "confirmed") return { stateLabel: "已记录", tone: "stable" };
+  return { stateLabel: "未记录", tone: "neutral" };
+}
+
+function executionSourceLabel(source: string): string {
+  if (source === "provider") return "来源：provider 返回";
+  if (source === "user") return "来源：用户确认";
+  if (source === "deterministic") return "来源：系统确定性检查";
+  if (source === "heuristic") return "来源：系统建议";
+  return "来源：信息未返回";
+}
+
+function executionVerificationLabel(status: string): string {
+  if (status === "user_confirmed") return "确认：用户已确认";
+  if (status === "provider_returned") return "确认：规划时 provider 已返回";
+  if (status === "unavailable") return "确认：暂无可验证来源";
+  if (status === "not_applicable") return "确认：不适用";
+  return "确认：未记录";
+}
+
+function executionFreshnessLabel(status: string): string {
+  if (status === "fresh") return "新鲜度：当前";
+  if (status === "stale") return "新鲜度：已过期";
+  if (status === "not_applicable") return "新鲜度：不适用";
+  return "新鲜度：未记录";
 }
 
 export function buildRouteWorkspaceShellViewModel({

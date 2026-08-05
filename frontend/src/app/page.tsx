@@ -298,8 +298,29 @@ type ItineraryResponse = {
   stay_recommendation: StayRecommendation | null;
   departure_recommendation: DepartureRecommendation | null;
   planner_realism?: PlannerRealismSummary | null;
+  execution_trust?: ExecutionTrustSummary | null;
   boundary_explanation: BoundaryExplanation;
   days: DayItinerary[];
+};
+
+type ExecutionTrustFact = {
+  key: string;
+  category: "place" | "route" | "fixed_event" | "schedule" | "execution";
+  status: "confirmed" | "stale" | "missing" | "conflicting" | "heuristic" | "unknown";
+  source_kind: "provider" | "user" | "deterministic" | "heuristic" | "missing_data";
+  verification_status: "user_confirmed" | "provider_returned" | "unavailable" | "not_applicable" | "unknown";
+  freshness_status: "fresh" | "stale" | "unknown" | "not_applicable";
+  label: string;
+  detail: string;
+  count: number;
+};
+
+type ExecutionTrustSummary = {
+  status: "ready" | "needs_attention" | "blocked";
+  headline: string;
+  blocking_reasons: string[];
+  warning_reasons: string[];
+  facts: ExecutionTrustFact[];
 };
 
 type PlannerRealismIssue = {

@@ -13,6 +13,7 @@ from app.main import app
 from app.planner.trace import PlannerInputSnapshot, PlannerResultSummary, PlannerTrace
 from app.schemas import (
     CompletionTaskActionResponse,
+    ExecutionTrustSummary,
     ItineraryCompletionOption,
     ItineraryResponse,
     PlanningAnchorSource,
@@ -79,6 +80,67 @@ class TripPersistenceApiTests(unittest.TestCase):
             restored.json()["current_revision"]["id"],
             body["current_revision"]["id"],
         )
+
+    def test_persisted_trip_retains_execution_trust_fact_boundaries(self) -> None:
+        client = TestClient(app)
+        itinerary = simple_itinerary().model_copy(
+            update={
+                "execution_trust": ExecutionTrustSummary.model_validate(
+                    {
+                        "status": "needs_attention",
+                        "headline": "路线仍有待核实的执行事实。",
+                        "blocking_reasons": [],
+                        "warning_reasons": ["部分路线没有可验证的 provider 数据。"],
+                        "facts": [
+                            {
+                                "key": "route-data",
+                                "category": "route",
+                                "status": "missing",
+                                "source_kind": "missing_data",
+                                "verification_status": "unavailable",
+                                "freshness_status": "unknown",
+                                "label": "路线数据",
+                                "detail": "两段路线只使用了本地估算。",
+                                "count": 2,
+                            },
+                            {
+                                "key": "system-suggestions",
+                                "category": "schedule",
+                                "status": "heuristic",
+                                "source_kind": "heuristic",
+                                "verification_status": "not_applicable",
+                                "freshness_status": "not_applicable",
+                                "label": "系统补充",
+                                "detail": "这些停留点是系统建议。",
+                                "count": 1,
+                            },
+                        ],
+                    }
+                )
+            }
+        )
+        with patch("app.trips.service.build_itinerary_response", return_value=itinerary):
+            created = client.post(
+                "/trips/plan",
+                json={
+                    "itinerary_request": {
+                        "city": "上海",
+                        "trip_days": 1,
+                        "scenic_spots": [],
+                        "restaurants": [],
+                    }
+                },
+            )
+
+        self.assertEqual(created.status_code, 201, created.text)
+        restored = client.get(f"/trips/{created.json()['trip']['id']}")
+
+        self.assertEqual(restored.status_code, 200, restored.text)
+        trust = restored.json()["itinerary"]["execution_trust"]
+        self.assertEqual(trust["status"], "needs_attention")
+        self.assertEqual(trust["facts"][0]["status"], "missing")
+        self.assertEqual(trust["facts"][0]["freshness_status"], "unknown")
+        self.assertEqual(trust["facts"][1]["status"], "heuristic")
 
     def test_missing_cookie_is_denied_without_trip_data(self) -> None:
         client = TestClient(app)
