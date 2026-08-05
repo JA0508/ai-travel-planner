@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.core.runtime_config import parse_cors_allow_origins
 from app.imports.dependencies import get_text_import_service
+from app.schemas.plan_candidates import PlanningRunRecordResponse
 from app.imports.domain import (
     ImportCommitRequest,
     ImportCommitResponse,
@@ -42,6 +43,7 @@ from app.trips.intent_contracts import (
     TripIntentRevisionListResponse,
 )
 from app.trips.draft_intent_edits import DraftClarificationResolveRequest, DraftIntentEditRequest
+from app.services.planning_run_access import set_planning_run_capability_cookie
 from app.trips.schemas import (
     ApplyPersistedMutationProposalRequest,
     LocalRepairPreviewRequest,
@@ -49,6 +51,7 @@ from app.trips.schemas import (
     DraftTripCreateRequest,
     DraftTripCreateResponse,
     DraftTripDetailResponse,
+    DraftIntentPlanningRunRequest,
     DraftIntentEditResponse,
     PrePlanIntentLatestResponse,
     PrePlanHandoffApplyRequest,
@@ -322,6 +325,28 @@ def edit_preplan_intent(
             idempotency_key=x_idempotency_key,
             payload=payload,
         )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.post("/{trip_id}/preplan-intent/planning-run", response_model=PlanningRunRecordResponse)
+def create_preplan_intent_planning_run(
+    trip_id: str,
+    payload: DraftIntentPlanningRunRequest,
+    request: Request,
+    response: Response,
+) -> PlanningRunRecordResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        created = get_trip_persistence_service().create_draft_intent_planning_run(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            payload=payload,
+        )
+        set_planning_run_capability_cookie(response, created.capability)
+        return created.record
     except TripError as exc:
         return trip_error_response(exc)
 

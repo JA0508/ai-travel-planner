@@ -15,6 +15,7 @@ type DraftDatabaseSnapshot = {
   trip_revisions: TripRevisionRow[];
   trip_revision_count: number;
   preview_count: number;
+  planning_run_count: number;
 };
 
 type TripRevisionRow = {
@@ -227,29 +228,42 @@ test("Scenario D: retries a lost edit response with the original idempotency key
   gate.assertClean();
 });
 
-test("Scenario E: shows a readable route preview before it creates the first TripRevision", async ({ page }) => {
+test("Scenario E: confirms canonical places before creating one existing Planning Run", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const gate = installErrorGate(page);
-  gate.allowExpectedInitialIntentAbsence();
-  const tripId = await createDraftThroughHome(page, "周末去杭州玩两天，轻松一点，想去西湖和灵隐寺。");
+  const legacyPreviewRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/preplan-handoff/preview")) legacyPreviewRequests.push(request.url());
+  });
+  const tripId = await createTripCompilerDraft(page, "周末去杭州玩两天，轻松一点，想去西湖和灵隐寺。");
   const before = readDraftDatabase(tripId);
-  const previewResponse = page.waitForResponse((response) => response.url().includes("/preplan-handoff/preview") && response.request().method() === "POST");
-  await page.getByRole("button", { name: "生成路线预览" }).click();
-  expect((await previewResponse).status()).toBe(200);
-  const routePreview = page.getByRole("region", { name: "可执行路线预览" });
-  await expect(routePreview.getByRole("heading", { name: "你的第一版行程" })).toBeVisible();
-  await expect(routePreview.getByText("第 1 天").first()).toBeVisible();
-  await expect(routePreview.getByText("预计移动").first()).toBeVisible();
-  await expect(routePreview.getByText("活动时长").first()).toBeVisible();
-  await expect(routePreview.getByText("路线距离").first()).toBeVisible();
-  await expect(routePreview.getByRole("heading", { name: /轻松|适中|偏赶|不可执行/ }).first()).toBeVisible();
-  await expect(routePreview.getByText("为什么这样安排").first()).toBeVisible();
-  await expect(routePreview.getByText("trace_digest", { exact: false })).toHaveCount(0);
-  await expect(routePreview.getByText("planner_run_id", { exact: false })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "确认并生成行程" })).toBeEnabled();
+  expect(before.intent_revisions).toHaveLength(1);
+  await expect(page.getByRole("button", { name: /西湖风景名胜区/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^灵隐寺/ })).toBeVisible();
+
+  const westLakeConfirmation = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: /西湖风景名胜区/ }).click();
+  expect((await westLakeConfirmation).status()).toBe(201);
+  const lingyinConfirmation = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: /^灵隐寺/ }).click();
+  expect((await lingyinConfirmation).status()).toBe(201);
+  await expect(page.getByRole("button", { name: "生成路线" })).toBeEnabled();
+
+  const confirmed = readDraftDatabase(tripId);
+  expect(confirmed.intent_revisions).toHaveLength(3);
+  expect(confirmed.intent_revisions[1].parent_draft_intent_revision_id).toBe(before.intent_revisions[0].id);
+  expect(confirmed.intent_revisions[2].parent_draft_intent_revision_id).toBe(confirmed.intent_revisions[1].id);
+  expect(confirmed.intent_revisions[2].envelope.planner_ready_status).toMatch(/ready/);
+  expect(confirmed.intent_revisions[2].envelope.formal_contract.place_identities.map((item: { resolution_status: string }) => item.resolution_status)).toEqual(["verified", "verified"]);
+
+  const runResponse = page.waitForResponse((response) => response.url().includes("/preplan-intent/planning-run") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "生成路线" }).click();
+  expect((await runResponse).status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "选一条更符合这次旅行的安排。" })).toBeVisible();
   const after = readDraftDatabase(tripId);
-  expect(after.preview_count).toBe(before.preview_count + 1);
+  expect(after.planning_run_count).toBe(before.planning_run_count + 1);
   expect(after.trip_revision_count).toBe(0);
+  expect(legacyPreviewRequests).toEqual([]);
   await assertViewportFits(page);
   gate.assertClean();
 });
@@ -305,21 +319,39 @@ test("Scenario F: previews and applies a local relaxation without regenerating t
   gate.assertClean();
 });
 
-test("Scenario G: blocks an unresolved fixed reservation instead of creating a false executable route", async ({ page }) => {
+test("Scenario G: blocks an unresolved fixed reservation before any route request", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const gate = installErrorGate(page);
-  gate.allowExpectedInitialIntentAbsence();
-  const tripId = await createDraftThroughHome(page, "去上海三天，第二天下午2点到4点预约了上海博物馆。");
+  const blockedRouteRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/preplan-handoff/preview") || request.url().includes("/preplan-intent/planning-run")) {
+      blockedRouteRequests.push(request.url());
+    }
+  });
+  const planningRunsBefore = readPlanningRunCount();
+  const tripId = await createTripCompilerDraft(page, "去上海三天，第二天下午2点到4点预约了上海博物馆。");
 
-  const previewResponse = page.waitForResponse((response) => response.url().includes("/preplan-handoff/preview") && response.request().method() === "POST");
-  await page.getByRole("button", { name: "生成路线预览" }).click();
-  expect((await previewResponse).status()).toBe(422);
-  await expect(page.getByText("固定安排的地点还没有确认", { exact: false })).toBeVisible();
-  await expect(page.getByRole("button", { name: "返回修改需求" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "可执行路线预览" })).toHaveCount(0);
-  expect(readDraftDatabase(tripId).trip_revision_count).toBe(0);
+  await expect(page.getByText("固定安排“上海博物馆”的地点还需要确认。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "生成路线" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /上海博物馆（人民广场馆）/ })).toBeVisible();
+  const snapshot = readDraftDatabase(tripId);
+  expect(snapshot.planning_run_count).toBe(planningRunsBefore);
+  expect(snapshot.trip_revision_count).toBe(0);
+  expect(blockedRouteRequests).toEqual([]);
   gate.assertClean();
 });
+
+async function createTripCompilerDraft(page: Page, text: string): Promise<string> {
+  await page.goto("/trip-compiler");
+  await page.getByLabel("这趟旅行，你已经知道些什么？").fill(text);
+  const created = page.waitForResponse((response) => response.url().includes("/api/trips/drafts") && response.request().method() === "POST");
+  const compiled = page.waitForResponse((response) => response.url().includes("/preplan-intent/compile") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "继续" }).click();
+  const payload = await (await created).json() as { trip: { id: string } };
+  expect((await compiled).status()).toBe(201);
+  await expect(page.getByRole("heading", { name: "这些是我理解到的旅行安排。" })).toBeVisible();
+  return payload.trip.id;
+}
 
 async function createDraftThroughHome(page: Page, text: string): Promise<string> {
   await page.addInitScript(() => window.localStorage.clear());
@@ -402,6 +434,7 @@ snapshot = {
   "trip_revisions": [{"id": row["id"], "revision_number": row["revision_number"], "parent_revision_id": row["parent_revision_id"], "source_type": row["source_type"], "snapshot": json.loads(row["itinerary_snapshot"])} for row in trip_revisions],
   "trip_revision_count": len(trip_revisions),
   "preview_count": connection.execute("SELECT COUNT(*) FROM preplan_handoff_runs WHERE trip_id = ?", (trip_id,)).fetchone()[0],
+  "planning_run_count": connection.execute("SELECT COUNT(*) FROM planning_runs").fetchone()[0],
 }
 print(json.dumps(snapshot, ensure_ascii=False))`;
   const stdout = execFileSync(process.env.TRIP_E2E_PYTHON ?? ".venv/bin/python", ["-c", program, databasePath, tripId], {
@@ -409,6 +442,17 @@ print(json.dumps(snapshot, ensure_ascii=False))`;
     encoding: "utf8",
   });
   return JSON.parse(stdout) as DraftDatabaseSnapshot;
+}
+
+function readPlanningRunCount(): number {
+  const databasePath = process.env.TRIP_E2E_DATABASE_PATH;
+  if (!databasePath) throw new Error("TRIP_E2E_DATABASE_PATH is required for SQLite assertions.");
+  const stdout = execFileSync(
+    process.env.TRIP_E2E_PYTHON ?? ".venv/bin/python",
+    ["-c", "import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM planning_runs').fetchone()[0])", databasePath],
+    { cwd: resolve(process.cwd(), "../backend"), encoding: "utf8" },
+  );
+  return Number(stdout.trim());
 }
 
 function datePolicy(row: IntentRevisionRow): Record<string, any> {

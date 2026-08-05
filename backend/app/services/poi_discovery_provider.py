@@ -28,6 +28,7 @@ class PoiDiscoveryCandidate:
     business_area: str | None
     latitude: float | None
     longitude: float | None
+    provider_place_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +121,7 @@ def candidate_from_mapping(candidate: dict) -> PoiDiscoveryCandidate:
         business_area=candidate.get("business_area"),
         latitude=candidate.get("latitude"),
         longitude=candidate.get("longitude"),
+        provider_place_id=candidate.get("provider_place_id"),
     )
 
 

@@ -137,6 +137,7 @@ export const TRIP_API_ENDPOINTS = {
       `/trips/${encodeURIComponent(tripId)}/revisions/${encodeURIComponent(revisionId)}/undo`,
     ),
   parseTripIntent: buildApiUrl("/parse-trip-intent"),
+  createPrePlanIntentPlanningRun: (tripId: string) => buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent/planning-run`),
   compileTripCompilerIntent: buildApiUrl("/trip-compiler/intents/compile"),
   planTripCompilerIntent: buildApiUrl("/trip-compiler/trips"),
   generateTripCompilerCandidates: buildApiUrl("/trip-compiler/planning-runs"),

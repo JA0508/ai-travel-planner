@@ -113,6 +113,14 @@ class RemovePlaceOperation(_Operation):
     policy: PlacePolicy
 
 
+class ConfirmPlaceIdentityOperation(_Operation):
+    """Confirm one bounded Amap choice from the current immutable Draft revision."""
+
+    operation: Literal["confirm_place_identity"]
+    place_stable_id: str = Field(..., min_length=1, max_length=160)
+    provider_place_id: str = Field(..., min_length=1, max_length=160)
+
+
 DraftIntentEditOperation = Annotated[
     UpdateDestinationOperation
     | UpdateDatePolicyOperation
@@ -123,7 +131,8 @@ DraftIntentEditOperation = Annotated[
     | RemoveFixedEventOperation
     | AddPlacePolicyOperation
     | MovePlacePolicyOperation
-    | RemovePlaceOperation,
+    | RemovePlaceOperation
+    | ConfirmPlaceIdentityOperation,
     Field(discriminator="operation"),
 ]
 
@@ -308,6 +317,10 @@ def apply_operations_to_overrides(
             if operation.candidate_id not in policies[operation.policy]:
                 raise DraftIntentEditValidationError("place_policy_conflict")
             policies[operation.policy].remove(operation.candidate_id)
+        elif isinstance(operation, ConfirmPlaceIdentityOperation):
+            # The service re-reads this provider choice and adds it to the next
+            # immutable envelope. It must not be expressed as a generic override.
+            continue
 
     _validate_final_state(start_date, end_date, trip_days, fixed_events)
     return IntentStructuredOverrides(
