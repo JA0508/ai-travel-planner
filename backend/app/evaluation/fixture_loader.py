@@ -10,6 +10,13 @@ DEFAULT_FIXTURE_DIR = (
     / "fixtures"
     / "planner_evaluation"
 )
+DEFAULT_HANDOFF_FIXTURE_FILE = (
+    Path(__file__).resolve().parents[2]
+    / "tests"
+    / "fixtures"
+    / "planner_handoff_evaluation"
+    / "manifest.json"
+)
 
 
 def load_manifest(fixture_dir: Path = DEFAULT_FIXTURE_DIR) -> dict:
@@ -24,3 +31,9 @@ def load_cases(fixture_dir: Path = DEFAULT_FIXTURE_DIR) -> list[dict]:
         with (fixture_dir / case_file).open("r", encoding="utf-8") as handle:
             cases.append(json.load(handle))
     return cases
+
+
+def load_handoff_review_cases(fixture_file: Path = DEFAULT_HANDOFF_FIXTURE_FILE) -> list[dict]:
+    with fixture_file.open("r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    return manifest["cases"]

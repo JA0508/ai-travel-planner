@@ -142,11 +142,11 @@ FIXTURES = [
         expected_domain_value_type="pace",
     ),
     IntentCompilerFixture(
-        name="reviewed_candidate_absence_is_allowed_typed_assumption",
-        category="semantic",
+        name="reviewed_candidate_absence_blocks_planner_ready",
+        category="clarification",
         payload={"structured_overrides": {"city": "上海", "trip_days": 2}},
-        expected_status="ready",
-        expected_blocking_reason=None,
+        expected_status="needs_clarification",
+        expected_blocking_reason="no_planner_anchor",
     ),
     IntentCompilerFixture(
         name="direct_user_text_parser_result_is_recorded",
@@ -337,7 +337,7 @@ def run_evaluation() -> list[dict]:
                     results.append(execute_revision_scenario(client, fixture, index, started))
                     continue
                 trip_id, base_revision_id = create_trip(client)
-                payload = {"base_revision_id": base_revision_id, "base_intent_revision_id": None, **fixture.payload}
+                payload = build_fixture_payload(client, fixture, trip_id, base_revision_id, index)
                 response = post_fixture(client, fixture, trip_id, payload, index)
                 passed, detail = evaluate_response(fixture, response)
                 results.append({
@@ -642,6 +642,36 @@ def post_fixture(client: TestClient, fixture: IntentCompilerFixture, trip_id: st
         ):
             return client.post(url, json=payload, headers=headers)
     return client.post(url, json=payload, headers=headers)
+
+
+def build_fixture_payload(
+    client: TestClient,
+    fixture: IntentCompilerFixture,
+    trip_id: str,
+    base_revision_id: str,
+    index: int,
+) -> dict:
+    payload = {"base_revision_id": base_revision_id, "base_intent_revision_id": None, **fixture.payload}
+    if fixture.expected_status != "ready":
+        return payload
+
+    candidate = client.post(
+        f"/trips/{trip_id}/candidates",
+        json={
+            "candidate_type": "place",
+            "display_name": f"评测地点 {index}",
+            "canonical_place_id": f"evaluation:verified-place:{index}",
+            "coordinates": {"latitude": 31.2304, "longitude": 121.4737},
+            "estimated_duration_minutes": 90,
+            "source_kind": "manual_entry",
+        },
+        headers={"Origin": "http://testserver", "X-Idempotency-Key": f"intent-eval-candidate-{index}"},
+    )
+    candidate.raise_for_status()
+    overrides = dict(payload.get("structured_overrides") or {})
+    overrides["must_candidate_ids"] = [candidate.json()["candidate"]["id"]]
+    payload["structured_overrides"] = overrides
+    return payload
 
 
 def summarize_results(results: list[dict], *, deterministic_mismatch_count: int = 0) -> dict:
