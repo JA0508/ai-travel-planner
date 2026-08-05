@@ -76,15 +76,23 @@ def build_itinerary_request(intent: TravelIntent) -> ItineraryRequest:
     if any(event.day is None or event.start_time is None or event.end_time is None for event in intent.fixed_events):
         raise ValueError("fixed events require a day and a complete time range")
     scenic = [
-        ScenicSpotInput(name=place.name, intent_ownership=place.ownership)
+        _verified_scenic_input(
+            name=place.name,
+            stable_id=place.stable_id,
+            ownership=place.ownership,
+            verified_place=place.verified_place,
+        )
         for place in [*intent.must_visit_places, *intent.optional_places]
     ]
     for event in intent.fixed_events:
         start = time.fromisoformat(event.start_time or "00:00")
         end = time.fromisoformat(event.end_time or "00:00")
         scenic.append(
-            ScenicSpotInput(
+            _verified_scenic_input(
                 name=event.name,
+                stable_id=event.verified_place.stable_id if event.verified_place else event.stable_id,
+                ownership="user_must",
+                verified_place=event.verified_place,
                 fixed_day=event.day,
                 fixed_time_start=start,
                 fixed_time_end=end,
@@ -109,6 +117,32 @@ def build_itinerary_request(intent: TravelIntent) -> ItineraryRequest:
         rejected_scenic_spots=[item.value for item in intent.avoid_items],
         travel_mode=intent.travel_mode,
         auto_fill_sparse_days=True,
+    )
+
+
+def _verified_scenic_input(
+    *,
+    name: str,
+    stable_id: str,
+    ownership: str,
+    verified_place,
+    **fixed_fields,
+) -> ScenicSpotInput:
+    """Preserve confirmed Amap identity; never fall back to a second name lookup."""
+    if verified_place is None:
+        # Compatibility for the legacy direct compiler request. The canonical
+        # Draft Intent handoff always supplies a verified identity and therefore
+        # never takes this branch.
+        return ScenicSpotInput(name=name, intent_ownership=ownership, **fixed_fields)  # type: ignore[arg-type]
+    return ScenicSpotInput(
+        name=verified_place.canonical_name,
+        candidate_id=stable_id,
+        canonical_place_id=verified_place.provider_place_id,
+        resolved_latitude=verified_place.latitude,
+        resolved_longitude=verified_place.longitude,
+        intent_ownership=ownership,  # type: ignore[arg-type]
+        verified_place=verified_place,
+        **fixed_fields,
     )
 
 

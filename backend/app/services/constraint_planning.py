@@ -14,9 +14,9 @@ from app.schemas.itinerary import ItineraryResponse
 
 
 STRATEGY_ORDER = ("balanced", "relaxed", "low_travel")
-PLANNER_POLICY_VERSION = "trip-compiler-candidates-v1"
-SNAPSHOT_CONTRACT_VERSION = "planning-snapshot-v1"
-METRIC_POLICY_VERSION = "candidate-metrics-v1"
+PLANNER_POLICY_VERSION = "trip-compiler-candidates-v2"
+SNAPSHOT_CONTRACT_VERSION = "planning-snapshot-v2"
+METRIC_POLICY_VERSION = "candidate-metrics-v2"
 STRATEGY_MANIFEST_VERSION = "candidate-strategies-v1"
 
 
@@ -65,6 +65,8 @@ def build_planning_snapshot_manifest(
                     poi_by_id.setdefault(item.stable_id or f"{item.name}:{item.latitude}:{item.longitude}", {
                         "stable_poi_identity": item.stable_id or item.name,
                         "canonical_name": item.name,
+                        "provider": item.verified_place.provider if item.verified_place else None,
+                        "provider_place_id": item.canonical_place_id,
                         "city": item.city or intent.destination,
                         "coordinates": [item.latitude, item.longitude],
                         "category": item.type.value,
@@ -74,17 +76,26 @@ def build_planning_snapshot_manifest(
                     })
                     if item.travel_from_name:
                         route_segments.append({
+                            "from_place_id": item.travel_from_place_id,
+                            "to_place_id": item.travel_to_place_id or item.canonical_place_id,
                             "from_poi": item.travel_from_name,
                             "to_poi": item.name,
                             "travel_mode": intent.travel_mode.value if intent.travel_mode else None,
                             "duration_seconds": item.travel_duration_s,
                             "distance_meters": item.travel_distance_m,
-                            "calculation_status": "known" if item.travel_duration_s is not None else "unknown",
+                            "calculation_status": item.travel_data_status or "unavailable",
+                            "provider": item.travel_provider,
                             "source": "frozen_scheduler_output",
-                            "fallback_algorithm_version": "scheduler-route-v1",
                         })
     poi_snapshot = sorted(poi_by_id.values(), key=lambda item: item["stable_poi_identity"])
-    route_snapshot = sorted(route_segments, key=lambda item: (item["from_poi"], item["to_poi"], item["travel_mode"] or ""))
+    route_snapshot = sorted(
+        route_segments,
+        key=lambda item: (
+            item["from_place_id"] or item["from_poi"],
+            item["to_place_id"] or item["to_poi"],
+            item["travel_mode"] or "",
+        ),
+    )
     strategy_manifest = {
         "version": STRATEGY_MANIFEST_VERSION,
         "tie_breaker_version": "strategy-order-v1",

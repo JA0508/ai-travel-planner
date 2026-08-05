@@ -8,6 +8,7 @@ from app.schemas.trip_compiler import (
     TripCompilerFixedEvent,
     TravelIntent,
 )
+from app.schemas.itinerary import VerifiedPlaceRef
 from app.trips.intent_contracts import IntentPlannerReadyStatus, SourceLinkedTripIntentEnvelope
 
 
@@ -71,19 +72,33 @@ def project_confirmed_draft_intent(envelope: SourceLinkedTripIntentEnvelope) -> 
         )
         for index, item in enumerate(formal.transport_preferences)
     ]
-    fixed_events = [
-        TripCompilerFixedEvent(
-            stable_id=item.event_id,
-            name=item.title,
-            day=_fixed_event_day(item.fixed_day, item.start_at, formal.date_policy.start_date if formal.date_policy else None),
-            start_time=item.start_at.strftime("%H:%M") if item.start_at else None,
-            end_time=item.end_at.strftime("%H:%M") if item.end_at else None,
-            fixed_reason="你明确说明这是固定安排。",
-            confidence=1.0,
-            source_fragment_ids=[],
+    fixed_events = []
+    for item in formal.fixed_events:
+        identity = _fixed_identity_for_event(
+            formal.place_identities,
+            item,
+            fixed_event_count=len(formal.fixed_events),
         )
-        for item in formal.fixed_events
-    ]
+        if identity is None:
+            raise DraftIntentProjectionError(
+                "draft_intent_fixed_event_identity_unconfirmed",
+                "请先确认每个固定安排的具体地点。",
+            )
+        fixed_events.append(
+            TripCompilerFixedEvent(
+                stable_id=item.event_id or identity.stable_id,
+                # The reservation title is explanatory only. The actual planning
+                # identity stays the confirmed provider place.
+                name=identity.canonical_name or identity.original_name,
+                day=_fixed_event_day(item.fixed_day, item.start_at, formal.date_policy.start_date if formal.date_policy else None),
+                start_time=item.start_at.strftime("%H:%M") if item.start_at else item.fixed_time_start,
+                end_time=item.end_at.strftime("%H:%M") if item.end_at else item.fixed_time_end,
+                fixed_reason="你明确说明这是固定安排。",
+                confidence=1.0,
+                source_fragment_ids=identity.source_fragment_ids,
+                verified_place=_verified_place(identity),
+            )
+        )
     return TravelIntent(
         destination=destination,
         trip_days=trip_days,
@@ -111,7 +126,57 @@ def _place(identity, *, ownership: str) -> TripCompilerPlace:
         ownership=ownership,  # type: ignore[arg-type]
         confidence=1.0,
         source_fragment_ids=identity.source_fragment_ids,
+        verified_place=_verified_place(identity),
     )
+
+
+def _verified_place(identity) -> VerifiedPlaceRef:
+    if (
+        identity.provider != "amap"
+        or not identity.provider_place_id
+        or identity.latitude is None
+        or identity.longitude is None
+    ):
+        raise DraftIntentProjectionError(
+            "draft_intent_place_identity_incomplete",
+            "已确认地点缺少服务商位置数据，请重新确认。",
+        )
+    return VerifiedPlaceRef(
+        stable_id=identity.stable_id,
+        original_name=identity.original_name,
+        canonical_name=identity.canonical_name or identity.original_name,
+        provider=identity.provider,
+        provider_place_id=identity.provider_place_id,
+        latitude=identity.latitude,
+        longitude=identity.longitude,
+        category=identity.category,
+        source_fragment_ids=identity.source_fragment_ids,
+    )
+
+
+def _fixed_identity_for_event(identities, event, *, fixed_event_count: int):
+    """Link a fixed reservation to its existing Draft identity without lookup."""
+    verified = [
+        identity
+        for identity in identities
+        if identity.ownership == "fixed" and identity.resolution_status == "verified"
+    ]
+    for reference in (event.event_id, event.place_candidate_id):
+        match = next((identity for identity in verified if identity.fixed_event_id == reference), None)
+        if match is not None:
+            return match
+    # Historic Draft revisions may have given the formal fixed-event field a
+    # compiler field id instead of the discovery identity id. A unique original
+    # source label is a deterministic link to the identity already in this
+    # immutable revision, never a fresh provider name search.
+    by_source_name = [identity for identity in verified if identity.original_name == event.title]
+    if len(by_source_name) == 1:
+        return by_source_name[0]
+    # Earlier Draft compiler revisions did not persist a relationship between
+    # the formal fixed-event field id and its separately discovered place
+    # identity. With exactly one of each, the immutable revision provides an
+    # unambiguous deterministic relationship. This never searches by name.
+    return verified[0] if fixed_event_count == 1 and len(verified) == 1 else None
 
 
 def _fixed_event_day(fixed_day: int | None, start_at, trip_start_date) -> int | None:

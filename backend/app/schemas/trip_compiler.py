@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .itinerary import TravelMode
+from .itinerary import TravelMode, VerifiedPlaceRef
 
 
 TripOwnership = Literal["user_fixed", "user_must", "user_optional", "system_suggested"]
@@ -43,6 +43,7 @@ class TripCompilerPlace(BaseModel):
     ownership: TripOwnership
     confidence: float = Field(ge=0, le=1)
     source_fragment_ids: list[str] = Field(default_factory=list)
+    verified_place: VerifiedPlaceRef | None = None
 
 
 class TripCompilerFixedEvent(BaseModel):
@@ -56,6 +57,7 @@ class TripCompilerFixedEvent(BaseModel):
     fixed_reason: str
     confidence: float = Field(ge=0, le=1)
     source_fragment_ids: list[str] = Field(default_factory=list)
+    verified_place: VerifiedPlaceRef | None = None
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "TripCompilerFixedEvent":

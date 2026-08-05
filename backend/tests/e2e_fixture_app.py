@@ -28,6 +28,26 @@ class BrowserFixturePoiDiscoveryProvider:
             longitude=120.102,
             provider_place_id="fixture-lingyin-temple",
         ),
+        "龙井村": PoiDiscoveryCandidate(
+            name="龙井村",
+            address="杭州市西湖区龙井路",
+            type="风景名胜",
+            typecode="110000",
+            business_area="杭州",
+            latitude=30.216,
+            longitude=120.112,
+            provider_place_id="fixture-longjing-village",
+        ),
+        "中国茶叶博物馆": PoiDiscoveryCandidate(
+            name="中国茶叶博物馆（双峰馆区）",
+            address="杭州市西湖区龙井路88号",
+            type="博物馆",
+            typecode="140100",
+            business_area="杭州",
+            latitude=30.218,
+            longitude=120.104,
+            provider_place_id="fixture-china-tea-museum",
+        ),
         "上海博物馆": PoiDiscoveryCandidate(
             name="上海博物馆（人民广场馆）",
             address="上海市黄浦区人民大道201号",
@@ -63,5 +83,20 @@ class BrowserFixturePoiDiscoveryProvider:
 
 
 place_identity_resolution.default_poi_discovery_provider = BrowserFixturePoiDiscoveryProvider
+
+
+def _fixture_route(**_: object) -> dict[str, object]:
+    """CI-only Amap direction boundary: stable, non-zero verified route evidence."""
+    return {
+        "distance_m": 1100,
+        "duration_s": 840,
+        "path_points": [],
+        "source": "amap_fixture",
+    }
+
+
+from app.core import scheduler  # noqa: E402
+
+scheduler.get_route = _fixture_route
 
 from app.main import app  # noqa: E402

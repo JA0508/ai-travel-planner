@@ -15,6 +15,8 @@ export type RoutePreviewItem = {
   travel_from_name?: string | null;
   travel_distance_m?: number | null;
   travel_duration_s?: number | null;
+  travel_data_status?: "confirmed" | "unavailable" | "estimated" | null;
+  travel_provider?: string | null;
 };
 
 export type RoutePreviewDay = {

@@ -13,8 +13,8 @@ from app.trips.candidates import TripCandidateRecord
 from app.trips.digests import sha256_digest
 
 
-TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.5"
-TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v6"
+TRIP_INTENT_ENVELOPE_SCHEMA_VERSION = "1.6"
+TRIP_INTENT_COMPILER_VERSION = "intent-compiler-v7"
 INTENT_PRECEDENCE_VERSION = "intent-precedence-v3"
 INTENT_READINESS_POLICY_VERSION = "intent-readiness-v3"
 INTENT_DATE_POLICY_VERSION = "intent-date-policy-v1"
@@ -451,6 +451,8 @@ class FixedEventIntent(BaseModel):
     metadata: IntentFieldMetadata
     event_id: str
     title: str = Field(..., min_length=1, max_length=240)
+    fixed_time_start: str | None = None
+    fixed_time_end: str | None = None
     start_at: datetime | None = None
     end_at: datetime | None = None
     timezone: str | None = None
@@ -1302,6 +1304,7 @@ def compile_source_linked_intent(
                 )
             )
     identities = list(place_identities or [])
+    selected = _link_fixed_events_to_place_identities(selected, identities)
     for identity in identities:
         if identity.ownership not in {"must", "fixed"} or identity.resolution_status == "verified":
             continue
@@ -2598,6 +2601,53 @@ def _build_parser_result(
     )
 
 
+def _link_fixed_events_to_place_identities(
+    selected: list[IntentField],
+    identities: list[PlaceIdentity],
+) -> list[IntentField]:
+    """Attach a fixed event to an already-discovered fixed place identity.
+
+    Direct-language fallback parsing can produce a user-facing event title such
+    as "预约" while place discovery retains the actual place name. The link is
+    made only when an existing Draft revision contains exactly one unmatched
+    fixed event and exactly one unmatched fixed identity, so it cannot invent a
+    relationship or trigger another provider lookup.
+    """
+
+    fixed_fields = [
+        field
+        for field in selected
+        if field.field_path == "time.fixed_events"
+        and isinstance(field.value, IntentFixedEventValue)
+    ]
+    fixed_identities = [identity for identity in identities if identity.ownership == "fixed"]
+    if len(fixed_fields) != 1 or len(fixed_identities) != 1:
+        return selected
+
+    field = fixed_fields[0]
+    identity = fixed_identities[0]
+    event_id = identity.fixed_event_id or identity.stable_id
+    if field.value.event_id == event_id:
+        return selected
+    if field.value.event_id is not None:
+        return selected
+
+    linked_value = field.value.model_copy(update={"event_id": event_id})
+    return [
+        item.model_copy(
+            update={
+                "value": linked_value,
+                "semantic_value": linked_value
+                if isinstance(item.semantic_value, IntentFixedEventValue)
+                else item.semantic_value,
+            }
+        )
+        if item.field_id == field.field_id
+        else item
+        for item in selected
+    ]
+
+
 def _build_formal_contract(
     *,
     selected: list[IntentField],
@@ -2682,6 +2732,8 @@ def _build_formal_contract(
                     metadata=metadata,
                     event_id=field.value.event_id or field.field_id,
                     title=field.value.name,
+                    fixed_time_start=field.value.fixed_time_start,
+                    fixed_time_end=field.value.fixed_time_end,
                     start_at=field.value.start_at,
                     end_at=field.value.end_at,
                     timezone=field.value.timezone,

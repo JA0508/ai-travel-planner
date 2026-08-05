@@ -228,18 +228,24 @@ test("Scenario D: retries a lost edit response with the original idempotency key
   gate.assertClean();
 });
 
-test("Scenario E: confirms canonical places before creating one existing Planning Run", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
+for (const viewportCase of [
+  { name: "desktop", viewport: { width: 1440, height: 900 } },
+  { name: "mobile", viewport: { width: 390, height: 844 } },
+] as const) {
+test(`Scenario E: confirms canonical places before creating one existing Planning Run in ${viewportCase.name}`, async ({ page }) => {
+  await page.setViewportSize(viewportCase.viewport);
   const gate = installErrorGate(page);
   const legacyPreviewRequests: string[] = [];
   page.on("request", (request) => {
     if (request.url().includes("/preplan-handoff/preview")) legacyPreviewRequests.push(request.url());
   });
-  const tripId = await createTripCompilerDraft(page, "周末去杭州玩两天，轻松一点，想去西湖和灵隐寺。");
+  const tripId = await createTripCompilerDraft(page, "去杭州玩两天，轻松一点，想去西湖、灵隐寺和龙井村。第二天下午两点到四点预约了中国茶叶博物馆，最后一天傍晚六点前结束。");
   const before = readDraftDatabase(tripId);
   expect(before.intent_revisions).toHaveLength(1);
   await expect(page.getByRole("button", { name: /西湖风景名胜区/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /^灵隐寺/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^龙井村/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /中国茶叶博物馆（双峰馆区）/ })).toBeVisible();
 
   const westLakeConfirmation = page.waitForResponse(isDraftIntentEditResponse);
   await page.getByRole("button", { name: /西湖风景名胜区/ }).click();
@@ -247,26 +253,79 @@ test("Scenario E: confirms canonical places before creating one existing Plannin
   const lingyinConfirmation = page.waitForResponse(isDraftIntentEditResponse);
   await page.getByRole("button", { name: /^灵隐寺/ }).click();
   expect((await lingyinConfirmation).status()).toBe(201);
+  const longjingConfirmation = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: /^龙井村/ }).click();
+  expect((await longjingConfirmation).status()).toBe(201);
+  const teaMuseumConfirmation = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: /中国茶叶博物馆（双峰馆区）/ }).click();
+  expect((await teaMuseumConfirmation).status()).toBe(201);
   await expect(page.getByRole("button", { name: "生成路线" })).toBeEnabled();
 
   const confirmed = readDraftDatabase(tripId);
-  expect(confirmed.intent_revisions).toHaveLength(3);
+  expect(confirmed.intent_revisions).toHaveLength(5);
   expect(confirmed.intent_revisions[1].parent_draft_intent_revision_id).toBe(before.intent_revisions[0].id);
   expect(confirmed.intent_revisions[2].parent_draft_intent_revision_id).toBe(confirmed.intent_revisions[1].id);
-  expect(confirmed.intent_revisions[2].envelope.planner_ready_status).toMatch(/ready/);
-  expect(confirmed.intent_revisions[2].envelope.formal_contract.place_identities.map((item: { resolution_status: string }) => item.resolution_status)).toEqual(["verified", "verified"]);
+  expect(confirmed.intent_revisions[4].parent_draft_intent_revision_id).toBe(confirmed.intent_revisions[3].id);
+  expect(confirmed.intent_revisions[4].envelope.planner_ready_status).toMatch(/ready/);
+  expect(confirmed.intent_revisions[4].envelope.formal_contract.place_identities.map((item: { resolution_status: string }) => item.resolution_status)).toEqual(["verified", "verified", "verified", "verified"]);
+  const confirmedIdentityIds = confirmed.intent_revisions[4].envelope.formal_contract.place_identities
+    .map((item: { stable_id: string }) => item.stable_id);
+  const fixedIdentity = confirmed.intent_revisions[4].envelope.formal_contract.place_identities
+    .find((item: { ownership: string }) => item.ownership === "fixed");
+  expect(fixedIdentity).toBeDefined();
+  const confirmedFixedEvents = confirmed.intent_revisions[4].envelope.formal_contract.fixed_events;
+  expect(
+    confirmedFixedEvents,
+    JSON.stringify({
+      fixedEvents: confirmedFixedEvents,
+      identities: confirmed.intent_revisions[4].envelope.formal_contract.place_identities,
+    }),
+  ).toHaveLength(1);
+  expect(confirmedFixedEvents[0]).toMatchObject({
+    event_id: fixedIdentity.stable_id,
+    fixed_day: 2,
+    fixed_time_start: "14:00",
+    fixed_time_end: "16:00",
+  });
 
   const runResponse = page.waitForResponse((response) => response.url().includes("/preplan-intent/planning-run") && response.request().method() === "POST");
   await page.getByRole("button", { name: "生成路线" }).click();
-  expect((await runResponse).status()).toBe(200);
+  const planningResponse = await runResponse;
+  expect(planningResponse.status(), await planningResponse.text()).toBe(200);
+  const planningPayload = await planningResponse.json();
+  const candidateItems = flattenedItems(planningPayload.candidates[0].itinerary);
+  expect(
+    candidateItems.map((item) => item.canonical_place_id),
+    JSON.stringify(candidateItems.map((item) => ({
+      name: item.name,
+      stable_id: item.stable_id,
+      canonical_place_id: item.canonical_place_id,
+      is_fixed: item.is_fixed,
+    }))),
+  ).toContain("fixture-china-tea-museum");
   await expect(page.getByRole("heading", { name: "选一条更符合这次旅行的安排。" })).toBeVisible();
   const after = readDraftDatabase(tripId);
   expect(after.planning_run_count).toBe(before.planning_run_count + 1);
   expect(after.trip_revision_count).toBe(0);
   expect(legacyPreviewRequests).toEqual([]);
+  const saveRoute = page.waitForResponse((response) => response.url().includes("/planning-runs/") && response.url().includes("/candidates/") && response.url().includes("/select") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "确认并保存这条路线" }).click();
+  const savedResponse = await saveRoute;
+  expect(savedResponse.status()).toBe(201);
+  const savedPayload = await savedResponse.json() as { trip: { id: string } };
+  await expect(page.getByRole("region", { name: "可执行路线预览" })).toBeVisible();
+  await expect(page.getByText(/14 分钟 · 1\.1 公里/).first()).toBeVisible();
+  await page.screenshot({ path: `test-results/intent/round26.1-hangzhou-${viewportCase.name}.png`, fullPage: true });
+  const saved = readDraftDatabase(savedPayload.trip.id);
+  expect(saved.trip_revisions).toHaveLength(1);
+  const snapshotItems = flattenedItems(saved.trip_revisions[0].snapshot);
+  expect(snapshotItems.map((item) => item.stable_id), JSON.stringify(snapshotItems.map((item) => ({ name: item.name, stable_id: item.stable_id, canonical_place_id: item.canonical_place_id, is_fixed: item.is_fixed })))).toEqual(expect.arrayContaining(confirmedIdentityIds));
+  expect(snapshotItems.map((item) => item.canonical_place_id)).toEqual(expect.arrayContaining(["fixture-west-lake", "fixture-lingyin-temple", "fixture-longjing-village", "fixture-china-tea-museum"]));
+  expect(snapshotItems.some((item) => item.travel_data_status === "confirmed" && item.travel_duration_s === 840 && item.travel_distance_m === 1100)).toBe(true);
   await assertViewportFits(page);
   gate.assertClean();
 });
+}
 
 test("Scenario F: previews and applies a local relaxation without regenerating the saved route", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -471,6 +530,11 @@ function flattenedStopNames(snapshot: Record<string, any>): string[] {
   return (snapshot.days ?? []).flatMap((day: Record<string, any>) => day.blocks ?? [])
     .flatMap((block: Record<string, any>) => block.items ?? [])
     .map((item: Record<string, any>) => item.name);
+}
+
+function flattenedItems(snapshot: Record<string, any>): Array<Record<string, any>> {
+  return (snapshot.days ?? []).flatMap((day: Record<string, any>) => day.blocks ?? [])
+    .flatMap((block: Record<string, any>) => block.items ?? []);
 }
 
 function dayStopNames(snapshot: Record<string, any>, dayNumber: number): string[] {

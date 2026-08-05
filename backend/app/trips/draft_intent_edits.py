@@ -256,6 +256,8 @@ def apply_operations_to_overrides(
         IntentFixedEventValue(
             name=item.title,
             fixed_day=item.fixed_day,
+            fixed_time_start=item.fixed_time_start,
+            fixed_time_end=item.fixed_time_end,
             event_id=item.event_id,
             start_at=item.start_at,
             end_at=item.end_at,
