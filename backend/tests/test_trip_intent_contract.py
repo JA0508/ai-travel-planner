@@ -1008,7 +1008,11 @@ class TripIntentContractTests(unittest.TestCase):
         )
         self.assertEqual(resolved.status_code, 201, resolved.text)
         self.assertEqual(resolved.json()["revision"]["revision_number"], 2)
-        self.assertEqual(resolved.json()["envelope"]["planner_ready_status"], "ready")
+        self.assertEqual(resolved.json()["envelope"]["planner_ready_status"], "needs_clarification")
+        self.assertIn(
+            "no_planner_anchor",
+            resolved.json()["envelope"]["formal_contract"]["readiness"]["blocking_issue_codes"],
+        )
         self.assertFalse(any(item["reason_code"] == "date_range_conflict" for item in resolved.json()["envelope"]["conflicts"]))
 
     def test_fixed_event_conflict_requires_typed_edit_then_creates_new_intent_revision(self) -> None:

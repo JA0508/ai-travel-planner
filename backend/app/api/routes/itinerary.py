@@ -825,6 +825,7 @@ def refresh_completion_task_itinerary_surfaces(
             "departure_recommendation": departure_recommendation,
         }
     )
+    return response
 
 
 def upsert_restored_completion_candidates(
