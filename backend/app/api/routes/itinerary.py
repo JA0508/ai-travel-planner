@@ -1947,6 +1947,7 @@ def normalize_optional_pois(
                     candidate_id=raw_poi.candidate_id,
                     canonical_place_id=raw_poi.canonical_place_id,
                     intent_ownership=raw_poi.intent_ownership,
+                    verified_place=raw_poi.verified_place,
                 )
             else:
                 normalized_poi = normalize_poi(raw_poi=raw_poi, poi_type=poi_type, city=city)

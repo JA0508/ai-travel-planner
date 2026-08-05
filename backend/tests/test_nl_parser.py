@@ -22,6 +22,22 @@ from app.services.planning_state_transformer import build_planning_input_state
 
 
 class NLParserStyleExtractionTests(unittest.TestCase):
+    def test_parse_trip_text_fallback_keeps_chinese_numeral_reservation_range(self) -> None:
+        parsed = parse_trip_text_fallback(
+            "去杭州玩两天，第二天下午两点到四点预约了中国茶叶博物馆。"
+        )
+
+        self.assertEqual(
+            [event.model_dump() for event in parsed.fixed_events],
+            [{
+                "name": "预约",
+                "fixed_day": 2,
+                "fixed_time_start": "14:00",
+                "fixed_time_end": "16:00",
+                "category": "other",
+            }],
+        )
+
     def test_parse_trip_text_fallback_extracts_city_from_single_sentence_brief(self) -> None:
         parsed = parse_trip_text_fallback("上海，想轻松一点，喜欢夜景和小吃")
 

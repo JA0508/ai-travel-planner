@@ -226,7 +226,7 @@ class PlanCandidateApiTests(unittest.TestCase):
         self.assertIn("constraint_graph_digest", metadata)
         self.assertIn("poi_snapshot_digest", metadata)
         self.assertIn("route_snapshot_digest", metadata)
-        self.assertEqual(metadata["planner_policy_version"], "trip-compiler-candidates-v1")
+        self.assertEqual(metadata["planner_policy_version"], "trip-compiler-candidates-v2")
         self.assertEqual(metadata["source"], "candidate_selection")
 
     def test_controlled_edit_preserves_root_planning_run_lineage(self) -> None:

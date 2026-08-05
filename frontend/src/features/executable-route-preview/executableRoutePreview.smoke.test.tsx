@@ -5,15 +5,16 @@ import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ExecutableRoutePreview } from "./ExecutableRoutePreview";
+import type { RoutePreviewItinerary } from "./routePreviewModel";
 
 const componentPath = fileURLToPath(new URL("./ExecutableRoutePreview.tsx", import.meta.url));
 
-const itinerary = {
+const itinerary: RoutePreviewItinerary = {
   trip_days: 1,
   planner_realism: {
     daily_loads: [{ day: 1, classification: "balanced" as const, activity_count: 1, fixed_count: 0, activity_minutes: 120, travel_minutes: 30, route_distance_m: 6400, reason_codes: ["daily_load_balanced"], explanation: "服务端已根据活动和移动时间完成负载判定。" }],
   },
-  days: [{ day: 1, blocks: [{ block_type: "morning" as const, start_time: "09:00", end_time: "12:00", items: [{ name: "西湖", type: "scenic" as const, start_time: "09:00", end_time: "11:00", is_fixed: false, travel_from_name: "杭州东站", travel_duration_s: 1800, travel_distance_m: 6400, placement_reason: "把第一站放在上午，给后续行程留出余量。" }] }], }],
+  days: [{ day: 1, blocks: [{ block_type: "morning" as const, start_time: "09:00", end_time: "12:00", items: [{ name: "西湖", type: "scenic" as const, start_time: "09:00", end_time: "11:00", is_fixed: false, travel_from_name: "杭州东站", travel_duration_s: 1800, travel_distance_m: 6400, travel_data_status: "confirmed" as const, placement_reason: "把第一站放在上午，给后续行程留出余量。" }] }], }],
 };
 
 test("route preview renders a readable day timeline without internal handoff metadata", () => {
@@ -39,4 +40,16 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /暂时没有可验证的安排说明/);
   assert.doesNotMatch(source, /buildDayRelaxationPlan/);
   assert.doesNotMatch(source, /move_stop/);
+});
+
+test("route preview does not present unavailable route data as a confirmed leg", () => {
+  const unavailable = structuredClone(itinerary);
+  const item = unavailable.days[0].blocks[0].items[0];
+  item.travel_duration_s = null;
+  item.travel_distance_m = null;
+  item.travel_data_status = "unavailable";
+  const html = renderToStaticMarkup(<ExecutableRoutePreview itinerary={unavailable} variant="draft" />);
+  assert.match(html, /路线待确认/);
+  assert.match(html, /暂时无法确认这段路程/);
+  assert.doesNotMatch(html, /0 分钟/);
 });

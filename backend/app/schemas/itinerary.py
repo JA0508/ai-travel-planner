@@ -4,7 +4,7 @@ from datetime import time
 from enum import Enum
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .availability import AvailabilityWindow
 from .intent import ParsedFixedEvent, ParsedTripIntentResponse
@@ -29,6 +29,22 @@ class TravelMode(str, Enum):
     RAIL = "rail"
     CAR = "car"
     UNDECIDED = "undecided"
+
+
+class VerifiedPlaceRef(BaseModel):
+    """A confirmed provider place identity that planning must reuse verbatim."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stable_id: str
+    original_name: str
+    canonical_name: str = Field(min_length=1, max_length=180)
+    provider: Literal["amap"]
+    provider_place_id: str = Field(min_length=1, max_length=180)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    category: str | None = None
+    source_fragment_ids: list[str] = Field(default_factory=list)
 
 
 class RoutePreviewMode(str, Enum):
@@ -113,6 +129,7 @@ class RawPOIInput(FixedConstraint):
     # carries the confirmed intent distinction through scheduling and persistence
     # so the route UI does not collapse must-visit and flexible places.
     intent_ownership: Literal["user_must", "user_optional"] | None = None
+    verified_place: VerifiedPlaceRef | None = None
 
     @model_validator(mode="after")
     def validate_resolved_coordinates(self) -> "RawPOIInput":
@@ -222,6 +239,7 @@ class NormalizedPOI(FixedConstraint):
     candidate_id: str | None = Field(default=None, min_length=1)
     canonical_place_id: str | None = Field(default=None, min_length=1)
     intent_ownership: Literal["user_must", "user_optional"] | None = None
+    verified_place: VerifiedPlaceRef | None = None
 
 
 class HotelStay(BaseModel):
@@ -276,6 +294,12 @@ class ScheduledPOI(BaseModel):
     selection_rejected_candidates: list[PlanningCandidateTrace] = Field(default_factory=list)
     poi_research: POIResearchSummary | None = None
     candidate_id: str | None = None
+    canonical_place_id: str | None = None
+    verified_place: VerifiedPlaceRef | None = None
+    travel_from_place_id: str | None = None
+    travel_to_place_id: str | None = None
+    travel_provider: str | None = None
+    travel_data_status: Literal["confirmed", "unavailable", "estimated"] | None = None
     candidate_provenance: dict[str, Any] | None = None
     local_edit: dict[str, Any] | None = None
 

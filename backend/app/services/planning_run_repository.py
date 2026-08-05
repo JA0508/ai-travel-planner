@@ -289,7 +289,7 @@ class SQLitePlanningRunRepository:
     def _candidate_from_row(self, run: StoredPlanningRun, row: sqlite3.Row) -> PlanCandidate:
         return PlanCandidate(
             id=row["candidate_id"], candidate_hash=row["candidate_hash"], strategy=row["strategy"],
-            title=_candidate_title(row["strategy"]), tradeoff_summary=_candidate_tradeoff(row["strategy"], json.loads(row["metrics_json"])),
+            title=_candidate_title(row["strategy"], json.loads(row["metrics_json"])), tradeoff_summary=_candidate_tradeoff(row["strategy"], json.loads(row["metrics_json"])),
             itinerary=json.loads(row["itinerary_snapshot_json"]), constraint_graph=run.constraint_graph,
             applied_constraint_ids=[node.id for node in run.constraint_graph.nodes if node.strength == "hard"],
             relaxed_constraint_ids=[], unsatisfied_constraint_ids=[], metrics=json.loads(row["metrics_json"]),
@@ -343,7 +343,9 @@ def _parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def _candidate_title(strategy: str) -> str:
+def _candidate_title(strategy: str, metrics: dict) -> str:
+    if strategy == "low_travel" and metrics.get("travel_data_completeness") != "complete":
+        return "路线方案"
     return {"relaxed": "留出更多空白", "balanced": "保留更多想去地点", "low_travel": "少走一些路"}[strategy]
 
 
