@@ -128,6 +128,8 @@ class PlannerHandoffTests(unittest.TestCase):
         intent = compile_ready_intent(self.client, self.trip_id, self.base_revision_id, candidate["id"])
         planned = command_itinerary()
         planned.days[0].blocks[0].items[0].candidate_id = candidate["id"]
+        planned.days[0].blocks[0].items[0].canonical_place_id = candidate["canonical_place_id"]
+        planned.days[0].blocks[0].items[0].provider_place_id = candidate["provider_place_id"]
 
         with patch("app.trips.service.build_itinerary_response", return_value=planned) as planner:
             preview = self.client.post(
@@ -143,8 +145,13 @@ class PlannerHandoffTests(unittest.TestCase):
         self.assertTrue(body["source_links"])
         scheduled = body["itinerary"]["days"][0]["blocks"][0]["items"][0]
         self.assertEqual(scheduled["candidate_id"], candidate["id"])
+        self.assertEqual(scheduled["canonical_place_id"], candidate["canonical_place_id"])
+        self.assertEqual(scheduled["provider_place_id"], candidate["provider_place_id"])
         self.assertEqual(scheduled["candidate_provenance"]["intent_field_path"], "poi.must_candidates")
         self.assertEqual(planner.call_args.kwargs["trace_collector"].planner_run_id, body["planner_run"]["id"])
+        handoff_poi = planner.call_args.args[0].scenic_spots[0]
+        self.assertEqual(handoff_poi.canonical_place_id, candidate["canonical_place_id"])
+        self.assertEqual(handoff_poi.provider_place_id, candidate["provider_place_id"])
 
         with patch("app.trips.service.build_itinerary_response", side_effect=AssertionError("apply must not rerun planner")):
             applied = self.client.post(
@@ -176,6 +183,9 @@ class PlannerHandoffTests(unittest.TestCase):
         current = self.client.get(f"/trips/{self.trip_id}")
         self.assertEqual(current.status_code, 200)
         self.assertEqual(current.json()["current_revision"]["id"], applied_body["current_revision"]["id"])
+        persisted_item = current.json()["itinerary"]["days"][0]["blocks"][0]["items"][0]
+        self.assertEqual(persisted_item["canonical_place_id"], candidate["canonical_place_id"])
+        self.assertEqual(persisted_item["provider_place_id"], candidate["provider_place_id"])
 
     def test_unresolved_contract_does_not_create_handoff_run(self) -> None:
         compiled = self.client.post(
@@ -404,6 +414,7 @@ def register_verified_candidate(client: TestClient, trip_id: str) -> dict:
             "candidate_type": "place",
             "display_name": "外滩",
             "canonical_place_id": "amap:bund",
+            "provider_place_id": "B000A83M61",
             "coordinates": {"latitude": 31.2401, "longitude": 121.4903},
             "estimated_duration_minutes": 90,
             "source_kind": "manual_entry",

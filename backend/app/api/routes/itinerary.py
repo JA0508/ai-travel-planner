@@ -1955,6 +1955,7 @@ def normalize_optional_pois(
                     fixed_time_end=raw_poi.fixed_time_end,
                     candidate_id=raw_poi.candidate_id,
                     canonical_place_id=raw_poi.canonical_place_id,
+                    provider_place_id=raw_poi.provider_place_id,
                     intent_ownership=raw_poi.intent_ownership,
                 )
             else:
@@ -2033,6 +2034,14 @@ def normalize_optional_pois(
 
 
 def stable_trace_candidate_id(poi: NormalizedPOI) -> str:
+    if poi.canonical_place_id:
+        return stable_subject_id(
+            "candidate",
+            poi.canonical_place_id,
+            poi.provider_place_id or "",
+            round(poi.latitude, 6),
+            round(poi.longitude, 6),
+        )
     return stable_subject_id(
         "candidate",
         poi.name.strip().casefold(),

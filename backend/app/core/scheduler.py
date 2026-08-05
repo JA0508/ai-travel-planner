@@ -432,6 +432,8 @@ class Scheduler:
                     travel_distance_m=None,
                     travel_duration_s=None,
                     candidate_id=poi.candidate_id,
+                    canonical_place_id=poi.canonical_place_id,
+                    provider_place_id=poi.provider_place_id,
                 )
             )
             if trace_collector is not None:
@@ -716,6 +718,8 @@ class Scheduler:
                         selection_top_candidates=selection_top_candidates,
                         selection_rejected_candidates=selection_rejected_candidates,
                         candidate_id=next_poi.candidate_id,
+                        canonical_place_id=next_poi.canonical_place_id,
+                        provider_place_id=next_poi.provider_place_id,
                     )
                 )
                 if trace_collector is not None:
@@ -1874,6 +1878,14 @@ def is_fixed_poi(poi: NormalizedPOI) -> bool:
 
 
 def stable_candidate_id(poi: NormalizedPOI) -> str:
+    if poi.canonical_place_id:
+        return stable_subject_id(
+            "candidate",
+            poi.canonical_place_id,
+            poi.provider_place_id or "",
+            round(poi.latitude, 6),
+            round(poi.longitude, 6),
+        )
     return stable_subject_id(
         "candidate",
         poi.name.strip().casefold(),
@@ -1885,6 +1897,14 @@ def stable_candidate_id(poi: NormalizedPOI) -> str:
 
 
 def stable_anchor_id(anchor: HotelStay | ScheduledPOI) -> str:
+    if isinstance(anchor, ScheduledPOI) and anchor.canonical_place_id:
+        return stable_subject_id(
+            "anchor",
+            anchor.canonical_place_id,
+            anchor.provider_place_id or "",
+            round(anchor.latitude, 6),
+            round(anchor.longitude, 6),
+        )
     return stable_subject_id(
         "anchor",
         anchor.name.strip().casefold(),

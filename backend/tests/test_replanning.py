@@ -16,8 +16,10 @@ from app.api.routes.itinerary import (
     build_trip_intent_envelope,
     infer_travel_mode_from_text,
     normalize_optional_pois,
+    stable_trace_candidate_id,
 )
-from app.core.scheduler import SchedulingError
+from app.core.scheduler import Scheduler, SchedulingError, stable_candidate_id
+from app.planner.trace import stable_subject_id
 from app.schemas import (
     AvailabilityWindow,
     DayItinerary,
@@ -740,6 +742,80 @@ class ConversationalReplanningTests(unittest.TestCase):
             poi_type=POIType.SCENIC,
             city="上海",
         )
+
+    def test_reviewed_candidate_identity_skips_name_lookup_and_stabilizes_trace_subject(self) -> None:
+        raw_poi = RawPOIInput(
+            name="外滩",
+            candidate_id="cand_bund",
+            canonical_place_id="amap:bund",
+            provider_place_id="B000A83M61",
+            resolved_latitude=31.2401,
+            resolved_longitude=121.4903,
+            resolved_duration_minutes=90,
+        )
+
+        with patch(
+            "app.api.routes.itinerary.normalize_poi",
+            side_effect=AssertionError("reviewed candidates must not be geocoded again"),
+        ):
+            normalized = normalize_optional_pois(
+                raw_pois=[raw_poi],
+                poi_type=POIType.SCENIC,
+                city="上海",
+            )
+
+        poi = normalized[0]
+        self.assertEqual(poi.canonical_place_id, "amap:bund")
+        self.assertEqual(poi.provider_place_id, "B000A83M61")
+        expected_subject_id = stable_subject_id(
+            "candidate",
+            "amap:bund",
+            "B000A83M61",
+            31.2401,
+            121.4903,
+        )
+        self.assertEqual(stable_trace_candidate_id(poi), expected_subject_id)
+        self.assertEqual(stable_candidate_id(poi), expected_subject_id)
+
+    def test_scheduler_preserves_reviewed_identity_in_scheduled_snapshot(self) -> None:
+        normalized = normalize_optional_pois(
+            raw_pois=[
+                RawPOIInput(
+                    name="外滩",
+                    candidate_id="cand_bund",
+                    canonical_place_id="amap:bund",
+                    provider_place_id="B000A83M61",
+                    resolved_latitude=31.2401,
+                    resolved_longitude=121.4903,
+                    resolved_duration_minutes=90,
+                )
+            ],
+            poi_type=POIType.SCENIC,
+            city="上海",
+        )
+        hotel = HotelStay(name="人民广场酒店", city="上海", latitude=31.2304, longitude=121.4737)
+
+        with patch(
+            "app.core.scheduler.get_route",
+            return_value={"distance_m": 1200, "duration_s": 720},
+        ):
+            itinerary = Scheduler().build_schedule(
+                scenic_spots=normalized,
+                restaurants=[],
+                hotel=hotel,
+                planning_anchor_source=PlanningAnchorSource(source_type="provided_hotel", source_name=hotel.name),
+                trip_days=1,
+            )
+
+        scheduled = next(
+            item
+            for day in itinerary.days
+            for block in day.blocks
+            for item in block.items
+        )
+        self.assertEqual(scheduled.candidate_id, "cand_bund")
+        self.assertEqual(scheduled.canonical_place_id, "amap:bund")
+        self.assertEqual(scheduled.provider_place_id, "B000A83M61")
 
     def test_optional_poi_normalization_falls_back_to_local_catalog_without_amap(self) -> None:
         raw_poi = RawPOIInput(name="上海博物馆")

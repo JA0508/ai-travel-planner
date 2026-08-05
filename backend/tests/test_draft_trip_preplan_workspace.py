@@ -11,6 +11,7 @@ from app.main import app
 from app.schemas import PlannerRealismSummary
 from app.trips.dependencies import reset_trip_repository_cache_for_tests
 from tests.test_trip_persistence_api import simple_itinerary
+from tests.test_trip_mutation_commands import command_itinerary
 
 
 class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
@@ -75,7 +76,11 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         intent_id = compiled.json()["revision"]["id"]
         self.assertIsNone(compiled.json()["envelope"]["base_trip_revision_id"])
 
-        with patch("app.trips.service.build_itinerary_response", return_value=simple_itinerary(2)):
+        planned = command_itinerary().model_copy(update={"trip_days": 2})
+        planned.days[0].blocks[0].items[0].candidate_id = candidate["id"]
+        planned.days[0].blocks[0].items[0].canonical_place_id = candidate["canonical_place_id"]
+        planned.days[0].blocks[0].items[0].provider_place_id = candidate["provider_place_id"]
+        with patch("app.trips.service.build_itinerary_response", return_value=planned) as planner:
             preview = self.client.post(
                 f"/trips/{trip_id}/preplan-handoff/preview",
                 json={"draft_intent_revision_id": intent_id},
@@ -83,6 +88,12 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         self.assertEqual(preview.status_code, 200, preview.text)
         run = preview.json()["handoff"]
         self.assertEqual(run["status"], "pending")
+        handoff_poi = planner.call_args.args[0].scenic_spots[0]
+        self.assertEqual(handoff_poi.canonical_place_id, candidate["canonical_place_id"])
+        self.assertEqual(handoff_poi.provider_place_id, candidate["provider_place_id"])
+        preview_item = preview.json()["itinerary"]["days"][0]["blocks"][0]["items"][0]
+        self.assertEqual(preview_item["canonical_place_id"], candidate["canonical_place_id"])
+        self.assertEqual(preview_item["provider_place_id"], candidate["provider_place_id"])
 
         with patch("app.trips.service.build_itinerary_response", side_effect=AssertionError("apply must not rerun planner")):
             applied = self.client.post(
@@ -94,6 +105,13 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         self.assertEqual(applied.json()["current_revision"]["revision_number"], 1)
         self.assertEqual(applied.json()["trip"]["planning_phase"], "planned")
         self.assertEqual(applied.json()["current_revision"]["planner_run_id"], run["id"])
+
+        reset_trip_repository_cache_for_tests()
+        resumed = self.client.get(f"/trips/{trip_id}")
+        self.assertEqual(resumed.status_code, 200, resumed.text)
+        persisted_item = resumed.json()["itinerary"]["days"][0]["blocks"][0]["items"][0]
+        self.assertEqual(persisted_item["canonical_place_id"], candidate["canonical_place_id"])
+        self.assertEqual(persisted_item["provider_place_id"], candidate["provider_place_id"])
 
         saved_evidence = self.client.get(f"/trips/{trip_id}/preplan-handoff/runs/{run['id']}")
         self.assertEqual(saved_evidence.status_code, 200, saved_evidence.text)
@@ -281,6 +299,7 @@ def register_verified_draft_candidate(client: TestClient, trip_id: str, suffix: 
             "candidate_type": "place",
             "display_name": f"西安城墙 {suffix}",
             "canonical_place_id": f"amap:xian-wall:{suffix}",
+            "provider_place_id": f"B000XIAN{suffix}",
             "coordinates": {"latitude": 34.258, "longitude": 108.948},
             "estimated_duration_minutes": 90,
             "source_kind": "manual_entry",

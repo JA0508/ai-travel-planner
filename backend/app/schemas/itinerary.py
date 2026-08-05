@@ -106,6 +106,7 @@ class RawPOIInput(FixedConstraint):
     # second name-only provider lookup.
     candidate_id: str | None = Field(default=None, min_length=1)
     canonical_place_id: str | None = Field(default=None, min_length=1)
+    provider_place_id: str | None = Field(default=None, min_length=1)
     resolved_latitude: float | None = Field(default=None, ge=-90, le=90)
     resolved_longitude: float | None = Field(default=None, ge=-180, le=180)
     resolved_duration_minutes: int | None = Field(default=None, gt=0, le=1440)
@@ -221,6 +222,7 @@ class NormalizedPOI(FixedConstraint):
     # intent handoff supplies them so a scheduled item can retain its source.
     candidate_id: str | None = Field(default=None, min_length=1)
     canonical_place_id: str | None = Field(default=None, min_length=1)
+    provider_place_id: str | None = Field(default=None, min_length=1)
     intent_ownership: Literal["user_must", "user_optional"] | None = None
 
 
@@ -276,6 +278,8 @@ class ScheduledPOI(BaseModel):
     selection_rejected_candidates: list[PlanningCandidateTrace] = Field(default_factory=list)
     poi_research: POIResearchSummary | None = None
     candidate_id: str | None = None
+    canonical_place_id: str | None = None
+    provider_place_id: str | None = None
     candidate_provenance: dict[str, Any] | None = None
     local_edit: dict[str, Any] | None = None
 

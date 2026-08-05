@@ -385,6 +385,7 @@ def _candidate_to_raw(
         "name": candidate.display_name,
         "candidate_id": candidate.id,
         "canonical_place_id": candidate.canonical_place_id,
+        "provider_place_id": candidate.provider_place_id,
         "resolved_latitude": candidate.coordinates["latitude"],
         "resolved_longitude": candidate.coordinates["longitude"],
         "resolved_duration_minutes": candidate.estimated_duration_minutes,
