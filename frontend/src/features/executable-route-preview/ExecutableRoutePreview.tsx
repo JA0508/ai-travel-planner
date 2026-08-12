@@ -178,7 +178,7 @@ export function ExecutableRoutePreview({
             </div>
             <div className="erp-timeline">
               {day.blocks.flatMap((block) => block.items.map((item, index) => <div className="erp-timeline-row" key={`${block.block_type}-${item.stable_id ?? item.name}-${index}`}>
-                {item.travel_from_name && item.travel_duration_s != null ? <div className="erp-leg"><span>预计移动</span><strong>{item.travel_from_name} → {item.name}</strong><small>{formatMinutes(Math.round(item.travel_duration_s / 60))}{item.travel_distance_m != null ? ` · ${formatDistance(item.travel_distance_m)}` : ""}</small></div> : null}
+                {item.travel_from_name ? <TravelLeg item={item} /> : null}
                 <div className="erp-stop">
                   <time>{item.start_time}–{item.end_time}</time>
                   <div><div className="erp-stop-title"><strong>{item.name}</strong>{item.is_fixed ? <span className="erp-fixed">已预约 · 不可随意移动</span> : <span className="erp-kind">{isSystemSuggested(item) ? "系统补充" : item.source_label === "必去" ? "必去" : item.source_label === "可调整" ? "可调整" : item.type === "restaurant" ? "餐食" : item.type === "hotel" ? "住宿" : "用户地点"}</span>}</div>{item.placement_reason ? <p>{item.placement_reason}</p> : <p>暂时没有可验证的安排说明。</p>}</div>
@@ -215,6 +215,13 @@ function FrozenPlanningEvidence({ summary, handoffRunId }: { summary: PlannerHan
 
 function Metric({ label, value }: { label: string; value: string }) {
   return <div><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function TravelLeg({ item }: { item: RoutePreviewItinerary["days"][number]["blocks"][number]["items"][number] }) {
+  if (item.travel_data_status === "confirmed" && item.travel_duration_s != null) {
+    return <div className="erp-leg"><span>预计移动</span><strong>{item.travel_from_name} → {item.name}</strong><small>{formatMinutes(Math.round(item.travel_duration_s / 60))}{item.travel_distance_m != null ? ` · ${formatDistance(item.travel_distance_m)}` : ""}</small></div>;
+  }
+  return <div className="erp-leg"><span>路线待确认</span><strong>{item.travel_from_name} → {item.name}</strong><small>暂时无法确认这段路程，不会把它当作已验证路线。</small></div>;
 }
 
 function isSystemSuggested(item: RoutePreviewItinerary["days"][number]["blocks"][number]["items"][number]) {

@@ -133,7 +133,7 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 200, replay.text)
         self.assertTrue(replay.json()["persistence"]["idempotent_replay"])
 
-    def test_draft_without_a_schedulable_anchor_is_blocked_before_planning(self) -> None:
+    def test_draft_without_a_reviewed_anchor_reports_empty_candidate_generation_explicitly(self) -> None:
         created = self.client.post(
             "/trips/drafts",
             json={"direct_user_text": "我想去西安玩两天。"},
@@ -153,18 +153,15 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(compiled.status_code, 201, compiled.text)
         body = compiled.json()
-        self.assertEqual(body["envelope"]["planner_ready_status"], "needs_clarification")
-        self.assertIn("no_planner_anchor", body["envelope"]["formal_contract"]["readiness"]["blocking_issue_codes"])
+        self.assertEqual(body["envelope"]["planner_ready_status"], "ready")
 
-        with patch("app.trips.service.build_itinerary_response", side_effect=AssertionError("no-anchor drafts must not invoke the planner")) as planner:
-            preview = self.client.post(
-                f"/trips/{trip_id}/preplan-handoff/preview",
-                json={"draft_intent_revision_id": body["revision"]["id"]},
-            )
-        planner.assert_not_called()
-        self.assertEqual(preview.status_code, 422, preview.text)
-        self.assertEqual(preview.json()["error"]["code"], "planner_handoff_blocked")
-        self.assertEqual(preview.json()["error"]["reason_code"], "intent_not_planner_ready")
+        planned = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/planning-run",
+            json={"draft_intent_revision_id": body["revision"]["id"]},
+            headers={"Origin": "http://testserver"},
+        )
+        self.assertEqual(planned.status_code, 422, planned.text)
+        self.assertEqual(planned.json()["error"]["code"], "planning_run_empty")
 
     def test_newer_draft_intent_invalidates_older_preview(self) -> None:
         created = self.client.post("/trips/drafts", json={"direct_user_text": "我想去西安玩两天。"}, headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-xian-two"})

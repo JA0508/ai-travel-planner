@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .itinerary import TravelMode
+from .itinerary import TravelMode, VerifiedPlaceRef
 
 
 TripOwnership = Literal["user_fixed", "user_must", "user_optional", "system_suggested"]
@@ -22,7 +22,17 @@ class SourceFragment(BaseModel):
 
     stable_id: str
     text: str
-    source_type: Literal["direct_user_text"] = "direct_user_text"
+    source_type: Literal["direct_user_text", "user_confirmation"] = "direct_user_text"
+    start_offset: int | None = Field(default=None, ge=0)
+    end_offset: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_offsets(self) -> "SourceFragment":
+        if (self.start_offset is None) != (self.end_offset is None):
+            raise ValueError("Source fragments require both offsets or neither.")
+        if self.start_offset is not None and self.end_offset is not None and self.end_offset < self.start_offset:
+            raise ValueError("Source fragment end_offset must not precede start_offset.")
+        return self
 
 
 class TripCompilerPlace(BaseModel):
@@ -33,6 +43,7 @@ class TripCompilerPlace(BaseModel):
     ownership: TripOwnership
     confidence: float = Field(ge=0, le=1)
     source_fragment_ids: list[str] = Field(default_factory=list)
+    verified_place: VerifiedPlaceRef | None = None
 
 
 class TripCompilerFixedEvent(BaseModel):
@@ -46,6 +57,7 @@ class TripCompilerFixedEvent(BaseModel):
     fixed_reason: str
     confidence: float = Field(ge=0, le=1)
     source_fragment_ids: list[str] = Field(default_factory=list)
+    verified_place: VerifiedPlaceRef | None = None
 
     @model_validator(mode="after")
     def validate_time_range(self) -> "TripCompilerFixedEvent":
@@ -113,10 +125,6 @@ class TravelIntent(BaseModel):
     def validate_v1_place_limit(self) -> "TravelIntent":
         if len(self.must_visit_places) + len(self.optional_places) > 8:
             raise ValueError("AI Trip Compiler V1 supports at most eight user places.")
-        if self.trip_days is not None and any(
-            event.day is not None and event.day > self.trip_days for event in self.fixed_events
-        ):
-            raise ValueError("Fixed event days must be within the trip length.")
         return self
 
     @property
@@ -134,6 +142,7 @@ class TripCompilerCompileResponse(BaseModel):
     intent: TravelIntent
     status: Literal["ready", "needs_confirmation", "hard_conflict"]
     conflicts: list[str] = Field(default_factory=list)
+    conflict_cores: list[dict] = Field(default_factory=list)
 
 
 class TripCompilerPlanRequest(BaseModel):

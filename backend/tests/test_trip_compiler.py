@@ -11,6 +11,9 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.services.trip_compiler import build_itinerary_request, compile_travel_intent
 from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
+from tests.test_trip_persistence_api import simple_itinerary
+
+
 HANGZHOU_TEXT = """周末去杭州玩两天，想去西湖和灵隐寺。
 朋友推荐龙井村，但不是必须。
 周六下午两点预约了中国茶叶博物馆。
@@ -130,38 +133,18 @@ class TripCompilerContractTests(unittest.TestCase):
             self.assertEqual(response.status_code, 422, response.text)
             persistence.assert_not_called()
 
-    def test_confirmed_compiler_intent_enters_the_draft_admission_boundary(self) -> None:
+    def test_confirmed_compiler_intent_creates_revision_one(self) -> None:
         compiled = compile_travel_intent(HANGZHOU_TEXT)
-        response = self.client.post(
-            "/trip-compiler/trips",
-            json={"intent": compiled.intent.model_dump(mode="json")},
-            headers={"Origin": "http://testserver", "X-Idempotency-Key": "compiler-hangzhou"},
-        )
+        with patch("app.trips.service.build_itinerary_response", return_value=simple_itinerary(2)):
+            response = self.client.post(
+                "/trip-compiler/trips",
+                json={"intent": compiled.intent.model_dump(mode="json")},
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "compiler-hangzhou"},
+            )
 
         self.assertEqual(response.status_code, 201, response.text)
-        trip = response.json()["trip"]
-        self.assertEqual(trip["planning_phase"], "draft")
-        self.assertIsNone(trip["current_revision_id"])
-        self.assertEqual(trip["revision_count"], 0)
+        self.assertEqual(response.json()["current_revision"]["revision_number"], 1)
         self.assertIn("HttpOnly", response.headers["set-cookie"])
-
-        draft = self.client.get(f"/trips/{trip['id']}/draft")
-        self.assertEqual(draft.status_code, 200, draft.text)
-        self.assertIn("城市：杭州", draft.json()["direct_user_text"])
-        self.assertIn("景点：西湖、灵隐寺、龙井村", draft.json()["direct_user_text"])
-        self.assertIn("离开锚点：第 2 天 18:00 前需要结束行程", draft.json()["direct_user_text"])
-
-        compiled_draft = self.client.post(
-            f"/trips/{trip['id']}/preplan-intent/compile",
-            json={
-                "base_trip_revision_id": None,
-                "base_intent_revision_id": None,
-                "direct_user_text": draft.json()["direct_user_text"],
-            },
-            headers={"Origin": "http://testserver", "X-Idempotency-Key": "compiler-hangzhou-intent"},
-        )
-        self.assertEqual(compiled_draft.status_code, 201, compiled_draft.text)
-        self.assertIsNone(compiled_draft.json()["envelope"]["base_trip_revision_id"])
 
 
 if __name__ == "__main__":

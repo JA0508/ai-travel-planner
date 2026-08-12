@@ -192,6 +192,32 @@ def build_planner_handoff_input(
     readiness = formal.readiness
     if not formal.formal_contract_verified:
         raise PlannerHandoffBlockedError("formal_contract_not_verified")
+    if (
+        readiness.status not in {"ready_for_planning", "ready_with_assumptions"}
+        and "fixed_event_outside_trip_dates" in readiness.blocking_issue_codes
+    ):
+        raise PlannerHandoffBlockedError("intent_not_planner_ready")
+    candidate_by_id = {candidate.id: candidate for candidate in candidates}
+    # Identity is a stricter boundary than readiness presentation: after a
+    # date clarification, surface the still-missing fixed-place identity
+    # instead of collapsing it into a generic readiness message.
+    for fixed_event in formal.fixed_events:
+        if fixed_event.place_candidate_id is None:
+            raise PlannerHandoffBlockedError(
+                "fixed_event_identity_not_verified",
+                field_id=fixed_event.metadata.field_id,
+            )
+        candidate = candidate_by_id.get(fixed_event.place_candidate_id)
+        if candidate is None:
+            raise PlannerHandoffBlockedError(
+                "fixed_event_candidate_missing",
+                candidate_id=fixed_event.place_candidate_id,
+            )
+        if not candidate.canonical_place_id or candidate.coordinates is None:
+            raise PlannerHandoffBlockedError(
+                "intent_candidate_identity_not_verified",
+                candidate_id=candidate.id,
+            )
     if readiness.status not in {"ready_for_planning", "ready_with_assumptions"}:
         raise PlannerHandoffBlockedError("intent_not_planner_ready")
     if readiness.unresolved_required_field_paths:
@@ -203,7 +229,6 @@ def build_planner_handoff_input(
     if formal.date_policy is None or formal.date_policy.trip_days is None:
         raise PlannerHandoffBlockedError("trip_days_missing")
 
-    candidate_by_id = {candidate.id: candidate for candidate in candidates}
     source_links = _source_links(envelope)
     source_link_by_field_id = {link.field_id: link for link in source_links}
     candidate_links: dict[str, PlannerHandoffSourceLink] = {}

@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConfig } from "@playwright/test";
 
-const runtimeDirectory = mkdtempSync(join(tmpdir(), "ai-trip-compiler-e2e-"));
-const databasePath = join(runtimeDirectory, "trips.sqlite3");
+const runtimeDirectory = process.env.TRIP_COMPILER_E2E_RUNTIME_DIR ?? mkdtempSync(join(tmpdir(), "ai-trip-compiler-e2e-"));
+const databasePath = process.env.TRIP_COMPILER_E2E_DATABASE_PATH ?? join(runtimeDirectory, "trips.sqlite3");
 const artifactRoot = join(runtimeDirectory, "artifacts");
 
 mkdirSync(artifactRoot, { recursive: true });

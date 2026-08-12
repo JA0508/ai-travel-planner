@@ -15,6 +15,7 @@ type DraftDatabaseSnapshot = {
   trip_revisions: TripRevisionRow[];
   trip_revision_count: number;
   preview_count: number;
+  planning_run_count: number;
 };
 
 type TripRevisionRow = {
@@ -227,32 +228,104 @@ test("Scenario D: retries a lost edit response with the original idempotency key
   gate.assertClean();
 });
 
-test("Scenario E: shows a readable route preview before it creates the first TripRevision", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
+for (const viewportCase of [
+  { name: "desktop", viewport: { width: 1440, height: 900 } },
+  { name: "mobile", viewport: { width: 390, height: 844 } },
+] as const) {
+test(`Scenario E: confirms canonical places before creating one existing Planning Run in ${viewportCase.name}`, async ({ page }) => {
+  await page.setViewportSize(viewportCase.viewport);
   const gate = installErrorGate(page);
-  gate.allowExpectedInitialIntentAbsence();
-  const tripId = await createDraftThroughHome(page, "周末去杭州玩两天，轻松一点，想去西湖和灵隐寺。");
+  const legacyPreviewRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/preplan-handoff/preview")) legacyPreviewRequests.push(request.url());
+  });
+  const tripId = await createTripCompilerDraft(page, "去杭州玩两天，轻松一点，想去西湖、灵隐寺和龙井村。第二天下午两点到四点预约了中国茶叶博物馆，最后一天傍晚六点前结束。");
   const before = readDraftDatabase(tripId);
-  const previewResponse = page.waitForResponse((response) => response.url().includes("/preplan-handoff/preview") && response.request().method() === "POST");
-  await page.getByRole("button", { name: "生成路线预览" }).click();
-  expect((await previewResponse).status()).toBe(200);
-  const routePreview = page.getByRole("region", { name: "可执行路线预览" });
-  await expect(routePreview.getByRole("heading", { name: "你的第一版行程" })).toBeVisible();
-  await expect(routePreview.getByText("第 1 天").first()).toBeVisible();
-  await expect(routePreview.getByText("预计移动").first()).toBeVisible();
-  await expect(routePreview.getByText("活动时长").first()).toBeVisible();
-  await expect(routePreview.getByText("路线距离").first()).toBeVisible();
-  await expect(routePreview.getByRole("heading", { name: /轻松|适中|偏赶|不可执行/ }).first()).toBeVisible();
-  await expect(routePreview.getByText("为什么这样安排").first()).toBeVisible();
-  await expect(routePreview.getByText("trace_digest", { exact: false })).toHaveCount(0);
-  await expect(routePreview.getByText("planner_run_id", { exact: false })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "确认并生成行程" })).toBeEnabled();
+  expect(before.intent_revisions).toHaveLength(1);
+  await expect(page.getByRole("button", { name: /西湖风景名胜区/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^灵隐寺/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^龙井村/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /中国茶叶博物馆（双峰馆区）/ })).toBeVisible();
+
+  const westLakeConfirmation = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: /西湖风景名胜区/ }).click();
+  expect((await westLakeConfirmation).status()).toBe(201);
+  const lingyinConfirmation = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: /^灵隐寺/ }).click();
+  expect((await lingyinConfirmation).status()).toBe(201);
+  const longjingConfirmation = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: /^龙井村/ }).click();
+  expect((await longjingConfirmation).status()).toBe(201);
+  const teaMuseumConfirmation = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: /中国茶叶博物馆（双峰馆区）/ }).click();
+  expect((await teaMuseumConfirmation).status()).toBe(201);
+  await expect(page.getByRole("button", { name: "生成路线" })).toBeEnabled();
+
+  const confirmed = readDraftDatabase(tripId);
+  expect(confirmed.intent_revisions).toHaveLength(5);
+  expect(confirmed.intent_revisions[1].parent_draft_intent_revision_id).toBe(before.intent_revisions[0].id);
+  expect(confirmed.intent_revisions[2].parent_draft_intent_revision_id).toBe(confirmed.intent_revisions[1].id);
+  expect(confirmed.intent_revisions[4].parent_draft_intent_revision_id).toBe(confirmed.intent_revisions[3].id);
+  expect(confirmed.intent_revisions[4].envelope.planner_ready_status).toMatch(/ready/);
+  expect(confirmed.intent_revisions[4].envelope.formal_contract.place_identities.map((item: { resolution_status: string }) => item.resolution_status)).toEqual(["verified", "verified", "verified", "verified"]);
+  const confirmedIdentityIds = confirmed.intent_revisions[4].envelope.formal_contract.place_identities
+    .map((item: { stable_id: string }) => item.stable_id);
+  const fixedIdentity = confirmed.intent_revisions[4].envelope.formal_contract.place_identities
+    .find((item: { ownership: string }) => item.ownership === "fixed");
+  expect(fixedIdentity).toBeDefined();
+  const confirmedFixedEvents = confirmed.intent_revisions[4].envelope.formal_contract.fixed_events;
+  expect(
+    confirmedFixedEvents,
+    JSON.stringify({
+      fixedEvents: confirmedFixedEvents,
+      identities: confirmed.intent_revisions[4].envelope.formal_contract.place_identities,
+    }),
+  ).toHaveLength(1);
+  expect(confirmedFixedEvents[0]).toMatchObject({
+    event_id: fixedIdentity.stable_id,
+    fixed_day: 2,
+    fixed_time_start: "14:00",
+    fixed_time_end: "16:00",
+  });
+
+  const runResponse = page.waitForResponse((response) => response.url().includes("/preplan-intent/planning-run") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "生成路线" }).click();
+  const planningResponse = await runResponse;
+  expect(planningResponse.status(), await planningResponse.text()).toBe(200);
+  const planningPayload = await planningResponse.json();
+  const candidateItems = flattenedItems(planningPayload.candidates[0].itinerary);
+  expect(
+    candidateItems.map((item) => item.canonical_place_id),
+    JSON.stringify(candidateItems.map((item) => ({
+      name: item.name,
+      stable_id: item.stable_id,
+      canonical_place_id: item.canonical_place_id,
+      is_fixed: item.is_fixed,
+    }))),
+  ).toContain("fixture-china-tea-museum");
+  await expect(page.getByRole("heading", { name: "选一条更符合这次旅行的安排。" })).toBeVisible();
   const after = readDraftDatabase(tripId);
-  expect(after.preview_count).toBe(before.preview_count + 1);
+  expect(after.planning_run_count).toBe(before.planning_run_count + 1);
   expect(after.trip_revision_count).toBe(0);
+  expect(legacyPreviewRequests).toEqual([]);
+  const saveRoute = page.waitForResponse((response) => response.url().includes("/planning-runs/") && response.url().includes("/candidates/") && response.url().includes("/select") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "确认并保存这条路线" }).click();
+  const savedResponse = await saveRoute;
+  expect(savedResponse.status()).toBe(201);
+  const savedPayload = await savedResponse.json() as { trip: { id: string } };
+  await expect(page.getByRole("region", { name: "可执行路线预览" })).toBeVisible();
+  await expect(page.getByText(/14 分钟 · 1\.1 公里/).first()).toBeVisible();
+  await page.screenshot({ path: `test-results/intent/round26.1-hangzhou-${viewportCase.name}.png`, fullPage: true });
+  const saved = readDraftDatabase(savedPayload.trip.id);
+  expect(saved.trip_revisions).toHaveLength(1);
+  const snapshotItems = flattenedItems(saved.trip_revisions[0].snapshot);
+  expect(snapshotItems.map((item) => item.stable_id), JSON.stringify(snapshotItems.map((item) => ({ name: item.name, stable_id: item.stable_id, canonical_place_id: item.canonical_place_id, is_fixed: item.is_fixed })))).toEqual(expect.arrayContaining(confirmedIdentityIds));
+  expect(snapshotItems.map((item) => item.canonical_place_id)).toEqual(expect.arrayContaining(["fixture-west-lake", "fixture-lingyin-temple", "fixture-longjing-village", "fixture-china-tea-museum"]));
+  expect(snapshotItems.some((item) => item.travel_data_status === "confirmed" && item.travel_duration_s === 840 && item.travel_distance_m === 1100)).toBe(true);
   await assertViewportFits(page);
   gate.assertClean();
 });
+}
 
 test("Scenario F: previews and applies a local relaxation without regenerating the saved route", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -282,8 +355,10 @@ test("Scenario F: previews and applies a local relaxation without regenerating t
   await routePreview.getByRole("button", { name: "让这一天轻松一些" }).click();
   expect((await previewRepair).status()).toBe(200);
   const review = page.getByRole("dialog", { name: "调整预览" });
-  await expect(review).toContainText(/系统建议将“武林夜市”从第 1 天移动到第 2 天/);
+  await expect(review).toContainText(/系统建议将“.+”从第 1 天移动到第 2 天/);
   await expect(review.getByText("固定安排没有移动；你明确想去的地点没有删除；没有重新生成全部行程。")).toBeVisible();
+  const movedStop = (await review.textContent())?.match(/系统建议将“(.+)”从第 1 天移动到第 2 天/)?.[1];
+  expect(movedStop).toBeTruthy();
 
   const applyRepair = page.waitForResponse((response) => response.url().includes("/mutation-proposals/") && response.url().includes("/apply") && response.request().method() === "POST");
   await review.getByRole("button", { name: "应用这次调整" }).click();
@@ -296,28 +371,46 @@ test("Scenario F: previews and applies a local relaxation without regenerating t
   expect(afterRepair.trip_revisions.map((revision) => revision.revision_number)).toEqual([1, 2]);
   expect(afterRepair.trip_revisions[1].source_type).toBe("route_edit");
   expect(afterRepair.trip_revisions[1].parent_revision_id).toBe(afterRepair.trip_revisions[0].id);
-  expect(flattenedStopNames(afterRepair.trip_revisions[0].snapshot)).toContain("武林夜市");
-  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 1)).not.toContain("武林夜市");
-  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 2)).toContain("武林夜市");
+  expect(flattenedStopNames(afterRepair.trip_revisions[0].snapshot)).toContain(movedStop);
+  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 1)).not.toContain(movedStop);
+  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 2)).toContain(movedStop);
   await assertViewportFits(page);
   gate.assertClean();
 });
 
-test("Scenario G: blocks an unresolved fixed reservation instead of creating a false executable route", async ({ page }) => {
+test("Scenario G: blocks an unresolved fixed reservation before any route request", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const gate = installErrorGate(page);
-  gate.allowExpectedInitialIntentAbsence();
-  const tripId = await createDraftThroughHome(page, "去上海三天，第二天下午2点到4点预约了上海博物馆。");
+  const blockedRouteRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/preplan-handoff/preview") || request.url().includes("/preplan-intent/planning-run")) {
+      blockedRouteRequests.push(request.url());
+    }
+  });
+  const planningRunsBefore = readPlanningRunCount();
+  const tripId = await createTripCompilerDraft(page, "去上海三天，第二天下午2点到4点预约了上海博物馆。");
 
-  const previewResponse = page.waitForResponse((response) => response.url().includes("/preplan-handoff/preview") && response.request().method() === "POST");
-  await page.getByRole("button", { name: "生成路线预览" }).click();
-  expect((await previewResponse).status()).toBe(422);
-  await expect(page.getByText("固定安排的地点还没有确认", { exact: false })).toBeVisible();
-  await expect(page.getByRole("button", { name: "返回修改需求" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "可执行路线预览" })).toHaveCount(0);
-  expect(readDraftDatabase(tripId).trip_revision_count).toBe(0);
+  await expect(page.getByText("固定安排“上海博物馆”的地点还需要确认。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "生成路线" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /上海博物馆（人民广场馆）/ })).toBeVisible();
+  const snapshot = readDraftDatabase(tripId);
+  expect(snapshot.planning_run_count).toBe(planningRunsBefore);
+  expect(snapshot.trip_revision_count).toBe(0);
+  expect(blockedRouteRequests).toEqual([]);
   gate.assertClean();
 });
+
+async function createTripCompilerDraft(page: Page, text: string): Promise<string> {
+  await page.goto("/trip-compiler");
+  await page.getByLabel("这趟旅行，你已经知道些什么？").fill(text);
+  const created = page.waitForResponse((response) => response.url().includes("/api/trips/drafts") && response.request().method() === "POST");
+  const compiled = page.waitForResponse((response) => response.url().includes("/preplan-intent/compile") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "继续" }).click();
+  const payload = await (await created).json() as { trip: { id: string } };
+  expect((await compiled).status()).toBe(201);
+  await expect(page.getByRole("heading", { name: "这些是我理解到的旅行安排。" })).toBeVisible();
+  return payload.trip.id;
+}
 
 async function createDraftThroughHome(page: Page, text: string): Promise<string> {
   await page.addInitScript(() => window.localStorage.clear());
@@ -400,6 +493,7 @@ snapshot = {
   "trip_revisions": [{"id": row["id"], "revision_number": row["revision_number"], "parent_revision_id": row["parent_revision_id"], "source_type": row["source_type"], "snapshot": json.loads(row["itinerary_snapshot"])} for row in trip_revisions],
   "trip_revision_count": len(trip_revisions),
   "preview_count": connection.execute("SELECT COUNT(*) FROM preplan_handoff_runs WHERE trip_id = ?", (trip_id,)).fetchone()[0],
+  "planning_run_count": connection.execute("SELECT COUNT(*) FROM planning_runs").fetchone()[0],
 }
 print(json.dumps(snapshot, ensure_ascii=False))`;
   const stdout = execFileSync(process.env.TRIP_E2E_PYTHON ?? ".venv/bin/python", ["-c", program, databasePath, tripId], {
@@ -407,6 +501,17 @@ print(json.dumps(snapshot, ensure_ascii=False))`;
     encoding: "utf8",
   });
   return JSON.parse(stdout) as DraftDatabaseSnapshot;
+}
+
+function readPlanningRunCount(): number {
+  const databasePath = process.env.TRIP_E2E_DATABASE_PATH;
+  if (!databasePath) throw new Error("TRIP_E2E_DATABASE_PATH is required for SQLite assertions.");
+  const stdout = execFileSync(
+    process.env.TRIP_E2E_PYTHON ?? ".venv/bin/python",
+    ["-c", "import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT COUNT(*) FROM planning_runs').fetchone()[0])", databasePath],
+    { cwd: resolve(process.cwd(), "../backend"), encoding: "utf8" },
+  );
+  return Number(stdout.trim());
 }
 
 function datePolicy(row: IntentRevisionRow): Record<string, any> {
@@ -425,6 +530,11 @@ function flattenedStopNames(snapshot: Record<string, any>): string[] {
   return (snapshot.days ?? []).flatMap((day: Record<string, any>) => day.blocks ?? [])
     .flatMap((block: Record<string, any>) => block.items ?? [])
     .map((item: Record<string, any>) => item.name);
+}
+
+function flattenedItems(snapshot: Record<string, any>): Array<Record<string, any>> {
+  return (snapshot.days ?? []).flatMap((day: Record<string, any>) => day.blocks ?? [])
+    .flatMap((block: Record<string, any>) => block.items ?? []);
 }
 
 function dayStopNames(snapshot: Record<string, any>, dayNumber: number): string[] {

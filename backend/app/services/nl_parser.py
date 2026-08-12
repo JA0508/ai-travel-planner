@@ -1011,7 +1011,9 @@ def looks_like_arrival_clause(clause: str) -> bool:
         is not None
         or (
             "到" in clause
-            and not re.search(r"点\s*(?:-|到|至|–|—)\s*\d", clause)
+            # A Chinese-numeral time range, such as "下午两点到四点预约",
+            # is a fixed-event window rather than an arrival boundary.
+            and not re.search(r"点\s*(?:-|到|至|–|—)\s*(?:[零一二两三四五六七八九十]+|\d)", clause)
             and (looks_like_anchor(clause) or re.search(r"到[\u4e00-\u9fff]{2,8}", clause) is not None)
         )
     ) and not any(token in clause for token in ("离开", "返程", "回程", "回去", "前要去"))

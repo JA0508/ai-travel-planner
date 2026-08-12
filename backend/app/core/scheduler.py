@@ -414,6 +414,7 @@ class Scheduler:
 
             scheduled_by_day[poi.fixed_day].append(
                 ScheduledPOI(
+                    stable_id=poi.candidate_id,
                     name=poi.name,
                     type=poi.type,
                     city=poi.city,
@@ -434,6 +435,7 @@ class Scheduler:
                     candidate_id=poi.candidate_id,
                     canonical_place_id=poi.canonical_place_id,
                     provider_place_id=poi.provider_place_id,
+                    verified_place=poi.verified_place,
                 )
             )
             if trace_collector is not None:
@@ -682,6 +684,7 @@ class Scheduler:
                 scheduled_end = add_minutes(current_start, next_poi.duration_minutes)
                 scheduled_by_day.setdefault(slot.day, []).append(
                     ScheduledPOI(
+                        stable_id=next_poi.candidate_id,
                         name=next_poi.name,
                         type=next_poi.type,
                         city=next_poi.city,
@@ -715,11 +718,17 @@ class Scheduler:
                         travel_from_name=current_anchor.name,
                         travel_distance_m=travel_info["distance_m"] if travel_info else None,
                         travel_duration_s=travel_info["duration_s"] if travel_info else None,
+                        travel_calculation_status=travel_info.get("data_status") if travel_info else None,
+                        travel_from_place_id=getattr(current_anchor, "canonical_place_id", None),
+                        travel_to_place_id=next_poi.canonical_place_id,
+                        travel_provider=travel_info.get("provider") if travel_info else None,
+                        travel_data_status=travel_info.get("data_status") if travel_info else None,
                         selection_top_candidates=selection_top_candidates,
                         selection_rejected_candidates=selection_rejected_candidates,
                         candidate_id=next_poi.candidate_id,
                         canonical_place_id=next_poi.canonical_place_id,
                         provider_place_id=next_poi.provider_place_id,
+                        verified_place=next_poi.verified_place,
                     )
                 )
                 if trace_collector is not None:
@@ -1167,7 +1176,7 @@ class Scheduler:
                         },
                     )
                 continue
-            travel_cost = float(travel_info["duration_s"])
+            travel_cost = float(travel_info["scheduling_duration_s"])
 
             continuation_cost = self.estimate_continuation_cost(
                 poi=poi,
@@ -1243,7 +1252,10 @@ class Scheduler:
         travel_info: dict[str, int],
     ) -> bool:
         slot_minutes = minutes_between(slot.start_time, slot.end_time)
-        travel_minutes = max(0, math.ceil(int(travel_info.get("duration_s") or 0) / 60))
+        travel_minutes = max(
+            0,
+            math.ceil(int(travel_info.get("scheduling_duration_s") or 0) / 60),
+        )
         if travel_minutes > 150:
             return False
         # The current scheduler still renders travel as leg metadata rather
@@ -1439,7 +1451,7 @@ class Scheduler:
                 dest_lng=departure_anchor.longitude,
                 city=departure_anchor.city or poi.city,
             )
-            anchor_cost = float(route["duration_s"])
+            anchor_cost = float(route["scheduling_duration_s"])
         except (KeyError, TypeError, ValueError):
             anchor_cost = 60 * 60
 
@@ -1541,7 +1553,7 @@ class Scheduler:
                 dest_lng=return_anchor.longitude,
                 city=return_anchor.city or poi.city,
             )
-            return_cost = float(route["duration_s"])
+            return_cost = float(route["scheduling_duration_s"])
         except (KeyError, TypeError, ValueError):
             return_cost = 60 * 60
 
@@ -1636,7 +1648,7 @@ class Scheduler:
         trace_collector: PlannerTraceCollector | None = None,
         origin_id: str | None = None,
         destination_id: str | None = None,
-    ) -> dict[str, int]:
+    ) -> dict[str, int | str | None]:
         """
         Return deterministic route metadata for city itinerary scheduling.
 
@@ -1690,6 +1702,10 @@ class Scheduler:
                 return {
                     "distance_m": int(route["distance_m"]),
                     "duration_s": int(route["duration_s"]),
+                    "scheduling_distance_m": int(route["distance_m"]),
+                    "scheduling_duration_s": int(route["duration_s"]),
+                    "provider": str(route.get("source") or "amap"),
+                    "data_status": "confirmed",
                 }
             except (RoutePlanningError, KeyError, TypeError, ValueError):
                 continue
@@ -1728,7 +1744,17 @@ class Scheduler:
                     "distance_m": fallback_route["distance_m"],
                 },
             )
-        return fallback_route
+        # The scheduler may use the conservative local value internally to keep
+        # time windows safe, but it is not provider-confirmed travel evidence.
+        # Persisted route legs therefore stay null and visibly unavailable.
+        return {
+            "distance_m": None,
+            "duration_s": None,
+            "scheduling_distance_m": fallback_route["distance_m"],
+            "scheduling_duration_s": fallback_route["duration_s"],
+            "provider": "amap",
+            "data_status": "unavailable",
+        }
 
     def city_route_mode_order(
         self,
@@ -1897,14 +1923,6 @@ def stable_candidate_id(poi: NormalizedPOI) -> str:
 
 
 def stable_anchor_id(anchor: HotelStay | ScheduledPOI) -> str:
-    if isinstance(anchor, ScheduledPOI) and anchor.canonical_place_id:
-        return stable_subject_id(
-            "anchor",
-            anchor.canonical_place_id,
-            anchor.provider_place_id or "",
-            round(anchor.latitude, 6),
-            round(anchor.longitude, 6),
-        )
     return stable_subject_id(
         "anchor",
         anchor.name.strip().casefold(),

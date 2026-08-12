@@ -359,6 +359,7 @@ def _extract_place_search_results(payload: dict) -> list[dict]:
         ]
         results.append(
             {
+                "provider_place_id": poi.get("id"),
                 "name": poi.get("name"),
                 "address": poi.get("address"),
                 "type": poi.get("type"),

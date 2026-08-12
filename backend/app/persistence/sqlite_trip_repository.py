@@ -97,21 +97,53 @@ class SQLiteTripRepository:
         planner_version: str | None,
         trace_schema_version: str | None,
         trace_digest: str | None,
+        operation_metadata: dict[str, Any] | None = None,
     ) -> TripAggregate:
+        with self._transaction() as connection:
+            trip_id = self.create_trip_with_initial_revision_in_transaction(
+                connection,
+                itinerary_snapshot=itinerary_snapshot,
+                capability_hash=capability_hash,
+                operation_type=operation_type,
+                operation_summary=operation_summary,
+                request_digest=request_digest,
+                planner_run_id=planner_run_id,
+                planner_version=planner_version,
+                trace_schema_version=trace_schema_version,
+                trace_digest=trace_digest,
+                operation_metadata=operation_metadata,
+            )
+        return self.get_trip_with_current_revision(trip_id)
+
+    def create_trip_with_initial_revision_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        itinerary_snapshot: dict[str, Any],
+        capability_hash: str,
+        operation_type: str,
+        operation_summary: str,
+        request_digest: str,
+        planner_run_id: str | None,
+        planner_version: str | None,
+        trace_schema_version: str | None,
+        trace_digest: str | None,
+        operation_metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Write the initial Trip and Revision through a caller-owned transaction."""
         trip_id = generate_trip_id()
         revision_id = generate_revision_id()
         operation_id = generate_operation_id()
         now = utc_now()
         content_digest = itinerary_content_digest(itinerary_snapshot)
+        metadata = {"operation_type": operation_type, **(operation_metadata or {})}
         revision_lineage_digest = lineage_digest(
             parent_lineage_digest=None,
             source_type=RevisionSourceType.PLANNER_GENERATION.value,
-            operation_metadata={"operation_type": operation_type},
+            operation_metadata=metadata,
             content_digest=content_digest,
         )
-
-        with self._transaction() as connection:
-            connection.execute(
+        connection.execute(
                 """
                 INSERT INTO trips(id, current_revision_id, revision_count, lifecycle_status, capability_hash, created_at, updated_at)
                 VALUES (?, NULL, 0, ?, ?, ?, ?)
@@ -123,8 +155,8 @@ class SQLiteTripRepository:
                     now,
                     now,
                 ),
-            )
-            self._insert_revision(
+        )
+        self._insert_revision(
                 connection,
                 revision_id=revision_id,
                 trip_id=trip_id,
@@ -142,8 +174,8 @@ class SQLiteTripRepository:
                 trace_digest=trace_digest,
                 restored_from_revision_id=None,
                 created_at=now,
-            )
-            self._insert_operation(
+        )
+        self._insert_operation(
                 connection,
                 operation_id=operation_id,
                 trip_id=trip_id,
@@ -151,22 +183,21 @@ class SQLiteTripRepository:
                 base_revision_id=None,
                 source_type=RevisionSourceType.PLANNER_GENERATION.value,
                 operation_type=operation_type,
-                operation_metadata={"operation_type": operation_type},
+                operation_metadata=metadata,
                 request_digest=request_digest,
                 idempotency_key_hash=None,
                 summary=operation_summary,
                 created_at=now,
-            )
-            connection.execute(
+        )
+        connection.execute(
                 """
                 UPDATE trips
                 SET current_revision_id = ?, revision_count = 1, updated_at = ?
                 WHERE id = ?
                 """,
                 (revision_id, now, trip_id),
-            )
-
-        return self.get_trip_with_current_revision(trip_id)
+        )
+        return trip_id
 
     def create_draft_trip(
         self,

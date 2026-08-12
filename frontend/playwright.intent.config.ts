@@ -32,6 +32,7 @@ const backendEnvironment = {
 
 export default defineConfig({
   testDir: "tests/e2e",
+  testMatch: "draft-intent-confirmation.spec.ts",
   fullyParallel: false,
   workers: 1,
   timeout: 45_000,
@@ -50,7 +51,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `${process.env.TRIP_E2E_PYTHON} -m uvicorn app.main:app --host 127.0.0.1 --port 8018`,
+      command: `${process.env.TRIP_E2E_PYTHON} -m uvicorn tests.e2e_fixture_app:app --host 127.0.0.1 --port 8018`,
       cwd: "../backend",
       env: backendEnvironment,
       url: "http://127.0.0.1:8018/readiness",
