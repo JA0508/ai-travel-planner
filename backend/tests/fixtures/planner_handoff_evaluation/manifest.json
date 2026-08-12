@@ -1,0 +1,154 @@
+{
+  "schema_version": "1.0",
+  "description": "Frozen handoff review-summary regression corpus. Strict cases are CI boundaries; drift cases retain only stable observation expectations.",
+  "cases": [
+    {
+      "id": "review_apply_ready",
+      "coverage": "strict",
+      "review_input": {
+        "bound_intent_revision_id": "intent-1",
+        "current_intent_revision_id": "intent-1",
+        "base_trip_revision_id": "revision-1",
+        "current_trip_revision_id": "revision-1",
+        "run_status": "pending",
+        "applied_revision_id": null,
+        "trace_snapshot": {
+          "decisions": [
+            {"decision": "accepted", "reason_codes": ["accepted_input_candidate"]},
+            {"decision": "rejected", "reason_codes": ["rejected_no_available_slot"]}
+          ],
+          "warnings": [{"code": "route_data_missing"}]
+        },
+        "result_snapshot": {"planner_realism": {"status": "stable", "issues": []}},
+        "readiness_status": "ready_for_planning",
+        "readiness_blocking_reason_codes": [],
+        "readiness_warning_codes": []
+      },
+      "expected": {
+        "status": "apply_ready",
+        "can_apply": true,
+        "blocking_reason_codes": [],
+        "warning_codes": [],
+        "trace": {"decision_count": 2, "accepted_decision_count": 1, "rejected_decision_count": 1, "warning_count": 1}
+      }
+    },
+    {
+      "id": "review_blocked_no_anchor",
+      "coverage": "strict",
+      "review_input": {
+        "bound_intent_revision_id": "intent-1",
+        "current_intent_revision_id": "intent-1",
+        "base_trip_revision_id": null,
+        "current_trip_revision_id": null,
+        "run_status": "pending",
+        "applied_revision_id": null,
+        "trace_snapshot": {"decisions": [], "warnings": []},
+        "result_snapshot": {"planner_realism": {"status": "stable", "issues": []}},
+        "readiness_status": "needs_clarification",
+        "readiness_blocking_reason_codes": ["no_planner_anchor"],
+        "readiness_warning_codes": []
+      },
+      "expected": {
+        "status": "blocked",
+        "can_apply": false,
+        "blocking_reason_codes": ["no_planner_anchor", "intent_not_planner_ready"],
+        "warning_codes": [],
+        "trace": {"decision_count": 0, "accepted_decision_count": 0, "rejected_decision_count": 0, "warning_count": 0}
+      }
+    },
+    {
+      "id": "review_stale_intent_precedes_unstable_result",
+      "coverage": "strict",
+      "review_input": {
+        "bound_intent_revision_id": "intent-1",
+        "current_intent_revision_id": "intent-2",
+        "base_trip_revision_id": "revision-1",
+        "current_trip_revision_id": "revision-1",
+        "run_status": "pending",
+        "applied_revision_id": null,
+        "trace_snapshot": {"decisions": [], "warnings": []},
+        "result_snapshot": {"planner_realism": {"status": "unstable", "issues": [{"code": "route_conflict"}]}},
+        "readiness_status": "ready_for_planning",
+        "readiness_blocking_reason_codes": [],
+        "readiness_warning_codes": []
+      },
+      "expected": {
+        "status": "stale",
+        "can_apply": false,
+        "blocking_reason_codes": ["intent_revision_advanced"],
+        "warning_codes": [],
+        "trace": {"decision_count": 0, "accepted_decision_count": 0, "rejected_decision_count": 0, "warning_count": 0}
+      }
+    },
+    {
+      "id": "review_unstable_route_result",
+      "coverage": "strict",
+      "review_input": {
+        "bound_intent_revision_id": "intent-1",
+        "current_intent_revision_id": "intent-1",
+        "base_trip_revision_id": "revision-1",
+        "current_trip_revision_id": "revision-1",
+        "run_status": "pending",
+        "applied_revision_id": null,
+        "trace_snapshot": {"decisions": [], "warnings": []},
+        "result_snapshot": {"planner_realism": {"status": "unstable", "issues": [{"code": "route_conflict"}]}},
+        "readiness_status": "ready_for_planning",
+        "readiness_blocking_reason_codes": [],
+        "readiness_warning_codes": []
+      },
+      "expected": {
+        "status": "unstable",
+        "can_apply": false,
+        "blocking_reason_codes": ["route_conflict"],
+        "warning_codes": [],
+        "trace": {"decision_count": 0, "accepted_decision_count": 0, "rejected_decision_count": 0, "warning_count": 0}
+      }
+    },
+    {
+      "id": "review_applied_snapshot",
+      "coverage": "strict",
+      "review_input": {
+        "bound_intent_revision_id": "intent-1",
+        "current_intent_revision_id": "intent-2",
+        "base_trip_revision_id": null,
+        "current_trip_revision_id": "revision-1",
+        "run_status": "applied",
+        "applied_revision_id": "revision-1",
+        "trace_snapshot": {"decisions": [{"decision": "accepted", "reason_codes": ["accepted_input_candidate"]}], "warnings": []},
+        "result_snapshot": {"planner_realism": {"status": "stable", "issues": []}},
+        "readiness_status": "ready_for_planning",
+        "readiness_blocking_reason_codes": [],
+        "readiness_warning_codes": []
+      },
+      "expected": {
+        "status": "applied",
+        "can_apply": false,
+        "blocking_reason_codes": [],
+        "warning_codes": [],
+        "trace": {"decision_count": 1, "accepted_decision_count": 1, "rejected_decision_count": 0, "warning_count": 0}
+      }
+    },
+    {
+      "id": "review_route_warning_observation",
+      "coverage": "drift",
+      "review_input": {
+        "bound_intent_revision_id": "intent-1",
+        "current_intent_revision_id": "intent-1",
+        "base_trip_revision_id": null,
+        "current_trip_revision_id": null,
+        "run_status": "pending",
+        "applied_revision_id": null,
+        "trace_snapshot": {"decisions": [{"decision": "accepted", "reason_codes": ["accepted_input_candidate"]}], "warnings": [{"code": "route_data_missing"}]},
+        "result_snapshot": {"planner_realism": {"status": "stable", "issues": []}},
+        "readiness_status": "ready_with_assumptions",
+        "readiness_blocking_reason_codes": [],
+        "readiness_warning_codes": ["route_data_missing"]
+      },
+      "expected": {
+        "status": "apply_ready",
+        "can_apply": true,
+        "required_warning_codes": ["route_data_missing"]
+      }
+    }
+  ]
+}

@@ -58,6 +58,7 @@ from app.trips.schemas import (
     PrePlanHandoffApplyResponse,
     PrePlanHandoffPreviewRequest,
     PrePlanHandoffPreviewResponse,
+    PrePlanHandoffRunStatusResponse,
     PrePlanIntentCompileResponse,
     ApplyPersistedReplanProposalRequest,
     PersistedCompletionTaskActionRequest,
@@ -362,6 +363,25 @@ def preview_preplan_handoff(
             trip_id=trip_id,
             capability=get_trip_capability_from_request(request, trip_id),
             payload=payload,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get(
+    "/{trip_id}/preplan-handoff/runs/{run_id}",
+    response_model=PrePlanHandoffRunStatusResponse,
+)
+def get_preplan_handoff_run_status(
+    trip_id: str,
+    run_id: str,
+    request: Request,
+) -> PrePlanHandoffRunStatusResponse | JSONResponse:
+    try:
+        return get_trip_persistence_service().get_preplan_handoff_run_status(
+            trip_id=trip_id,
+            run_id=run_id,
+            capability=get_trip_capability_from_request(request, trip_id),
         )
     except TripError as exc:
         return trip_error_response(exc)

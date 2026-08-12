@@ -51,6 +51,7 @@ export function FixtureResultWorkspace({ fixtureKey }: { fixtureKey: string }) {
           ...fixture.itinerary,
           trip_days: fixture.tripDays,
           planner_realism: fixture.plannerRealism,
+          execution_trust: fixture.executionTrust,
           completion_intelligence: fixture.completion,
         }}
         editing={routeEditMode}

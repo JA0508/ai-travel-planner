@@ -28,6 +28,7 @@ from .models import (
     TripRevisionRecord,
 )
 from .mutation_commands import TripMutationCommandEnvelope
+from .planner_handoff import PlannerHandoffReviewSummary
 
 
 class TripPlanRequest(BaseModel):
@@ -249,6 +250,18 @@ class PrePlanHandoffPreviewResponse(BaseModel):
     handoff: PrePlanHandoffRunMetadata
     itinerary: ItineraryResponse
     source_links: list[dict]
+    review_summary: PlannerHandoffReviewSummary
+
+
+class PrePlanHandoffRunStatusResponse(BaseModel):
+    """Read-only freshness state for a frozen Draft Trip preview."""
+
+    trip: TripMetadata
+    latest_draft_intent_revision_id: str
+    handoff: PrePlanHandoffRunMetadata
+    preview_status: Literal["current", "stale", "applied"]
+    stale_reason: Literal["draft_intent_advanced"] | None = None
+    review_summary: PlannerHandoffReviewSummary
 
 
 class PrePlanHandoffApplyResponse(BaseModel):
@@ -258,6 +271,7 @@ class PrePlanHandoffApplyResponse(BaseModel):
     handoff: PrePlanHandoffRunMetadata
     itinerary: ItineraryResponse
     persistence: TripPersistenceInfo
+    review_summary: PlannerHandoffReviewSummary
 
 
 class TripPlanResponse(BaseModel):

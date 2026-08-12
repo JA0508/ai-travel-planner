@@ -15,6 +15,7 @@ import {
   type RouteWorkspaceItinerary,
   type RouteWorkspaceContainerViewModelInput,
 } from "./routeWorkspaceViewModel";
+import { RouteExecutionTrustPanel } from "./RouteExecutionTrustPanel";
 
 type MobileWorkspaceProps = ComponentProps<typeof MobileEditRouteWorkspace>;
 
@@ -105,7 +106,7 @@ export function RouteWorkspaceContainer({
         poiDetailFixtures={poiDetailFixtures}
         desktopLeftRail={
           <DesktopRouteLeftRail
-            commandCenter={commandCenter}
+            commandCenter={<><RouteExecutionTrustPanel viewModel={viewModel.executionTrust} />{commandCenter}</>}
             completion={completionRail}
             brief={briefRail}
           />

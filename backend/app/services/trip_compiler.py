@@ -75,6 +75,8 @@ def build_itinerary_request(intent: TravelIntent) -> ItineraryRequest:
         raise ValueError("intent has unresolved blocking information")
     if any(event.day is None or event.start_time is None or event.end_time is None for event in intent.fixed_events):
         raise ValueError("fixed events require a day and a complete time range")
+    if any(event.day is not None and event.day > intent.trip_days for event in intent.fixed_events):
+        raise ValueError("fixed event days must be within the trip length")
     scenic = [
         _verified_scenic_input(
             name=place.name,
@@ -138,6 +140,7 @@ def _verified_scenic_input(
         name=verified_place.canonical_name,
         candidate_id=stable_id,
         canonical_place_id=verified_place.provider_place_id,
+        provider_place_id=verified_place.provider_place_id,
         resolved_latitude=verified_place.latitude,
         resolved_longitude=verified_place.longitude,
         intent_ownership=ownership,  # type: ignore[arg-type]

@@ -23,6 +23,8 @@ test("route preview renders a readable day timeline without internal handoff met
   assert.match(html, /预计移动/);
   assert.match(html, /活动时长/);
   assert.match(html, /为什么这样安排/);
+  assert.match(html, /查看规划依据/);
+  assert.match(html, /系统补充是路线建议/);
   assert.doesNotMatch(html, /trace_digest/);
   assert.doesNotMatch(html, /handoff ID/);
 });
@@ -40,6 +42,15 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /暂时没有可验证的安排说明/);
   assert.doesNotMatch(source, /buildDayRelaxationPlan/);
   assert.doesNotMatch(source, /move_stop/);
+});
+
+test("saved route preview reads frozen pre-plan evidence by the persisted planner run id", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /plannerRunId/);
+  assert.match(source, /getPrePlanHandoffRunStatus/);
+  assert.match(source, /data-frozen-handoff-evidence/);
+  assert.match(source, /根据已保存路线内容归纳/);
+  assert.match(source, /buildFrozenHandoffEvidenceView/);
 });
 
 test("route preview does not present unavailable route data as a confirmed leg", () => {

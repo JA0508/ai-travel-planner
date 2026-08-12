@@ -5,7 +5,10 @@ import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
 import type { IntentClarification, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
-import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
+import { buildPrePlanConfirmationViewModel, getPrePlanClarificationControl, type PrePlanClarificationControl } from "./prePlanConfirmationModel";
+import { buildPrePlanHandoffStatus, userFacingPrePlanHandoffError } from "./plannerHandoffModel";
+import { PlannerTraceReviewPanel } from "./PlannerTraceReviewPanel";
+import { markPlannerHandoffReviewStale, type PlannerHandoffReviewSummary } from "./plannerTraceReviewModel";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 import type {
@@ -25,14 +28,17 @@ type DraftIntentResponse = {
 };
 
 type PreviewResponse = {
+  draft_intent_revision_id: string;
   handoff: { id: string; trace_digest: string };
   itinerary: ItineraryResponse;
+  review_summary: PlannerHandoffReviewSummary;
 };
 
 type ApplyResponse = {
   trip: TripMetadata;
   current_revision: TripRevisionMetadata;
   itinerary: ItineraryResponse;
+  review_summary: PlannerHandoffReviewSummary;
 };
 
 type CandidateListResponse = {
@@ -99,9 +105,17 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     [intent],
   );
   const busy = bootstrap === "compiling" || operation !== "idle" || pendingEdit !== null;
-  const canGeneratePreview = Boolean(view?.canGeneratePreview && !sourcesChanged && !preview);
-  const previewHasExecutionConflict = preview?.itinerary?.planner_realism?.status === "unstable";
-  const canApplyPreview = Boolean(preview && intent && !sourcesChanged && !previewHasExecutionConflict);
+  const previewStatus = useMemo(
+    () => preview ? buildPrePlanHandoffStatus({ previewIntentRevisionId: preview.draft_intent_revision_id, latestIntentRevisionId }) : null,
+    [latestIntentRevisionId, preview],
+  );
+  const reviewSummary = useMemo(
+    () => preview ? previewStatus?.kind === "stale" ? markPlannerHandoffReviewStale(preview.review_summary) : preview.review_summary : null,
+    [preview, previewStatus?.kind],
+  );
+  const canGeneratePreview = Boolean(view?.canGeneratePreview && !sourcesChanged && (!preview || previewStatus?.canGenerateReplacement));
+  const previewHasExecutionConflict = reviewSummary?.status === "unstable" || preview?.itinerary?.planner_realism?.status === "unstable";
+  const canApplyPreview = Boolean(preview && intent && !sourcesChanged && reviewSummary?.can_apply && !previewHasExecutionConflict && previewStatus?.canApply);
 
   useEffect(() => {
     void refreshCandidates();
@@ -158,7 +172,6 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     setIntent(result.data);
     setLatestIntentRevisionId(result.data.revision.id);
     void refreshLatestIntent();
-    setPreview(null);
     setSourcesChanged(false);
     setBootstrap("ready");
     setFeedback(null);
@@ -201,7 +214,6 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     setIntent({ envelope: latest.envelope, revision: latest.revision });
     setLatestIntentRevisionId(latest.revision.id);
     setDraftVersion(latest.trip.draft_version);
-    setPreview(null);
     setSourcesChanged(false);
   }
 
@@ -247,7 +259,6 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       setIntent({ envelope: result.data.envelope, revision: result.data.revision });
       setLatestIntentRevisionId(result.data.revision.id);
       setDraftVersion(result.data.draft_version);
-      setPreview(null);
       setSourcesChanged(false);
       setPendingEdit(null);
       setRetryableRequest(null);
@@ -358,19 +369,22 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
   }
 
   async function apply() {
-    if (!intent || !preview || sourcesChanged) return;
+    if (!intent || !preview || sourcesChanged || !previewStatus?.canApply) return;
     setOperation("applying");
     setFeedback({ tone: "info", message: "正在保存第一版行程……" });
     const result = await postTripJson<ApplyResponse>(
       TRIP_API_ENDPOINTS.applyPrePlanHandoff(tripId, preview.handoff.id),
-      { draft_intent_revision_id: intent.revision.id, handoff_digest: preview.handoff.trace_digest },
+      { draft_intent_revision_id: preview.draft_intent_revision_id, handoff_digest: preview.handoff.trace_digest },
       "暂时无法保存行程，你确认的信息已经保留。",
       "服务暂时不可用，你确认的信息不会丢失。",
       { headers: { "X-Idempotency-Key": `draft-handoff:${preview.handoff.id}:${preview.handoff.trace_digest.slice(0, 16)}` } },
     );
     setOperation("idle");
     if (!result.ok) {
-      setFeedback({ tone: "error", message: userFacingRequestError(result.code, "暂时无法保存行程，你确认的信息已经保留。") });
+      if (result.code === "stale_intent_revision") {
+        await refreshLatestIntent();
+      }
+      setFeedback({ tone: "error", message: userFacingPrePlanHandoffError(result.code) ?? userFacingRequestError(result.code, "暂时无法保存行程，你确认的信息已经保留。") });
       return;
     }
     onApplied(result.data);
@@ -383,10 +397,12 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     setFeedback({ tone: "info", message: "已更新导入资料；重新整理后会纳入行程信息。" });
   }
 
-  const primaryLabel = preview ? "确认并生成行程" : "生成路线预览";
-  const primaryDisabled = busy || (!preview && !canGeneratePreview) || (Boolean(preview) && !canApplyPreview);
+  const primaryLabel = previewStatus?.kind === "stale" ? "重新生成路线预览" : preview ? "确认并生成行程" : "生成路线预览";
+  const primaryDisabled = busy || (previewStatus?.canApply ? !canApplyPreview : !canGeneratePreview);
   const primaryHint = sourcesChanged
     ? "导入资料已更新，请先重新整理旅行信息。"
+    : previewStatus?.kind === "stale"
+      ? previewStatus.message
     : previewHasExecutionConflict
       ? "这版路线仍有执行冲突，请先返回修改旅行信息后再生成。"
     : view?.actionHint ?? "正在整理你的旅行需求。";
@@ -409,7 +425,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
           {activeEditor && formDraft ? <CriticalEditorForm editor={activeEditor} draft={formDraft} pending={Boolean(pendingEdit)} error={editorError} onChange={setFormDraft} onSave={saveEditor} onCancel={closeEditor} /> : null}
         </section>
 
-        {intent.envelope.clarification_queue.filter((question) => question.blocking).length ? <section className="uc-intent-card uc-intent-card--attention" aria-label="还需要你补充"><div className="uc-intent-section-heading"><div><p>还需要你补充</p><h2>确认后才能生成路线</h2></div></div><div className="uc-intent-list">{intent.envelope.clarification_queue.filter((question) => question.blocking).map((question) => <ClarificationCard key={question.question_id} question={question} pending={Boolean(pendingEdit)} onResolve={resolveClarification} />)}</div></section> : null}
+        {view.blockers.length ? <section className="uc-intent-card uc-intent-card--attention" aria-label="还需要你补充"><div className="uc-intent-section-heading"><div><p>还需要你补充</p><h2>确认后才能生成路线</h2></div></div><div className="uc-intent-list">{intent.envelope.clarification_queue.filter((question) => question.blocking).length ? intent.envelope.clarification_queue.filter((question) => question.blocking).map((question) => <ClarificationCard key={question.question_id} question={question} pending={Boolean(pendingEdit)} onResolve={resolveClarification} />) : view.blockers.map((blocker) => <article key={blocker.title}><strong>{blocker.title}</strong><span>{blocker.detail}</span></article>)}</div></section> : null}
 
         <FixedArrangementSummary arrangements={view.fixedArrangements} />
         <PlacePreferenceSummary envelope={intent.envelope} sourceLines={view.sourceLines} />
@@ -419,14 +435,14 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
         <details className="uc-intent-card uc-intent-details"><summary><span><strong>查看依据</strong><small>按需查看输入和导入资料</small></span><span aria-hidden="true">展开</span></summary><SourceDetails directUserText={directUserText} sourceLines={view.sourceLines} candidates={candidates} selectedCandidateIds={selectedCandidateIds} onSelectCandidate={selectCandidate} onRefresh={() => void compileIntent()} onImportChanged={() => { void refreshCandidates(); setSourcesChanged(true); setPreview(null); setFeedback({ tone: "info", message: "已更新导入资料；重新整理后会纳入行程信息。" }); }} busy={busy} tripId={tripId} /></details>
       </> : null}
 
-      {preview ? <ExecutableRoutePreview itinerary={preview.itinerary} variant="draft" /> : null}
+      {preview && previewStatus ? <><PrePlanHandoffStatusPanel status={previewStatus} currentRevisionNumber={intent?.revision.revision_number ?? null} />{reviewSummary ? <PlannerTraceReviewPanel summary={reviewSummary} /> : null}<ExecutableRoutePreview itinerary={preview.itinerary} variant="draft" /></> : null}
 
       {staleConflict ? <StaleConflictPanel conflict={staleConflict} onViewLatest={() => { setFeedback({ tone: "info", message: "已显示最新行程信息；你的修改仍保留，可以重新应用。" }); }} onReapply={reapplyStaleEdit} onDiscard={() => { setStaleConflict(null); setActiveEditor(null); setFormDraft(null); setEditorError(null); setRestorePrimaryFocus(true); }} disabled={Boolean(pendingEdit)} /> : null}
 
       {feedback ? <p role={feedback.tone === "error" ? "alert" : "status"} className={feedback.tone === "error" ? "uc-intent-feedback uc-intent-feedback--error" : "uc-intent-feedback"}>{feedback.message}</p> : null}
       {retryableRequest && editorError ? <button type="button" className="uc-intent-secondary" onClick={retryNetworkRequest} disabled={Boolean(pendingEdit)}>重新提交</button> : null}
 
-      {view ? <footer className="uc-intent-actions"><button type="button" className="uc-intent-secondary" onClick={onCancel} disabled={busy}>返回修改需求</button><div><p>{primaryHint}</p><button id="preplan-primary-action" type="button" className="uc-intent-primary" onClick={() => { if (preview) void apply(); else void buildPreview(); }} disabled={primaryDisabled}>{operation === "previewing" ? "正在生成预览……" : operation === "applying" ? "正在保存行程……" : primaryLabel}</button></div></footer> : null}
+      {view ? <footer className="uc-intent-actions"><button type="button" className="uc-intent-secondary" onClick={onCancel} disabled={busy}>返回修改需求</button><div><p>{primaryHint}</p><button id="preplan-primary-action" type="button" className="uc-intent-primary" onClick={() => { if (previewStatus?.canApply) void apply(); else void buildPreview(); }} disabled={primaryDisabled}>{operation === "previewing" ? "正在生成预览……" : operation === "applying" ? "正在保存行程……" : primaryLabel}</button></div></footer> : null}
     </main>
   );
 }
@@ -439,13 +455,18 @@ function RetryState({ onRetry }: { onRetry: () => void }) {
   return <section className="uc-intent-card uc-intent-card--attention" role="alert"><strong>暂时无法整理旅行信息，你的输入已经保留。</strong><span>服务恢复后可以重新识别，无需重新填写。</span><button type="button" className="uc-intent-secondary" onClick={onRetry}>重新识别</button></section>;
 }
 
+function PrePlanHandoffStatusPanel({ status, currentRevisionNumber }: { status: ReturnType<typeof buildPrePlanHandoffStatus>; currentRevisionNumber: number | null }) {
+  if (status.kind === "current") return <section className="uc-intent-card" data-preplan-handoff-status="current"><strong>路线预览对应当前草稿</strong><span>{currentRevisionNumber ? `这份预览基于当前第 ${currentRevisionNumber} 版行程信息，可以确认后生成正式行程。` : status.message}</span></section>;
+  return <section className="uc-intent-card uc-intent-card--attention" data-preplan-handoff-status="stale" role="status"><strong>路线预览已过期</strong><span>{currentRevisionNumber ? `行程信息已更新为第 ${currentRevisionNumber} 版；旧预览不能保存。请重新生成路线预览。` : status.message}</span></section>;
+}
+
 function FixedArrangementSummary({ arrangements }: { arrangements: Array<{ title: string; detail: string }> }) {
   return <section className="uc-intent-card"><div className="uc-intent-section-heading"><div><p>固定安排</p><h2>{arrangements.length ? `${arrangements.length} 个已安排` : "暂时没有固定安排"}</h2></div></div>{arrangements.length ? <div className="uc-intent-list">{arrangements.map((arrangement, index) => <article key={`${arrangement.title}-${index}`}><strong>{arrangement.title}</strong><span>{arrangement.detail}</span></article>)}</div> : <p className="uc-intent-muted">之后有预约、演出或见面安排时，可以在修改需求中补充。</p>}</section>;
 }
 
 function PlacePreferenceSummary({ envelope, sourceLines }: { envelope: SourceLinkedTripIntentEnvelope; sourceLines: Array<{ label: string; source: string }> }) {
   const places = envelope.formal_contract.must_visit_places;
-  return <section className="uc-intent-card"><div className="uc-intent-section-heading"><div><p>想去的地方</p><h2>{places.length ? "一定想去" : "暂未指定"}</h2></div></div>{places.length ? <div className="uc-intent-place-list">{places.map((place) => <div key={place.trip_candidate_id}><strong>{place.display_name ?? "已确认地点"}</strong><span>来自：{sourceForField(sourceLines, "想去的地方")}</span></div>)}</div> : <p className="uc-intent-muted">还没有确定必须到达的地点，路线会先围绕你的时间和旅行节奏安排。</p>}</section>;
+  return <section className="uc-intent-card"><div className="uc-intent-section-heading"><div><p>想去的地方</p><h2>{places.length ? "一定想去" : "暂未指定"}</h2></div></div>{places.length ? <div className="uc-intent-place-list">{places.map((place) => <div key={place.trip_candidate_id}><strong>{place.display_name ?? "已确认地点"}</strong><span>来自：{sourceForField(sourceLines, "想去的地方")}</span></div>)}</div> : <p className="uc-intent-muted">还没有确认可排入路线的地点；补充一个想去的地点或固定安排地点后再继续。</p>}</section>;
 }
 
 function SourceDetails({ directUserText, sourceLines, candidates, selectedCandidateIds, onSelectCandidate, onRefresh, onImportChanged, busy, tripId }: { directUserText: string; sourceLines: Array<{ label: string; source: string }>; candidates: CandidateListResponse["candidates"]; selectedCandidateIds: string[]; onSelectCandidate: (id: string, checked: boolean) => void; onRefresh: () => void; onImportChanged: () => void; busy: boolean; tripId: string }) {
@@ -489,7 +510,7 @@ function CriticalEditorForm({ editor, draft, pending, error, onChange, onSave, o
 function ClarificationCard({ question, pending, onResolve }: { question: IntentClarification; pending: boolean; onResolve: (id: string, answer: DraftClarificationAnswer, draft: CriticalIntentFormDraft) => void }) {
   const [draft, setDraft] = useState<CriticalIntentFormDraft>({});
   const [error, setError] = useState<string | null>(null);
-  const kind = clarificationInputKind(question.reason_code);
+  const kind = getPrePlanClarificationControl(question);
   if (!kind) return <article><strong>还需要确认一项信息</strong><span>{question.question}</span><button type="button" className="uc-intent-secondary">返回修改需求</button></article>;
   const submit = () => {
     const answer = clarificationAnswerForKind(kind, draft);
@@ -500,6 +521,7 @@ function ClarificationCard({ question, pending, onResolve }: { question: IntentC
   return <article className="uc-intent-clarification"><strong>{clarificationTitle(kind)}</strong><span>{clarificationDetail(kind)}</span>
     {kind === "destination" ? <label>目的地<input value={draft.city ?? ""} onChange={(event) => setDraft({ ...draft, city: event.target.value })} placeholder="例如：杭州" disabled={pending} /></label> : null}
     {kind === "trip_days" ? <><label>旅行天数<input inputMode="numeric" type="number" min="1" max="60" value={draft.tripDays ?? ""} onChange={(event) => setDraft({ ...draft, tripDays: event.target.value })} disabled={pending} /></label><span>也可以改为填写具体日期。</span></> : null}
+    {kind === "pace" ? <label>旅行节奏<select value={draft.pace ?? "relaxed"} onChange={(event) => setDraft({ ...draft, pace: event.target.value as CriticalIntentFormDraft["pace"] })} disabled={pending}><option value="relaxed">轻松</option><option value="balanced">适中</option><option value="intensive">紧凑</option></select></label> : null}
     {kind === "date_range" ? <div className="uc-intent-editor-grid"><label>开始日期<input type="date" value={draft.startDate ?? ""} onChange={(event) => setDraft({ ...draft, startDate: event.target.value })} disabled={pending} /></label><label>结束日期<input type="date" value={draft.endDate ?? ""} onChange={(event) => setDraft({ ...draft, endDate: event.target.value })} disabled={pending} /></label></div> : null}
     {kind === "date_choice" ? <><label>以什么为准<select value={draft.startDate ? "date_range" : "trip_days"} onChange={(event) => setDraft({ ...draft, startDate: event.target.value === "date_range" ? draft.startDate : "" })} disabled={pending}><option value="trip_days">旅行天数</option><option value="date_range">具体日期</option></select></label>{draft.startDate !== "" ? <div className="uc-intent-editor-grid"><label>开始日期<input type="date" value={draft.startDate ?? ""} onChange={(event) => setDraft({ ...draft, startDate: event.target.value })} disabled={pending} /></label><label>结束日期<input type="date" value={draft.endDate ?? ""} onChange={(event) => setDraft({ ...draft, endDate: event.target.value })} disabled={pending} /></label></div> : <label>旅行天数<input type="number" min="1" max="60" value={draft.tripDays ?? ""} onChange={(event) => setDraft({ ...draft, tripDays: event.target.value })} disabled={pending} /></label>}</> : null}
     {error ? <p className="uc-intent-feedback uc-intent-feedback--error" role="alert">{error}</p> : null}
@@ -522,19 +544,12 @@ function operationForEditor(editor: CriticalEditor, draft: CriticalIntentFormDra
   return draft.pace ? { operation: "update_pace", pace: draft.pace } : null;
 }
 
-function clarificationInputKind(code: string): "destination" | "trip_days" | "date_range" | "date_choice" | null {
-  if (["destination_missing", "missing_destination", "destination_conflict"].includes(code)) return "destination";
-  if (["trip_length_missing", "missing_trip_length", "trip_dates_missing"].includes(code)) return "trip_days";
-  if (code === "relative_date_requires_anchor") return "date_range";
-  if (["date_conflict", "date_range_conflict", "date_invalid"].includes(code)) return "date_choice";
-  return null;
-}
-
-function clarificationTitle(kind: NonNullable<ReturnType<typeof clarificationInputKind>>): string { return { destination: "请填写这次旅行的目的地", trip_days: "请填写旅行日期或天数", date_range: "请确认具体出发日期", date_choice: "请确认旅行日期或天数" }[kind]; }
-function clarificationDetail(kind: NonNullable<ReturnType<typeof clarificationInputKind>>): string { return { destination: "目的地决定路线范围和可安排的地点。", trip_days: "我们需要知道可用于安排行程的时间。", date_range: "相对日期需要一个明确的日历参考。", date_choice: "日期和天数目前不一致，需要你指定一个安排依据。" }[kind]; }
-function clarificationAnswerForKind(kind: NonNullable<ReturnType<typeof clarificationInputKind>>, draft: CriticalIntentFormDraft): DraftClarificationAnswer | null {
+function clarificationTitle(kind: PrePlanClarificationControl): string { return { destination: "请填写这次旅行的目的地", trip_days: "请填写旅行日期或天数", pace: "请确认旅行节奏", date_range: "请确认具体出发日期", date_choice: "请确认旅行日期或天数" }[kind]; }
+function clarificationDetail(kind: PrePlanClarificationControl): string { return { destination: "目的地决定路线范围和可安排的地点。", trip_days: "我们需要知道可用于安排行程的时间。", pace: "旅行节奏会影响每天的安排密度。", date_range: "相对日期需要一个明确的日历参考。", date_choice: "请调整旅行日期或天数，让固定安排能安全纳入路线。" }[kind]; }
+function clarificationAnswerForKind(kind: PrePlanClarificationControl, draft: CriticalIntentFormDraft): DraftClarificationAnswer | null {
   if (kind === "destination" && draft.city?.trim()) return { answer_type: "destination", city: draft.city.trim() };
   if (kind === "trip_days") { const trip_days = Number(draft.tripDays); return Number.isInteger(trip_days) && trip_days > 0 ? { answer_type: "trip_days", trip_days } : null; }
+  if (kind === "pace" && draft.pace) return { answer_type: "pace", pace: draft.pace };
   if (kind === "date_range" && draft.startDate && draft.endDate) return { answer_type: "date_range", start_date: draft.startDate, end_date: draft.endDate, timezone: "Asia/Shanghai" };
   if (kind === "date_choice") { if (draft.startDate && draft.endDate) return { answer_type: "date_policy_choice", policy: "date_range", start_date: draft.startDate, end_date: draft.endDate, timezone: "Asia/Shanghai" }; const trip_days = Number(draft.tripDays); return Number.isInteger(trip_days) && trip_days > 0 ? { answer_type: "date_policy_choice", policy: "trip_days", trip_days } : null; }
   return null;
@@ -543,6 +558,7 @@ function clarificationAnswerForKind(kind: NonNullable<ReturnType<typeof clarific
 function operationForClarification(answer: DraftClarificationAnswer): DraftIntentEditOperation {
   if (answer.answer_type === "destination") return { operation: "update_destination", city: answer.city, timezone: answer.timezone };
   if (answer.answer_type === "trip_days") return { operation: "update_trip_days", trip_days: answer.trip_days };
+  if (answer.answer_type === "pace") return { operation: "update_pace", pace: answer.pace };
   if (answer.answer_type === "date_range") return { operation: "update_date_policy", start_date: answer.start_date, end_date: answer.end_date, timezone: answer.timezone };
   return answer.policy === "trip_days" ? { operation: "update_trip_days", trip_days: answer.trip_days } : { operation: "update_date_policy", start_date: answer.start_date, end_date: answer.end_date, timezone: answer.timezone };
 }

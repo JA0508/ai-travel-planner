@@ -50,8 +50,8 @@ export type TripPersistenceState =
   | { status: "creating" }
   | { status: "draft"; tripId: string }
   | { status: "restoring"; tripId: string }
-  | { status: "saved"; tripId: string; currentRevisionId: string; revisionNumber: number }
-  | { status: "dirty"; tripId: string; currentRevisionId: string; revisionNumber: number; reason: string }
+  | { status: "saved"; tripId: string; currentRevisionId: string; revisionNumber: number; plannerRunId?: string | null }
+  | { status: "dirty"; tripId: string; currentRevisionId: string; revisionNumber: number; reason: string; plannerRunId?: string | null }
   | {
       status: "conflict";
       tripId: string;
@@ -138,6 +138,7 @@ export function markSavedFromRevision(
     tripId: revision.trip_id,
     currentRevisionId: revision.id,
     revisionNumber: revision.revision_number,
+    plannerRunId: revision.planner_run_id,
   };
 }
 
@@ -153,6 +154,7 @@ export function markDirty(
     tripId: state.tripId,
     currentRevisionId: state.currentRevisionId,
     revisionNumber: state.revisionNumber,
+    plannerRunId: state.plannerRunId,
     reason,
   };
 }

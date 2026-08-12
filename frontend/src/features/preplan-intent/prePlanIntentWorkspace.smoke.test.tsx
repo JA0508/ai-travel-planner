@@ -60,3 +60,22 @@ test("pre-plan workspace connects critical edits and clarification answers to se
   assert.match(source, /getLatestPrePlanIntent/);
   assert.doesNotMatch(source, /localStorage/);
 });
+
+test("pre-plan workspace keeps a stale frozen preview visible and requires replacement before apply", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /buildPrePlanHandoffStatus/);
+  assert.match(source, /data-preplan-handoff-status="stale"/);
+  assert.match(source, /路线预览已过期/);
+  assert.match(source, /重新生成路线预览/);
+  assert.match(source, /preview\.draft_intent_revision_id/);
+  assert.match(source, /userFacingPrePlanHandoffError/);
+  assert.match(source, /PlannerTraceReviewPanel/);
+  assert.match(source, /review_summary/);
+});
+
+test("pre-plan workspace surfaces readiness blockers that do not have an inline clarification editor", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /view\.blockers\.length/);
+  assert.match(source, /blocker\.title/);
+  assert.match(source, /还没有确认可排入路线的地点/);
+});

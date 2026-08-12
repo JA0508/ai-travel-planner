@@ -125,10 +125,6 @@ class TravelIntent(BaseModel):
     def validate_v1_place_limit(self) -> "TravelIntent":
         if len(self.must_visit_places) + len(self.optional_places) > 8:
             raise ValueError("AI Trip Compiler V1 supports at most eight user places.")
-        if self.trip_days is not None and any(
-            event.day is not None and event.day > self.trip_days for event in self.fixed_events
-        ):
-            raise ValueError("Fixed event days must be within the trip length.")
         return self
 
     @property

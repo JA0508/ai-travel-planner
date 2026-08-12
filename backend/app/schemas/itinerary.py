@@ -122,6 +122,7 @@ class RawPOIInput(FixedConstraint):
     # second name-only provider lookup.
     candidate_id: str | None = Field(default=None, min_length=1)
     canonical_place_id: str | None = Field(default=None, min_length=1)
+    provider_place_id: str | None = Field(default=None, min_length=1)
     resolved_latitude: float | None = Field(default=None, ge=-90, le=90)
     resolved_longitude: float | None = Field(default=None, ge=-180, le=180)
     resolved_duration_minutes: int | None = Field(default=None, gt=0, le=1440)
@@ -238,6 +239,7 @@ class NormalizedPOI(FixedConstraint):
     # intent handoff supplies them so a scheduled item can retain its source.
     candidate_id: str | None = Field(default=None, min_length=1)
     canonical_place_id: str | None = Field(default=None, min_length=1)
+    provider_place_id: str | None = Field(default=None, min_length=1)
     intent_ownership: Literal["user_must", "user_optional"] | None = None
     verified_place: VerifiedPlaceRef | None = None
 
@@ -295,6 +297,7 @@ class ScheduledPOI(BaseModel):
     poi_research: POIResearchSummary | None = None
     candidate_id: str | None = None
     canonical_place_id: str | None = None
+    provider_place_id: str | None = None
     verified_place: VerifiedPlaceRef | None = None
     travel_from_place_id: str | None = None
     travel_to_place_id: str | None = None
@@ -749,6 +752,30 @@ class PlannerRealismSummary(BaseModel):
     daily_loads: list[DailyRouteLoad] = Field(default_factory=list)
 
 
+class ExecutionTrustFact(BaseModel):
+    """Read-only, user-facing evidence for one execution trust category."""
+
+    key: str
+    category: Literal["place", "route", "fixed_event", "schedule", "execution"]
+    status: Literal["confirmed", "stale", "missing", "conflicting", "heuristic", "unknown"]
+    source_kind: Literal["provider", "user", "deterministic", "heuristic", "missing_data"]
+    verification_status: Literal["user_confirmed", "provider_returned", "unavailable", "not_applicable", "unknown"]
+    freshness_status: Literal["fresh", "stale", "unknown", "not_applicable"]
+    label: str
+    detail: str
+    count: int = Field(..., ge=0)
+
+
+class ExecutionTrustSummary(BaseModel):
+    """Read-only execution evidence derived from the saved planning result."""
+
+    status: Literal["ready", "needs_attention", "blocked"]
+    headline: str
+    blocking_reasons: list[str] = Field(default_factory=list)
+    warning_reasons: list[str] = Field(default_factory=list)
+    facts: list[ExecutionTrustFact] = Field(default_factory=list)
+
+
 class ItineraryResponse(BaseModel):
     trip_days: int = Field(..., ge=1)
     hotel: HotelStay | None = None
@@ -761,6 +788,7 @@ class ItineraryResponse(BaseModel):
     stay_recommendation: StayRecommendation | None = None
     departure_recommendation: DepartureRecommendation | None = None
     planner_realism: PlannerRealismSummary | None = None
+    execution_trust: ExecutionTrustSummary | None = None
     boundary_explanation: BoundaryInfluenceExplanation = Field(
         default_factory=BoundaryInfluenceExplanation
     )

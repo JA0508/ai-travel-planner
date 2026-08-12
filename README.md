@@ -499,11 +499,18 @@ tests, including Image/PDF artifact intake privacy and inspection UI state.
 From the repository root:
 
 ```bash
-backend/.venv/bin/python -m unittest discover -s backend/tests -t backend
-backend/.venv/bin/python -m tools.run_planner_evaluation --ci
-backend/.venv/bin/python -m tools.run_trip_mutation_evaluation --ci
-backend/.venv/bin/python -m tools.run_import_evaluation --ci
+PYTHONPATH=backend backend/.venv/bin/python -m unittest discover -s backend/tests -t backend
+PYTHONPATH=backend backend/.venv/bin/python -m tools.run_planner_evaluation --ci
+PYTHONPATH=backend backend/.venv/bin/python -m tools.run_trip_mutation_evaluation --ci
+PYTHONPATH=backend backend/.venv/bin/python -m tools.run_import_evaluation --ci
+PYTHONPATH=backend backend/.venv/bin/python -m tools.run_intent_compiler_evaluation --ci
 ```
+
+`tools.run_planner_evaluation --ci` also gates the frozen handoff review corpus:
+five strict lifecycle boundaries (`apply_ready`, `blocked`, `stale`, `unstable`,
+and `applied`) plus a lighter drift-style warning sample. The runner prints the
+coverage type for each sample so strict assertions and observational coverage
+remain distinguishable.
 
 Or, with the backend virtual environment activated:
 

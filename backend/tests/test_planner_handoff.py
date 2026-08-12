@@ -14,13 +14,94 @@ from app.trips.access import hash_idempotency_key
 from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
 from app.trips.digests import request_digest
 from app.trips.intent_contracts import SourceLinkedTripIntentEnvelope
-from app.trips.planner_handoff import build_planner_handoff_input
+from app.trips.planner_handoff import build_handoff_review_summary, build_planner_handoff_input
 from app.trips.service import format_utc
 from tests.test_trip_mutation_commands import command_itinerary
 from tests.test_trip_persistence_api import simple_itinerary
 
 
 class PlannerHandoffTests(unittest.TestCase):
+    def test_frozen_handoff_review_summary_reports_apply_ready_trace_context(self) -> None:
+        summary = build_handoff_review_summary(
+            bound_intent_revision_id="intent-1",
+            current_intent_revision_id="intent-1",
+            base_trip_revision_id="revision-1",
+            current_trip_revision_id="revision-1",
+            run_status="pending",
+            applied_revision_id=None,
+            trace_snapshot={
+                "decisions": [
+                    {"decision": "accepted", "reason_codes": ["accepted_input_candidate"]},
+                    {"decision": "rejected", "reason_codes": ["rejected_no_available_slot"]},
+                ],
+                "warnings": [{"code": "route_data_missing"}],
+            },
+            result_snapshot={"planner_realism": {"status": "stable", "issues": []}},
+            readiness_status="ready_for_planning",
+            readiness_blocking_reason_codes=[],
+            readiness_warning_codes=[],
+        )
+
+        self.assertEqual(summary.status, "apply_ready")
+        self.assertTrue(summary.can_apply)
+        self.assertEqual(summary.trace.decision_count, 2)
+        self.assertEqual(summary.trace.accepted_decision_count, 1)
+        self.assertEqual(summary.trace.rejected_decision_count, 1)
+        self.assertEqual(summary.trace.warning_count, 1)
+        self.assertIn("accepted_input_candidate", summary.trace.reason_codes)
+
+    def test_frozen_handoff_review_summary_prioritizes_stale_and_unstable_boundaries(self) -> None:
+        stale = build_handoff_review_summary(
+            bound_intent_revision_id="intent-1",
+            current_intent_revision_id="intent-2",
+            base_trip_revision_id="revision-1",
+            current_trip_revision_id="revision-1",
+            run_status="pending",
+            applied_revision_id=None,
+            trace_snapshot={},
+            result_snapshot={"planner_realism": {"status": "unstable", "issues": [{"code": "route_conflict"}]}},
+            readiness_status="ready_for_planning",
+            readiness_blocking_reason_codes=[],
+            readiness_warning_codes=[],
+        )
+        unstable = build_handoff_review_summary(
+            bound_intent_revision_id="intent-1",
+            current_intent_revision_id="intent-1",
+            base_trip_revision_id="revision-1",
+            current_trip_revision_id="revision-1",
+            run_status="pending",
+            applied_revision_id=None,
+            trace_snapshot={},
+            result_snapshot={"planner_realism": {"status": "unstable", "issues": [{"code": "route_conflict"}]}},
+            readiness_status="ready_for_planning",
+            readiness_blocking_reason_codes=[],
+            readiness_warning_codes=[],
+        )
+
+        self.assertEqual(stale.status, "stale")
+        self.assertIn("intent_revision_advanced", stale.blocking_reason_codes)
+        self.assertEqual(unstable.status, "unstable")
+        self.assertIn("route_conflict", unstable.blocking_reason_codes)
+
+    def test_frozen_handoff_review_summary_reports_readiness_blockers(self) -> None:
+        summary = build_handoff_review_summary(
+            bound_intent_revision_id="intent-1",
+            current_intent_revision_id="intent-1",
+            base_trip_revision_id=None,
+            current_trip_revision_id=None,
+            run_status="pending",
+            applied_revision_id=None,
+            trace_snapshot={"decisions": [], "warnings": []},
+            result_snapshot={"planner_realism": {"status": "stable", "issues": []}},
+            readiness_status="needs_clarification",
+            readiness_blocking_reason_codes=["trip_dates_missing"],
+            readiness_warning_codes=[],
+        )
+
+        self.assertEqual(summary.status, "blocked")
+        self.assertFalse(summary.can_apply)
+        self.assertEqual(summary.blocking_reason_codes, ["trip_dates_missing", "intent_not_planner_ready"])
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.env = patch.dict(
@@ -47,6 +128,8 @@ class PlannerHandoffTests(unittest.TestCase):
         intent = compile_ready_intent(self.client, self.trip_id, self.base_revision_id, candidate["id"])
         planned = command_itinerary()
         planned.days[0].blocks[0].items[0].candidate_id = candidate["id"]
+        planned.days[0].blocks[0].items[0].canonical_place_id = candidate["canonical_place_id"]
+        planned.days[0].blocks[0].items[0].provider_place_id = candidate["provider_place_id"]
 
         with patch("app.trips.service.build_itinerary_response", return_value=planned) as planner:
             preview = self.client.post(
@@ -62,8 +145,13 @@ class PlannerHandoffTests(unittest.TestCase):
         self.assertTrue(body["source_links"])
         scheduled = body["itinerary"]["days"][0]["blocks"][0]["items"][0]
         self.assertEqual(scheduled["candidate_id"], candidate["id"])
+        self.assertEqual(scheduled["canonical_place_id"], candidate["canonical_place_id"])
+        self.assertEqual(scheduled["provider_place_id"], candidate["provider_place_id"])
         self.assertEqual(scheduled["candidate_provenance"]["intent_field_path"], "poi.must_candidates")
         self.assertEqual(planner.call_args.kwargs["trace_collector"].planner_run_id, body["planner_run"]["id"])
+        handoff_poi = planner.call_args.args[0].scenic_spots[0]
+        self.assertEqual(handoff_poi.canonical_place_id, candidate["canonical_place_id"])
+        self.assertEqual(handoff_poi.provider_place_id, candidate["provider_place_id"])
 
         with patch("app.trips.service.build_itinerary_response", side_effect=AssertionError("apply must not rerun planner")):
             applied = self.client.post(
@@ -95,6 +183,9 @@ class PlannerHandoffTests(unittest.TestCase):
         current = self.client.get(f"/trips/{self.trip_id}")
         self.assertEqual(current.status_code, 200)
         self.assertEqual(current.json()["current_revision"]["id"], applied_body["current_revision"]["id"])
+        persisted_item = current.json()["itinerary"]["days"][0]["blocks"][0]["items"][0]
+        self.assertEqual(persisted_item["canonical_place_id"], candidate["canonical_place_id"])
+        self.assertEqual(persisted_item["provider_place_id"], candidate["provider_place_id"])
 
     def test_unresolved_contract_does_not_create_handoff_run(self) -> None:
         compiled = self.client.post(
@@ -323,6 +414,7 @@ def register_verified_candidate(client: TestClient, trip_id: str) -> dict:
             "candidate_type": "place",
             "display_name": "外滩",
             "canonical_place_id": "amap:bund",
+            "provider_place_id": "B000A83M61",
             "coordinates": {"latitude": 31.2401, "longitude": 121.4903},
             "estimated_duration_minutes": 90,
             "source_kind": "manual_entry",

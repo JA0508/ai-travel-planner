@@ -434,6 +434,7 @@ class Scheduler:
                     travel_duration_s=None,
                     candidate_id=poi.candidate_id,
                     canonical_place_id=poi.canonical_place_id,
+                    provider_place_id=poi.provider_place_id,
                     verified_place=poi.verified_place,
                 )
             )
@@ -726,6 +727,7 @@ class Scheduler:
                         selection_rejected_candidates=selection_rejected_candidates,
                         candidate_id=next_poi.candidate_id,
                         canonical_place_id=next_poi.canonical_place_id,
+                        provider_place_id=next_poi.provider_place_id,
                         verified_place=next_poi.verified_place,
                     )
                 )
@@ -1902,6 +1904,14 @@ def is_fixed_poi(poi: NormalizedPOI) -> bool:
 
 
 def stable_candidate_id(poi: NormalizedPOI) -> str:
+    if poi.canonical_place_id:
+        return stable_subject_id(
+            "candidate",
+            poi.canonical_place_id,
+            poi.provider_place_id or "",
+            round(poi.latitude, 6),
+            round(poi.longitude, 6),
+        )
     return stable_subject_id(
         "candidate",
         poi.name.strip().casefold(),

@@ -26,3 +26,22 @@ class EvaluationReport(BaseModel):
     failed_count: int
     deterministic_mismatch_count: int
     results: list[EvaluationCaseResult]
+
+
+class HandoffEvaluationCaseResult(BaseModel):
+    case_id: str
+    coverage: str
+    status: str
+    can_apply: bool
+    passed: bool
+    deterministic_match: bool
+    invariant_results: list[EvaluationInvariantResult] = Field(default_factory=list)
+
+
+class HandoffEvaluationReport(BaseModel):
+    fixture_count: int
+    strict_fixture_count: int
+    drift_fixture_count: int
+    passed_count: int
+    failed_count: int
+    results: list[HandoffEvaluationCaseResult]

@@ -4,7 +4,7 @@ import copy
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from uuid import uuid4
 
 from app.api.routes.itinerary import (
@@ -142,11 +142,14 @@ from .models import (
     TripCandidateRecord,
     TripMutationProposalRecord,
     TripPlanningPhase,
+    TripRecord,
 )
 from .planner_handoff import (
     PLANNER_HANDOFF_INPUT_SCHEMA_VERSION,
     attach_handoff_source_links,
+    build_handoff_review_summary,
     build_planner_handoff_input,
+    PlannerHandoffReviewSummary,
     record_handoff_trace_context,
 )
 from .mutation_commands import (
@@ -177,6 +180,7 @@ from .schemas import (
     PrePlanHandoffPreviewRequest,
     PrePlanHandoffPreviewResponse,
     PrePlanHandoffRunMetadata,
+    PrePlanHandoffRunStatusResponse,
     PrePlanIntentCompileResponse,
     PlannerHandoffApplyResponse,
     PlannerHandoffPreviewRequest,
@@ -581,7 +585,14 @@ class TripPersistenceService:
             raise ClarificationAlreadyResolvedError()
         if not question.blocking or question.resolution_kind.value not in {"inline_answer", "edit_contract"}:
             raise DraftIntentEditError("clarification_not_editable")
-        operation = clarification_answer_to_operation(payload.answer)
+        try:
+            operation = clarification_answer_to_operation(
+                question_reason_code=question.reason_code,
+                question_editor_field_path=question.editor_field_path,
+                answer=payload.answer,
+            )
+        except DraftIntentEditValidationError as exc:
+            raise DraftIntentEditError(exc.code) from exc
         try:
             return self.edit_draft_intent(
                 trip_id=trip_id,
@@ -641,7 +652,44 @@ class TripPersistenceService:
             applied_revision_id=None, created_at=format_utc(now), updated_at=format_utc(now),
         )
         run = self.repository.create_preplan_handoff_run(run=run)
-        return PrePlanHandoffPreviewResponse(trip=TripMetadata.from_record(trip), draft_intent_revision_id=draft.id, handoff=PrePlanHandoffRunMetadata.from_record(run), itinerary=stored_itinerary, source_links=[item.model_dump(mode="json") for item in handoff.handoff.source_links])
+        return PrePlanHandoffPreviewResponse(
+            trip=TripMetadata.from_record(trip),
+            draft_intent_revision_id=draft.id,
+            handoff=PrePlanHandoffRunMetadata.from_record(run),
+            itinerary=stored_itinerary,
+            source_links=[item.model_dump(mode="json") for item in handoff.handoff.source_links],
+            review_summary=self._preplan_handoff_review_summary(trip=trip, run=run, current_intent=draft),
+        )
+
+    def get_preplan_handoff_run_status(self, *, trip_id: str, run_id: str, capability: str | None) -> PrePlanHandoffRunStatusResponse:
+        trip = self._require_trip_access(trip_id, capability)
+        run = self.repository.get_preplan_handoff_run(trip_id=trip_id, run_id=run_id)
+        latest = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+        latest_id = latest.id if latest is not None else ""
+        if run.status == "applied":
+            preview_status: Literal["current", "stale", "applied"] = "applied"
+            stale_reason = None
+        elif run.draft_intent_revision_id != latest_id:
+            preview_status = "stale"
+            stale_reason = "draft_intent_advanced"
+        else:
+            preview_status = "current"
+            stale_reason = None
+        return PrePlanHandoffRunStatusResponse(
+            trip=TripMetadata.from_record(trip),
+            latest_draft_intent_revision_id=latest_id,
+            handoff=PrePlanHandoffRunMetadata.from_record(run),
+            preview_status=preview_status,
+            stale_reason=stale_reason,
+            review_summary=self._preplan_handoff_review_summary(
+                trip=trip,
+                run=run,
+                current_intent=latest or self.repository.get_draft_intent_revision(
+                    trip_id=trip_id,
+                    revision_id=run.draft_intent_revision_id,
+                ),
+            ),
+        )
 
     def apply_preplan_handoff(self, *, trip_id: str, run_id: str, capability: str | None, idempotency_key: str | None, payload: PrePlanHandoffApplyRequest) -> PrePlanHandoffApplyResponse:
         if not idempotency_key or not idempotency_key.strip():
@@ -663,7 +711,46 @@ class TripPersistenceService:
         )
         current_trip = self.repository.get_trip(trip_id)
         applied = self.repository.get_preplan_handoff_run(trip_id=trip_id, run_id=run_id)
-        return PrePlanHandoffApplyResponse(trip=TripMetadata.from_record(current_trip), current_revision=TripRevisionMetadata.from_record(result.revision), draft_intent_revision_id=run.draft_intent_revision_id, handoff=PrePlanHandoffRunMetadata.from_record(applied), itinerary=deserialize_itinerary_snapshot(result.revision.itinerary_snapshot), persistence=TripPersistenceInfo(idempotent_replay=result.idempotent_replay))
+        latest = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+        return PrePlanHandoffApplyResponse(
+            trip=TripMetadata.from_record(current_trip),
+            current_revision=TripRevisionMetadata.from_record(result.revision),
+            draft_intent_revision_id=run.draft_intent_revision_id,
+            handoff=PrePlanHandoffRunMetadata.from_record(applied),
+            itinerary=deserialize_itinerary_snapshot(result.revision.itinerary_snapshot),
+            persistence=TripPersistenceInfo(idempotent_replay=result.idempotent_replay),
+            review_summary=self._preplan_handoff_review_summary(
+                trip=current_trip,
+                run=applied,
+                current_intent=latest or self.repository.get_draft_intent_revision(
+                    trip_id=trip_id,
+                    revision_id=run.draft_intent_revision_id,
+                ),
+            ),
+        )
+
+    def _preplan_handoff_review_summary(
+        self,
+        *,
+        trip: TripRecord,
+        run: PrePlanHandoffRunRecord,
+        current_intent: DraftIntentRevisionRecord,
+    ) -> PlannerHandoffReviewSummary:
+        envelope = SourceLinkedTripIntentEnvelope.model_validate(current_intent.envelope)
+        readiness = envelope.formal_contract.readiness
+        return build_handoff_review_summary(
+            bound_intent_revision_id=run.draft_intent_revision_id,
+            current_intent_revision_id=current_intent.id,
+            base_trip_revision_id=None,
+            current_trip_revision_id=trip.current_revision_id,
+            run_status=run.status,
+            applied_revision_id=run.applied_revision_id,
+            trace_snapshot=run.trace_snapshot,
+            result_snapshot=run.result_snapshot,
+            readiness_status=readiness.status,
+            readiness_blocking_reason_codes=readiness.blocking_issue_codes,
+            readiness_warning_codes=readiness.warning_codes,
+        )
 
     def get_current_trip(self, trip_id: str, capability: str | None) -> TripCurrentResponse:
         trip = self._require_trip_access(trip_id, capability)

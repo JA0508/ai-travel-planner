@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
-import { postTripJson } from "@/components/trip/tripApiClient";
+import React, { useEffect, useMemo, useState } from "react";
+import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
+import type { PlannerHandoffReviewSummary } from "@/features/preplan-intent/plannerTraceReviewModel";
 import {
   buildDayLoads,
   buildUserFacingRisks,
@@ -12,6 +13,7 @@ import {
   type DayLoad,
   type RoutePreviewItinerary,
 } from "./routePreviewModel";
+import { buildFrozenHandoffEvidenceView } from "./frozenHandoffEvidenceModel";
 
 type MutationPreviewResponse = {
   proposal: { id: string; proposal_digest: string };
@@ -34,11 +36,16 @@ type MutationApplyResponse = {
   itinerary: RoutePreviewItinerary;
 };
 
+type PrePlanHandoffRunStatusResponse = {
+  review_summary: PlannerHandoffReviewSummary;
+};
+
 type Props = {
   itinerary: RoutePreviewItinerary;
   variant: "draft" | "saved";
   tripId?: string;
   baseRevisionId?: string;
+  plannerRunId?: string | null;
   onApplied?: (response: MutationApplyResponse) => void;
 };
 
@@ -54,12 +61,38 @@ export function ExecutableRoutePreview({
   variant,
   tripId,
   baseRevisionId,
+  plannerRunId,
   onApplied,
 }: Props) {
   const loads = useMemo(() => buildDayLoads(itinerary), [itinerary]);
   const risks = useMemo(() => buildUserFacingRisks(itinerary, loads), [itinerary, loads]);
+  const evidence = useMemo(() => buildRouteEvidence(itinerary), [itinerary]);
   const [repair, setRepair] = useState<RepairState>({ status: "idle" });
+  const [frozenSummary, setFrozenSummary] = useState<PlannerHandoffReviewSummary | null>(null);
+  const [frozenSummaryUnavailable, setFrozenSummaryUnavailable] = useState(false);
   const canRepair = variant === "saved" && Boolean(tripId && baseRevisionId && onApplied);
+  const hasFrozenPrePlanRun = variant === "saved" && Boolean(tripId && plannerRunId?.startsWith("preplan_handoff_"));
+
+  useEffect(() => {
+    let active = true;
+    if (!hasFrozenPrePlanRun || !tripId || !plannerRunId) {
+      setFrozenSummary(null);
+      setFrozenSummaryUnavailable(false);
+      return () => { active = false; };
+    }
+    setFrozenSummary(null);
+    setFrozenSummaryUnavailable(false);
+    void getTripJson<PrePlanHandoffRunStatusResponse>(
+      TRIP_API_ENDPOINTS.getPrePlanHandoffRunStatus(tripId, plannerRunId),
+      "暂时无法读取这份已保存的规划依据。",
+      "服务暂时不可用，路线内容仍可查看。",
+    ).then((result) => {
+      if (!active) return;
+      if (result.ok) setFrozenSummary(result.data.review_summary);
+      else setFrozenSummaryUnavailable(true);
+    });
+    return () => { active = false; };
+  }, [hasFrozenPrePlanRun, plannerRunId, tripId]);
 
   async function previewRelaxation(day: number) {
     if (!tripId || !baseRevisionId) return;
@@ -117,6 +150,17 @@ export function ExecutableRoutePreview({
 
       {risks.length ? <section className="erp-risks" role="alert"><strong>需要留意</strong>{risks.map((risk) => <p key={risk}>{risk}</p>)}</section> : null}
 
+      <details className="erp-why" data-route-planning-evidence>
+        <summary>查看规划依据</summary>
+        {frozenSummary ? <FrozenPlanningEvidence summary={frozenSummary} handoffRunId={plannerRunId ?? ""} /> : <div>
+          <p><strong>根据已保存路线内容归纳</strong></p>
+          <p>{evidence.confirmedCount} 项来自你的地点或固定安排。</p>
+          <p>{evidence.suggestedCount} 项系统补充是路线建议，不等同于已确认的事实。</p>
+          {evidence.unexplainedCount ? <p>{evidence.unexplainedCount} 项暂时没有可验证的安排说明，已在地点卡片中明确标注。</p> : null}
+          {hasFrozenPrePlanRun && frozenSummaryUnavailable ? <p>这份路线关联了冻结规划记录，但暂时无法读取其已保存依据。</p> : null}
+        </div>}
+      </details>
+
       <div className="erp-days">
         {itinerary.days.map((day) => {
           const load = loads.find((entry) => entry.day === day.day);
@@ -154,6 +198,21 @@ export function ExecutableRoutePreview({
   );
 }
 
+function FrozenPlanningEvidence({ summary, handoffRunId }: { summary: PlannerHandoffReviewSummary; handoffRunId: string }) {
+  const view = buildFrozenHandoffEvidenceView(summary, handoffRunId);
+  return <div data-frozen-handoff-evidence>
+    <p><strong>{view.title}</strong></p>
+    <p>{view.intentLabel}</p>
+    <p>{view.handoffLabel}</p>
+    <p>{view.statusLabel}</p>
+    <p>{view.readinessLabel}</p>
+    <p>{view.traceLabel}</p>
+    <p>{view.sourceBoundary}</p>
+    <p>{view.heuristicBoundary}</p>
+    <p>{view.providerBoundary}</p>
+  </div>;
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return <div><span>{label}</span><strong>{value}</strong></div>;
 }
@@ -167,6 +226,15 @@ function TravelLeg({ item }: { item: RoutePreviewItinerary["days"][number]["bloc
 
 function isSystemSuggested(item: RoutePreviewItinerary["days"][number]["blocks"][number]["items"][number]) {
   return item.source_type === "auto_seeded_poi" || item.source_type === "auto_seeded_meal" || item.source_type === "auto_filled";
+}
+
+function buildRouteEvidence(itinerary: RoutePreviewItinerary) {
+  const items = itinerary.days.flatMap((day) => day.blocks.flatMap((block) => block.items));
+  return {
+    confirmedCount: items.filter((item) => item.is_fixed || item.source_type === "user_seed" || item.source_type === "user_fixed").length,
+    suggestedCount: items.filter(isSystemSuggested).length,
+    unexplainedCount: items.filter((item) => !item.placement_reason).length,
+  };
 }
 
 function DayReasons({ items }: { items: RoutePreviewItinerary["days"][number]["blocks"][number]["items"] }) {

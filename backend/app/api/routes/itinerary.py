@@ -97,6 +97,7 @@ from app.services.nl_parser import normalize_parsed_trip_intent, parse_trip_text
 from app.services.poi_discovery_provider import get_poi_discovery_capability
 from app.services.poi_research_summary import attach_poi_research_summaries
 from app.services.planner_realism_analyzer import analyze_planner_realism
+from app.services.execution_trust import build_execution_trust_summary
 from app.services.planning_state_transformer import (
     build_planning_input_state,
     classify_preference_state,
@@ -813,7 +814,7 @@ def refresh_completion_task_itinerary_surfaces(
         trip_intent = trip_intent.model_copy(
             update={"completion_candidate_history": completion_candidate_history}
         )
-    return itinerary.model_copy(
+    response = itinerary.model_copy(
         update={
             "trip_intent": trip_intent,
             "planning_assumptions": planning_assumptions,
@@ -824,6 +825,7 @@ def refresh_completion_task_itinerary_surfaces(
             "departure_recommendation": departure_recommendation,
         }
     )
+    return response
 
 
 def upsert_restored_completion_candidates(
@@ -1203,6 +1205,14 @@ def build_itinerary_response(
             "stay_recommendation": stay_recommendation,
             "departure_recommendation": departure_recommendation,
             "planner_realism": planner_realism,
+        }
+    )
+    return response.model_copy(
+        update={
+            "execution_trust": build_execution_trust_summary(
+                itinerary=response,
+                provider_summary=trace_collector.provider_summary if trace_collector is not None else None,
+            )
         }
     )
 
@@ -1946,6 +1956,7 @@ def normalize_optional_pois(
                     fixed_time_end=raw_poi.fixed_time_end,
                     candidate_id=raw_poi.candidate_id,
                     canonical_place_id=raw_poi.canonical_place_id,
+                    provider_place_id=raw_poi.provider_place_id,
                     intent_ownership=raw_poi.intent_ownership,
                     verified_place=raw_poi.verified_place,
                 )
@@ -2025,6 +2036,14 @@ def normalize_optional_pois(
 
 
 def stable_trace_candidate_id(poi: NormalizedPOI) -> str:
+    if poi.canonical_place_id:
+        return stable_subject_id(
+            "candidate",
+            poi.canonical_place_id,
+            poi.provider_place_id or "",
+            round(poi.latitude, 6),
+            round(poi.longitude, 6),
+        )
     return stable_subject_id(
         "candidate",
         poi.name.strip().casefold(),

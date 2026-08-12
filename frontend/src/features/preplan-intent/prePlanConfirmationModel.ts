@@ -16,6 +16,23 @@ export type PrePlanConfirmationViewModel = {
   actionHint: string;
 };
 
+export type PrePlanClarificationControl = "destination" | "trip_days" | "pace" | "date_range" | "date_choice";
+
+export function getPrePlanClarificationControl(question: IntentClarification): PrePlanClarificationControl | null {
+  if (["destination_missing", "missing_destination", "destination_conflict"].includes(question.reason_code)) return "destination";
+  if (["trip_length_missing", "missing_trip_length", "trip_dates_missing"].includes(question.reason_code)) return "trip_days";
+  if (question.reason_code === "relative_date_requires_anchor") return "date_range";
+  if (["date_conflict", "date_range_conflict", "date_invalid", "fixed_event_outside_trip_dates"].includes(question.reason_code)) return "date_choice";
+  if (question.reason_code !== "same_priority_conflict") return null;
+  const controls: Record<string, PrePlanClarificationControl> = {
+    "trip.city": "destination",
+    "trip.trip_days": "trip_days",
+    "trip.pace": "pace",
+    "trip.date_policy": "date_choice",
+  };
+  return controls[question.editor_field_path ?? ""] ?? null;
+}
+
 export function buildPrePlanConfirmationViewModel(
   envelope: SourceLinkedTripIntentEnvelope,
 ): PrePlanConfirmationViewModel {
@@ -98,6 +115,8 @@ function issueCopy(code: string): { title: string; detail: string } {
       return { title: "请填写这次旅行的目的地", detail: "目的地决定路线范围和可安排的地点。" };
     case "missing_trip_length":
       return { title: "请填写旅行日期或天数", detail: "我们需要知道可用于安排行程的时间。" };
+    case "no_planner_anchor":
+      return { title: "还需要确认至少一个计划地点", detail: "补充一个想去的地点或已确认的固定安排地点后，才能生成可执行路线。" };
     case "relative_date_requires_anchor":
       return { title: "请确认具体出发日期", detail: "相对日期需要一个明确的日历参考。" };
     case "arrival_after_departure":

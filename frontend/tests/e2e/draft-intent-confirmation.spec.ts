@@ -103,9 +103,9 @@ for (const viewportCase of viewportCases) {
     const resolved = page.waitForResponse(isClarificationResponse);
     await clarification.getByRole("button", { name: "确认" }).click();
     expect((await resolved).status()).toBe(201);
-    await expect(clarification).toHaveCount(0);
     await expect(overview).toContainText("杭州");
-    await expect(primary).toBeEnabled();
+    await expect(clarification.getByText("还需要确认至少一个计划地点")).toBeVisible();
+    await expect(primary).toBeDisabled();
     await expect(page.getByText("missing_destination", { exact: false })).toHaveCount(0);
     if (viewportCase.name === "mobile") {
       await page.getByRole("button", { name: "修改目的地" }).click();

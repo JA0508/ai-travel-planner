@@ -424,6 +424,57 @@ class DraftIntentEditingApiTests(unittest.TestCase):
         self.assertEqual(duplicate.status_code, 409, duplicate.text)
         self.assertEqual(duplicate.json()["error"]["code"], "clarification_already_resolved")
 
+    def test_fixed_event_clarification_rejects_unrelated_answers_and_records_a_typed_resolution(self) -> None:
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": "去上海一天，第二天有一个预约。"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "fixed-event-clarification-create"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        trip_id = created.json()["trip"]["id"]
+        compiled = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/compile",
+            json={
+                "base_intent_revision_id": None,
+                "structured_overrides": {
+                    "city": "上海",
+                    "trip_days": 1,
+                    "fixed_events": [{"name": "第二天预约", "fixed_day": 2}],
+                },
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "fixed-event-clarification-compile"},
+        )
+        self.assertEqual(compiled.status_code, 201, compiled.text)
+        question = next(
+            item
+            for item in compiled.json()["envelope"]["clarification_queue"]
+            if item["reason_code"] == "fixed_event_outside_trip_dates"
+        )
+        latest = self.client.get(f"/trips/{trip_id}/preplan-intent")
+        self.assertEqual(latest.status_code, 200, latest.text)
+        base = {
+            "base_intent_revision_id": compiled.json()["revision"]["id"],
+            "base_draft_version": latest.json()["trip"]["draft_version"],
+        }
+
+        unrelated = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/clarifications/{question['question_id']}/resolve",
+            json={**base, "answer": {"answer_type": "destination", "city": "杭州"}},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "fixed-event-clarification-unrelated"},
+        )
+        self.assertEqual(unrelated.status_code, 422, unrelated.text)
+        self.assertEqual(unrelated.json()["error"]["code"], "clarification_answer_not_applicable")
+
+        resolved = self.client.post(
+            f"/trips/{trip_id}/preplan-intent/clarifications/{question['question_id']}/resolve",
+            json={**base, "answer": {"answer_type": "date_policy_choice", "policy": "trip_days", "trip_days": 2}},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "fixed-event-clarification-resolve"},
+        )
+        self.assertEqual(resolved.status_code, 201, resolved.text)
+        self.assertEqual(resolved.json()["envelope"]["formal_contract"]["date_policy"]["trip_days"], 2)
+        self.assertEqual(resolved.json()["envelope"]["validation_report"]["clarification_resolution"]["question_id"], question["question_id"])
+        self.assertFalse(any(item["question_id"] == question["question_id"] for item in resolved.json()["envelope"]["clarification_queue"]))
+
     def test_clarification_schema_rejects_untyped_answer_and_stale_base(self) -> None:
         latest = self.client.get(f"/trips/{self.trip_id}/preplan-intent")
         self.assertEqual(latest.status_code, 200, latest.text)
@@ -439,6 +490,7 @@ class DraftIntentEditingApiTests(unittest.TestCase):
         for answer in [
             {"answer_type": "destination", "city": "杭州"},
             {"answer_type": "trip_days", "trip_days": 3},
+            {"answer_type": "pace", "pace": "balanced"},
             {"answer_type": "date_range", "start_date": "2026-10-01", "end_date": "2026-10-03"},
             {"answer_type": "date_policy_choice", "policy": "trip_days", "trip_days": 3},
             {"answer_type": "date_policy_choice", "policy": "date_range", "start_date": "2026-10-01", "end_date": "2026-10-03"},

@@ -61,6 +61,7 @@ export type LatestPrePlanIntentResponse = {
 export type DraftClarificationAnswer =
   | { answer_type: "destination"; city: string; timezone?: string | null }
   | { answer_type: "trip_days"; trip_days: number }
+  | { answer_type: "pace"; pace: Pace }
   | { answer_type: "date_range"; start_date: string; end_date: string; timezone?: string | null }
   | { answer_type: "date_policy_choice"; policy: "trip_days"; trip_days: number }
   | { answer_type: "date_policy_choice"; policy: "date_range"; start_date: string; end_date: string; timezone?: string | null };

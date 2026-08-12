@@ -5,12 +5,24 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 from app.api.routes import itinerary as itinerary_route
-from app.evaluation.fixture_loader import load_cases
+from app.evaluation.fixture_loader import load_cases, load_handoff_review_cases
 from app.evaluation.fixture_provider import FixtureProviderSnapshot
 from app.evaluation.invariants import evaluate_invariants
-from app.evaluation.models import EvaluationCaseResult, EvaluationReport
+from app.evaluation.models import (
+    EvaluationCaseResult,
+    EvaluationInvariantResult,
+    EvaluationReport,
+    HandoffEvaluationCaseResult,
+    HandoffEvaluationReport,
+)
 from app.planner.trace import PlannerTraceCollector, planner_trace_digest, stable_subject_id
 from app.schemas import ItineraryRequest
+from app.trips.planner_handoff import build_handoff_review_summary
+
+
+HANDOFF_REQUIRED_STATUSES = {"apply_ready", "blocked", "stale", "unstable", "applied"}
+HANDOFF_MIN_STRICT_FIXTURES = 5
+HANDOFF_MIN_DRIFT_FIXTURES = 1
 
 
 def run_planner_evaluation() -> EvaluationReport:
@@ -30,6 +42,86 @@ def run_planner_evaluation() -> EvaluationReport:
         ),
         results=results,
     )
+
+
+def run_handoff_review_evaluation() -> HandoffEvaluationReport:
+    """Replay frozen-handoff review fixtures without invoking the planner."""
+
+    results = [run_handoff_review_case(case) for case in load_handoff_review_cases()]
+    failed_results = [result for result in results if not result.passed]
+    return HandoffEvaluationReport(
+        fixture_count=len(results),
+        strict_fixture_count=sum(result.coverage == "strict" for result in results),
+        drift_fixture_count=sum(result.coverage == "drift" for result in results),
+        passed_count=len(results) - len(failed_results),
+        failed_count=len(failed_results),
+        results=results,
+    )
+
+
+def run_handoff_review_case(case: dict) -> HandoffEvaluationCaseResult:
+    review_input = case["review_input"]
+    expected = case["expected"]
+    summary = build_handoff_review_summary(**review_input)
+    repeated = build_handoff_review_summary(**review_input)
+    invariants = [
+        _handoff_invariant("expected_status", summary.status == expected["status"]),
+        _handoff_invariant("expected_can_apply", summary.can_apply == expected["can_apply"]),
+        _handoff_invariant(
+            "deterministic_summary",
+            summary.model_dump(mode="json") == repeated.model_dump(mode="json"),
+        ),
+    ]
+    if case["coverage"] == "strict":
+        invariants.extend(
+            [
+                _handoff_invariant(
+                    "expected_blocking_reasons",
+                    summary.blocking_reason_codes == expected["blocking_reason_codes"],
+                ),
+                _handoff_invariant(
+                    "expected_warning_codes",
+                    summary.warning_codes == expected["warning_codes"],
+                ),
+                _handoff_invariant(
+                    "expected_trace_summary",
+                    summary.trace.model_dump(mode="json", exclude={"reason_codes"}) == expected["trace"],
+                ),
+            ]
+        )
+    else:
+        invariants.append(
+            _handoff_invariant(
+                "required_warning_codes",
+                set(expected.get("required_warning_codes", [])).issubset(summary.warning_codes),
+            )
+        )
+    return HandoffEvaluationCaseResult(
+        case_id=case["id"],
+        coverage=case["coverage"],
+        status=summary.status,
+        can_apply=summary.can_apply,
+        passed=all(invariant.status == "pass" for invariant in invariants),
+        deterministic_match=invariants[2].status == "pass",
+        invariant_results=invariants,
+    )
+
+
+def _handoff_invariant(code: str, passed: bool) -> EvaluationInvariantResult:
+    return EvaluationInvariantResult(code=code, status="pass" if passed else "fail")
+
+
+def handoff_review_gate_errors(report: HandoffEvaluationReport) -> list[str]:
+    errors: list[str] = []
+    observed_statuses = {result.status for result in report.results}
+    if report.strict_fixture_count < HANDOFF_MIN_STRICT_FIXTURES:
+        errors.append(f"requires_at_least_{HANDOFF_MIN_STRICT_FIXTURES}_strict_fixtures")
+    if report.drift_fixture_count < HANDOFF_MIN_DRIFT_FIXTURES:
+        errors.append(f"requires_at_least_{HANDOFF_MIN_DRIFT_FIXTURES}_drift_fixture")
+    missing_statuses = HANDOFF_REQUIRED_STATUSES - observed_statuses
+    if missing_statuses:
+        errors.append(f"missing_handoff_statuses:{','.join(sorted(missing_statuses))}")
+    return errors
 
 
 def run_case(case: dict) -> EvaluationCaseResult:
