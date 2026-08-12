@@ -11,9 +11,11 @@ const componentPath = fileURLToPath(new URL("./TripCompilerWorkspace.tsx", impor
 
 test("trip compiler starts with one clear text input and no technical fields", () => {
   const html = renderToStaticMarkup(<TripCompilerWorkspace />);
-  assert.match(html, /把旅行想法，变成一份看得懂的路线。/);
-  assert.match(html, /继续/);
+  assert.match(html, /把旅行想法，/);
+  assert.match(html, /变成一份看得懂的路线。/);
+  assert.match(html, /开始编排行程/);
   assert.match(html, /杭州两日轻松游/);
+  assert.match(html, /shanghai-street-hero\.png/);
   assert.doesNotMatch(html, /revision_id/i);
   assert.doesNotMatch(html, /trace_id/i);
   assert.doesNotMatch(html, /schema version/i);
