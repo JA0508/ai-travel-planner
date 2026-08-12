@@ -264,6 +264,32 @@ export type FixedEventIntent = {
   flexibility: "fixed" | "movable_with_confirmation";
 };
 
+export type PlaceResolutionOption = {
+  provider_place_id: string;
+  canonical_name: string;
+  address_summary: string | null;
+  category: string | null;
+  city: string | null;
+};
+
+export type PlaceIdentity = {
+  stable_id: string;
+  original_name: string;
+  canonical_name: string | null;
+  city: string | null;
+  ownership: "must" | "optional" | "fixed";
+  fixed_event_id: string | null;
+  resolution_status: "verified" | "ambiguous" | "unresolved";
+  provider: "amap" | null;
+  provider_place_id: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  category: string | null;
+  source_fragment_ids: string[];
+  confirmation_options: PlaceResolutionOption[];
+  resolution_confidence: number | null;
+};
+
 export type PlacePreferenceIntent = {
   metadata: FormalIntentMetadata;
   trip_candidate_id: string;
@@ -317,6 +343,7 @@ export type FormalTripIntentContract = {
   departure_boundary: TravelBoundaryIntent | null;
   availability_windows: AvailabilityWindowIntent[];
   fixed_events: FixedEventIntent[];
+  place_identities?: PlaceIdentity[];
   must_visit_places: PlacePreferenceIntent[];
   optional_places: PlacePreferenceIntent[];
   avoid_places: PlacePreferenceIntent[];

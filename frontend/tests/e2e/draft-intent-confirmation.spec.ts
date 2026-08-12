@@ -400,6 +400,47 @@ test("Scenario G: blocks an unresolved fixed reservation before any route reques
   gate.assertClean();
 });
 
+test("Scenario H: home confirmation requires a fixed-place revision before preview", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const gate = installErrorGate(page);
+  gate.allowExpectedInitialIntentAbsence();
+  const previewRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/preplan-handoff/preview")) previewRequests.push(request.url());
+  });
+  const tripId = await createDraftThroughHome(page, "去上海两天，第二天下午两点到四点预约了上海博物馆。");
+  const primary = page.getByRole("button", { name: "生成路线预览" });
+  const fixedPlace = page.getByRole("region", { name: "确认固定安排地点" });
+
+  await expect(fixedPlace.getByRole("heading", { name: "补充后才能安排进路线" })).toBeVisible();
+  await expect(fixedPlace.getByRole("button", { name: /上海博物馆（人民广场馆）/ })).toBeVisible();
+  await expect(primary).toBeDisabled();
+  expect(previewRequests).toEqual([]);
+  const before = readDraftDatabase(tripId);
+
+  const confirmation = page.waitForResponse(isDraftIntentEditResponse);
+  await fixedPlace.getByRole("button", { name: /上海博物馆（人民广场馆）/ }).click();
+  expect((await confirmation).status()).toBe(201);
+  await expect(primary).toBeEnabled();
+
+  const confirmed = readDraftDatabase(tripId);
+  expect(confirmed.intent_revisions).toHaveLength(before.intent_revisions.length + 1);
+  expect(confirmed.intent_revisions.at(-1)?.parent_draft_intent_revision_id).toBe(before.intent_revisions.at(-1)?.id);
+  const fixedIdentity = confirmed.intent_revisions.at(-1)?.envelope.formal_contract.place_identities
+    .find((item: { ownership: string }) => item.ownership === "fixed");
+  expect(fixedIdentity).toMatchObject({
+    resolution_status: "verified",
+    provider_place_id: "fixture-shanghai-museum",
+  });
+
+  const preview = page.waitForResponse((response) => response.url().includes("/preplan-handoff/preview") && response.request().method() === "POST");
+  await primary.click();
+  expect((await preview).status()).toBe(200);
+  expect(previewRequests).toHaveLength(1);
+  expect(readDraftDatabase(tripId).trip_revision_count).toBe(0);
+  gate.assertClean();
+});
+
 async function createTripCompilerDraft(page: Page, text: string): Promise<string> {
   await page.goto("/trip-compiler");
   await page.getByLabel("这趟旅行，你已经知道些什么？").fill(text);

@@ -13,7 +13,7 @@ from app.main import app
 from app.trips.access import hash_idempotency_key
 from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
 from app.trips.digests import request_digest
-from app.trips.intent_contracts import SourceLinkedTripIntentEnvelope
+from app.trips.intent_contracts import PlaceIdentity, SourceLinkedTripIntentEnvelope
 from app.trips.planner_handoff import build_planner_handoff_input
 from app.trips.service import format_utc
 from tests.test_trip_mutation_commands import command_itinerary
@@ -227,6 +227,70 @@ class PlannerHandoffTests(unittest.TestCase):
         self.assertEqual(fixed.fixed_day, 1)
         self.assertEqual(fixed.fixed_time_start.strftime("%H:%M"), "14:00")
         self.assertEqual(fixed.fixed_time_end.strftime("%H:%M"), "15:30")
+        self.assertEqual(fixed.resolved_duration_minutes, 90)
+
+    def test_handoff_reuses_verified_fixed_place_identity_with_its_reserved_time(self) -> None:
+        candidate = register_verified_candidate(self.client, self.trip_id)
+        compiled = self.client.post(
+            f"/trips/{self.trip_id}/intent-envelope/compile",
+            json={
+                "base_revision_id": self.base_revision_id,
+                "base_intent_revision_id": None,
+                "structured_overrides": {
+                    "city": "上海",
+                    "trip_days": 2,
+                    "start_date": "2026-08-01",
+                    "timezone": "Asia/Shanghai",
+                    "fixed_events": [{
+                        "event_id": "museum-reservation",
+                        "name": "上海博物馆预约",
+                        "place_candidate_id": candidate["id"],
+                        "fixed_day": 2,
+                        "start_at": "2026-08-02T14:00:00",
+                        "end_at": "2026-08-02T15:30:00",
+                        "timezone": "Asia/Shanghai",
+                    }],
+                },
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "handoff-canonical-fixed"},
+        )
+        self.assertEqual(compiled.status_code, 201, compiled.text)
+        repository = get_trip_repository()
+        revision = repository.get_intent_revision(trip_id=self.trip_id, revision_id=compiled.json()["revision"]["id"])
+        envelope = SourceLinkedTripIntentEnvelope.model_validate(revision.envelope)
+        fixed_event = envelope.formal_contract.fixed_events[0].model_copy(update={"place_candidate_id": None})
+        verified_identity = PlaceIdentity(
+            stable_id="museum-reservation",
+            original_name="上海博物馆",
+            canonical_name="上海博物馆（人民广场馆）",
+            city="上海",
+            ownership="fixed",
+            fixed_event_id="museum-reservation",
+            resolution_status="verified",
+            provider="amap",
+            provider_place_id="fixture-shanghai-museum",
+            latitude=31.2304,
+            longitude=121.4737,
+            category="museum",
+            source_fragment_ids=["source_direct"],
+        )
+        formal = envelope.formal_contract.model_copy(update={
+            "must_visit_places": [],
+            "fixed_events": [fixed_event],
+            "place_identities": [verified_identity],
+        })
+        result = build_planner_handoff_input(
+            envelope=envelope.model_copy(update={"formal_contract": formal}),
+            candidates=[],
+        )
+        fixed = result.handoff.itinerary_request.scenic_spots[0]
+        self.assertEqual(fixed.candidate_id, "museum-reservation")
+        self.assertEqual(fixed.canonical_place_id, "fixture-shanghai-museum")
+        self.assertEqual(fixed.resolved_duration_minutes, 90)
+        self.assertEqual(fixed.fixed_day, 2)
+        self.assertEqual(fixed.fixed_time_start.strftime("%H:%M"), "14:00")
+        self.assertEqual(fixed.fixed_time_end.strftime("%H:%M"), "15:30")
+        self.assertIsNotNone(fixed.verified_place)
 
     def test_fixed_event_without_verified_place_is_blocked_before_planning(self) -> None:
         compiled = self.client.post(

@@ -46,3 +46,24 @@ test("fixed arrangements stay visible in the plain-language confirmation summary
   }));
   assert.deepEqual(view.fixedArrangements, [{ title: "博物馆预约", detail: "第 2 天 · 上海博物馆" }]);
 });
+
+test("an old inconsistent Draft cannot preview while its fixed place is unconfirmed", () => {
+  const base = envelope();
+  const view = buildPrePlanConfirmationViewModel(envelope({
+    formal_contract: {
+      ...base.formal_contract,
+      fixed_events: [{
+        event_id: "museum", title: "博物馆预约", start_at: null, end_at: null, timezone: "Asia/Shanghai",
+        fixed_day: 2, place_candidate_id: null, location_text: "上海博物馆", flexibility: "fixed", metadata: {} as never,
+      }],
+      place_identities: [{
+        stable_id: "museum", original_name: "上海博物馆", canonical_name: null, city: "上海", ownership: "fixed",
+        fixed_event_id: "museum", resolution_status: "ambiguous", provider: null, provider_place_id: null,
+        latitude: null, longitude: null, category: null, source_fragment_ids: ["source"], confirmation_options: [], resolution_confidence: null,
+      }],
+    },
+  }));
+  assert.equal(view.canGeneratePreview, false);
+  assert.equal(view.heading, "还需要补充信息");
+  assert.equal(view.blockers[0]?.title, "请确认固定安排的地点");
+});

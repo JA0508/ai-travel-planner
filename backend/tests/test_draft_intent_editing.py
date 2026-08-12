@@ -120,6 +120,124 @@ class DraftIntentEditingApiTests(unittest.TestCase):
         self.assertEqual(invalid.json()["error"]["code"], "fixed_event_outside_trip")
         self.assertEqual(get_trip_repository().get_latest_draft_intent_revision(trip_id=self.trip_id).id, before_invalid)
 
+    def test_unlocated_fixed_event_requires_location_then_confirmation_before_planning(self) -> None:
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": "去上海三天，第二天下午两点到四点有一个固定活动。"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "unlocated-fixed-create"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        trip_id = created.json()["trip"]["id"]
+        with patch("app.trips.service.discover_place_identities", return_value=[]):
+            compiled = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/compile",
+                json={
+                    "base_intent_revision_id": None,
+                    "structured_overrides": {
+                        "city": "上海",
+                        "trip_days": 3,
+                        "fixed_events": [{
+                            "event_id": "museum-slot",
+                            "name": "下午固定活动",
+                            "fixed_day": 2,
+                            "fixed_time_start": "14:00",
+                            "fixed_time_end": "16:00",
+                            "location_text": None,
+                        }],
+                    },
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "unlocated-fixed-compile"},
+            )
+        self.assertEqual(compiled.status_code, 201, compiled.text)
+        first = compiled.json()
+        self.assertEqual(first["envelope"]["planner_ready_status"], "needs_clarification")
+        self.assertTrue(any(
+            item["reason_code"] == "fixed_place_identity_not_verified"
+            for item in first["envelope"]["clarification_queue"]
+        ))
+        with patch(
+            "app.trips.service.create_planning_run_from_confirmed_intent",
+            side_effect=AssertionError("An unlocated fixed event must not create a Planning Run."),
+        ):
+            blocked = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/planning-run",
+                json={"draft_intent_revision_id": first["revision"]["id"]},
+                headers={"Origin": "http://testserver"},
+            )
+        self.assertEqual(blocked.status_code, 422, blocked.text)
+        self.assertEqual(blocked.json()["error"]["code"], "draft_intent_not_planner_ready")
+
+        ambiguous = PlaceIdentity(
+            stable_id="museum-slot",
+            original_name="上海博物馆",
+            city="上海",
+            ownership="fixed",
+            fixed_event_id="museum-slot",
+            resolution_status="ambiguous",
+            source_fragment_ids=["source_direct"],
+            confirmation_options=[
+                PlaceResolutionOption(
+                    provider_place_id="amap-shanghai-museum",
+                    canonical_name="上海博物馆（人民广场馆）",
+                    city="上海",
+                )
+            ],
+        )
+        draft = self.client.get(f"/trips/{trip_id}/draft")
+        self.assertEqual(draft.status_code, 200, draft.text)
+        with patch("app.trips.service.discover_fixed_event_identity", return_value=ambiguous):
+            located = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/edits",
+                json={
+                    "base_intent_revision_id": first["revision"]["id"],
+                    "base_draft_version": draft.json()["trip"]["draft_version"],
+                    "operations": [{
+                        "operation": "update_fixed_event",
+                        "fixed_event_id": "museum-slot",
+                        "event": {
+                            "title": "下午固定活动",
+                            "fixed_day": 2,
+                            "location_text": "上海博物馆",
+                        },
+                    }],
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "unlocated-fixed-location"},
+            )
+        self.assertEqual(located.status_code, 201, located.text)
+        second = located.json()
+        self.assertEqual(second["envelope"]["planner_ready_status"], "needs_clarification")
+        self.assertEqual(second["envelope"]["formal_contract"]["place_identities"][0]["original_name"], "上海博物馆")
+
+        verified = ambiguous.model_copy(
+            update={
+                "resolution_status": "verified",
+                "provider": "amap",
+                "provider_place_id": "amap-shanghai-museum",
+                "canonical_name": "上海博物馆（人民广场馆）",
+                "latitude": 31.2304,
+                "longitude": 121.4737,
+                "confirmation_options": [],
+                "resolution_confidence": 1.0,
+            }
+        )
+        with patch("app.trips.service.confirm_place_identity", return_value=verified):
+            confirmed = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/edits",
+                json={
+                    "base_intent_revision_id": second["revision"]["id"],
+                    "base_draft_version": second["draft_version"],
+                    "operations": [{
+                        "operation": "confirm_place_identity",
+                        "place_stable_id": "museum-slot",
+                        "provider_place_id": "amap-shanghai-museum",
+                    }],
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "unlocated-fixed-confirm"},
+            )
+        self.assertEqual(confirmed.status_code, 201, confirmed.text)
+        self.assertEqual(confirmed.json()["envelope"]["planner_ready_status"], "ready")
+        self.assertEqual(get_trip_repository().get_trip(trip_id).revision_count, 0)
+
     def test_place_policy_move_preserves_candidate_identity(self) -> None:
         candidate = self.client.post(
             f"/trips/{self.trip_id}/candidates",

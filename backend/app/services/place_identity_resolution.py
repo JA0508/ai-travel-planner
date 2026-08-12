@@ -81,6 +81,28 @@ def discover_place_identities(
     return _deduplicate_identities(identities)
 
 
+def discover_fixed_event_identity(
+    *,
+    event_id: str,
+    location_text: str,
+    city: str | None,
+    source_fragment_ids: list[str],
+    provider: PoiDiscoveryProvider | None = None,
+) -> PlaceIdentity:
+    """Re-discover one edited fixed event without changing its immutable lineage."""
+
+    active_provider = provider or default_poi_discovery_provider()
+    return _identity_from_discovery(
+        stable_id=event_id,
+        original_name=location_text,
+        ownership="fixed",
+        fixed_event_id=event_id,
+        source_fragment_ids=source_fragment_ids,
+        city=city,
+        provider=active_provider,
+    )
+
+
 def confirm_place_identity(
     *,
     identity: PlaceIdentity,

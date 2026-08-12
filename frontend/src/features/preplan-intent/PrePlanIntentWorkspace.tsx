@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { getTripJson, postTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
-import type { IntentClarification, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
+import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
@@ -316,6 +316,50 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     });
   }
 
+  function confirmPlaceIdentity(identity: PlaceIdentity, option: PlaceResolutionOption) {
+    const base = currentBase();
+    if (!base) return;
+    const operation: DraftIntentEditOperation = {
+      operation: "confirm_place_identity",
+      place_stable_id: identity.stable_id,
+      provider_place_id: option.provider_place_id,
+    };
+    void submitPending({
+      endpoint: TRIP_API_ENDPOINTS.editPrePlanIntent(tripId),
+      payload: { ...base, operations: [operation] },
+      idempotencyKey: createIdempotencyKey("draft-place-confirm"),
+      operation,
+      formDraft: {},
+    });
+  }
+
+  function updateFixedEventLocation(event: FixedEventIntent, locationText: string) {
+    const base = currentBase();
+    const location = locationText.trim();
+    if (!base || !location) return;
+    const operation: DraftIntentEditOperation = {
+      operation: "update_fixed_event",
+      fixed_event_id: event.event_id,
+      event: {
+        title: event.title,
+        fixed_day: event.fixed_day,
+        start_at: event.start_at,
+        end_at: event.end_at,
+        timezone: event.timezone,
+        place_candidate_id: event.place_candidate_id,
+        location_text: location,
+        flexibility: event.flexibility,
+      },
+    };
+    void submitPending({
+      endpoint: TRIP_API_ENDPOINTS.editPrePlanIntent(tripId),
+      payload: { ...base, operations: [operation] },
+      idempotencyKey: createIdempotencyKey("draft-fixed-location"),
+      operation,
+      formDraft: {},
+    });
+  }
+
   function retryNetworkRequest() {
     if (pendingEdit || !retryableRequest) return;
     void submitPending(retryableRequest);
@@ -409,9 +453,16 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
           {activeEditor && formDraft ? <CriticalEditorForm editor={activeEditor} draft={formDraft} pending={Boolean(pendingEdit)} error={editorError} onChange={setFormDraft} onSave={saveEditor} onCancel={closeEditor} /> : null}
         </section>
 
-        {intent.envelope.clarification_queue.filter((question) => question.blocking).length ? <section className="uc-intent-card uc-intent-card--attention" aria-label="还需要你补充"><div className="uc-intent-section-heading"><div><p>还需要你补充</p><h2>确认后才能生成路线</h2></div></div><div className="uc-intent-list">{intent.envelope.clarification_queue.filter((question) => question.blocking).map((question) => <ClarificationCard key={question.question_id} question={question} pending={Boolean(pendingEdit)} onResolve={resolveClarification} />)}</div></section> : null}
+        {view.blockers.some((blocker) => blocker.source === "readiness" || (blocker.source === "clarification" && blocker.title !== "请确认固定安排的地点")) ? <section className="uc-intent-card uc-intent-card--attention" aria-label="还需要你补充"><div className="uc-intent-section-heading"><div><p>还需要你补充</p><h2>确认后才能生成路线</h2></div></div><div className="uc-intent-list">{intent.envelope.clarification_queue.filter((question) => question.blocking && !isFixedPlaceClarification(question.reason_code)).map((question) => <ClarificationCard key={question.question_id} question={question} pending={Boolean(pendingEdit)} onResolve={resolveClarification} />)}{view.blockers.filter((blocker) => blocker.source === "readiness").map((blocker, index) => <article key={`${blocker.title}-${index}`}><strong>{blocker.title}</strong><span>{blocker.detail}</span></article>)}</div></section> : null}
 
         <FixedArrangementSummary arrangements={view.fixedArrangements} />
+        <FixedPlaceConfirmation
+          events={intent.envelope.formal_contract.fixed_events}
+          identities={intent.envelope.formal_contract.place_identities ?? []}
+          busy={busy || draftVersion === null}
+          onConfirm={confirmPlaceIdentity}
+          onUpdateLocation={updateFixedEventLocation}
+        />
         <PlacePreferenceSummary envelope={intent.envelope} sourceLines={view.sourceLines} />
 
         {view.assumptions.length ? <details className="uc-intent-card uc-intent-details"><summary><span><strong>系统暂时这样理解</strong><small>{view.assumptions.length} 项暂定设置</small></span><span aria-hidden="true">展开</span></summary><div className="uc-intent-list">{view.assumptions.map((item) => <article key={item.title}><strong>{item.title}</strong><span>{item.detail}</span></article>)}</div></details> : null}
@@ -441,6 +492,43 @@ function RetryState({ onRetry }: { onRetry: () => void }) {
 
 function FixedArrangementSummary({ arrangements }: { arrangements: Array<{ title: string; detail: string }> }) {
   return <section className="uc-intent-card"><div className="uc-intent-section-heading"><div><p>固定安排</p><h2>{arrangements.length ? `${arrangements.length} 个已安排` : "暂时没有固定安排"}</h2></div></div>{arrangements.length ? <div className="uc-intent-list">{arrangements.map((arrangement, index) => <article key={`${arrangement.title}-${index}`}><strong>{arrangement.title}</strong><span>{arrangement.detail}</span></article>)}</div> : <p className="uc-intent-muted">之后有预约、演出或见面安排时，可以在修改需求中补充。</p>}</section>;
+}
+
+function FixedPlaceConfirmation({ events, identities, busy, onConfirm, onUpdateLocation }: {
+  events: FixedEventIntent[];
+  identities: PlaceIdentity[];
+  busy: boolean;
+  onConfirm: (identity: PlaceIdentity, option: PlaceResolutionOption) => void;
+  onUpdateLocation: (event: FixedEventIntent, location: string) => void;
+}) {
+  const unresolved = events.flatMap((event) => {
+    const fixed = identities.filter((identity) => identity.ownership === "fixed");
+    const matches = fixed.filter((identity) => identity.fixed_event_id === event.event_id || identity.stable_id === event.event_id);
+    const identity = matches[0] ?? (fixed.length === 1 ? fixed[0] : null);
+    return identity?.resolution_status === "verified" ? [] : [{ event, identity }];
+  });
+  if (!unresolved.length) return null;
+  return <section className="uc-intent-card uc-intent-card--attention" aria-label="确认固定安排地点"><div className="uc-intent-section-heading"><div><p>固定安排地点</p><h2>补充后才能安排进路线</h2></div></div><div className="uc-intent-list">{unresolved.map(({ event, identity }) => <FixedPlaceCard key={event.event_id} event={event} identity={identity} pending={busy} onConfirm={onConfirm} onUpdateLocation={onUpdateLocation} />)}</div></section>;
+}
+
+function isFixedPlaceClarification(code: string): boolean {
+  return code === "fixed_place_identity_not_verified" || code === "fixed_event_identity_not_verified";
+}
+
+function FixedPlaceCard({ event, identity, pending, onConfirm, onUpdateLocation }: {
+  event: FixedEventIntent;
+  identity: PlaceIdentity | null;
+  pending: boolean;
+  onConfirm: (identity: PlaceIdentity, option: PlaceResolutionOption) => void;
+  onUpdateLocation: (event: FixedEventIntent, location: string) => void;
+}) {
+  const [location, setLocation] = useState(event.location_text ?? "");
+  const title = identity?.original_name && identity.original_name !== event.title ? identity.original_name : event.title;
+  return <article className="uc-intent-clarification"><strong>{event.title}</strong><span>请填写或确认这个固定安排的具体地点，路线会保留它的时间不变。</span>
+    {identity?.confirmation_options.length ? <div className="uc-intent-choice">{identity.confirmation_options.map((option) => <button key={option.provider_place_id} type="button" className="uc-intent-secondary" disabled={pending} onClick={() => onConfirm(identity, option)}><strong>{option.canonical_name}</strong><small>{option.address_summary ?? option.category ?? "地点信息"}</small></button>)}</div> : null}
+    <label>预约地点<input value={location} onChange={(event) => setLocation(event.target.value)} placeholder={title === event.title ? "例如：上海博物馆" : title} disabled={pending} /></label>
+    <button type="button" className="uc-intent-secondary" disabled={pending || !location.trim()} onClick={() => onUpdateLocation(event, location)}>保存预约地点</button>
+  </article>;
 }
 
 function PlacePreferenceSummary({ envelope, sourceLines }: { envelope: SourceLinkedTripIntentEnvelope; sourceLines: Array<{ label: string; source: string }> }) {

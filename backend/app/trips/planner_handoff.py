@@ -14,11 +14,12 @@ from app.planner.trace import (
     PlannerTraceCollector,
 )
 from app.schemas import AvailabilityWindow, ItineraryRequest, RestaurantInput, ScenicSpotInput, TravelMode, TripDaysInputSource
+from app.schemas.itinerary import VerifiedPlaceRef
 
 from .candidates import CandidateType, TripCandidateRecord
 from .digests import sha256_digest
 from .errors import PlannerHandoffBlockedError
-from .intent_contracts import SourceLinkedTripIntentEnvelope
+from .intent_contracts import PlaceIdentity, SourceLinkedTripIntentEnvelope
 
 
 PLANNER_HANDOFF_INPUT_SCHEMA_VERSION = "planner-handoff-input-v1"
@@ -123,14 +124,16 @@ def build_planner_handoff_input(
         raw = _fixed_event_to_raw(
             fixed_event=fixed_event,
             candidate_by_id=candidate_by_id,
+            fixed_place_identities=formal.place_identities,
             start_date=formal.date_policy.start_date,
             trip_days=formal.date_policy.trip_days,
         )
-        if fixed_event.place_candidate_id:
-            candidate_links[fixed_event.place_candidate_id] = source_link_by_field_id.get(
+        subject_id = raw["candidate_id"]
+        if subject_id:
+            candidate_links[subject_id] = source_link_by_field_id.get(
                 fixed_event.metadata.field_id,
                 PlannerHandoffSourceLink(
-                    subject_id=fixed_event.place_candidate_id,
+                    subject_id=subject_id,
                     field_id=fixed_event.metadata.field_id,
                     field_path=fixed_event.metadata.field_path,
                     provenance_node_ids=[],
@@ -138,7 +141,7 @@ def build_planner_handoff_input(
                     confirmed=fixed_event.metadata.confirmation_state in {"user_confirmed", "review_confirmed"},
                 ),
             )
-        if raw["candidate_id"] and candidate_by_id[raw["candidate_id"]].candidate_type == CandidateType.MEAL.value:
+        if raw["candidate_id"] and raw["candidate_id"] in candidate_by_id and candidate_by_id[raw["candidate_id"]].candidate_type == CandidateType.MEAL.value:
             restaurants.append(RestaurantInput.model_validate(raw))
         else:
             scenic.append(ScenicSpotInput.model_validate(raw))
@@ -257,6 +260,7 @@ def _candidate_to_raw(
     fixed_day: int | None,
     fixed_time_start: time | None,
     fixed_time_end: time | None,
+    reserved_duration_minutes: int | None = None,
 ) -> dict[str, Any]:
     if not candidate.canonical_place_id or candidate.coordinates is None:
         raise PlannerHandoffBlockedError("intent_candidate_identity_not_verified", candidate_id=candidate.id)
@@ -266,14 +270,21 @@ def _candidate_to_raw(
         "canonical_place_id": candidate.canonical_place_id,
         "resolved_latitude": candidate.coordinates["latitude"],
         "resolved_longitude": candidate.coordinates["longitude"],
-        "resolved_duration_minutes": candidate.estimated_duration_minutes,
+        "resolved_duration_minutes": reserved_duration_minutes or candidate.estimated_duration_minutes,
         "fixed_day": fixed_day,
         "fixed_time_start": fixed_time_start,
         "fixed_time_end": fixed_time_end,
     }
 
 
-def _fixed_event_to_raw(*, fixed_event, candidate_by_id: dict[str, TripCandidateRecord], start_date: date | None, trip_days: int) -> dict[str, Any]:
+def _fixed_event_to_raw(
+    *,
+    fixed_event,
+    candidate_by_id: dict[str, TripCandidateRecord],
+    fixed_place_identities: list[PlaceIdentity],
+    start_date: date | None,
+    trip_days: int,
+) -> dict[str, Any]:
     fixed_day = fixed_event.fixed_day
     if fixed_event.start_at is not None:
         if start_date is None:
@@ -285,11 +296,61 @@ def _fixed_event_to_raw(*, fixed_event, candidate_by_id: dict[str, TripCandidate
     end = fixed_event.end_at.time() if fixed_event.end_at else None
     if (start is None) != (end is None):
         raise PlannerHandoffBlockedError("fixed_event_time_range_incomplete", field_id=fixed_event.metadata.field_id)
+    reserved_duration_minutes = None
+    if start is not None and end is not None:
+        reserved_duration_minutes = (end.hour * 60 + end.minute) - (start.hour * 60 + start.minute)
     if fixed_event.place_candidate_id:
         candidate = candidate_by_id.get(fixed_event.place_candidate_id)
         if candidate is None:
             raise PlannerHandoffBlockedError("fixed_event_candidate_missing", candidate_id=fixed_event.place_candidate_id)
-        return _candidate_to_raw(candidate, fixed_day=fixed_day, fixed_time_start=start, fixed_time_end=end)
+        return _candidate_to_raw(
+            candidate,
+            fixed_day=fixed_day,
+            fixed_time_start=start,
+            fixed_time_end=end,
+            reserved_duration_minutes=reserved_duration_minutes,
+        )
+    matching_identities = [
+        identity
+        for identity in fixed_place_identities
+        if identity.ownership == "fixed"
+        and (identity.fixed_event_id == fixed_event.event_id or identity.stable_id == fixed_event.event_id)
+    ]
+    if not matching_identities and len(fixed_place_identities) == 1 and fixed_place_identities[0].ownership == "fixed":
+        matching_identities = list(fixed_place_identities)
+    identity = matching_identities[0] if len(matching_identities) == 1 else None
+    if (
+        identity is not None
+        and identity.resolution_status == "verified"
+        and identity.provider == "amap"
+        and identity.provider_place_id
+        and identity.canonical_name
+        and identity.latitude is not None
+        and identity.longitude is not None
+    ):
+        return {
+            "name": identity.canonical_name,
+            "candidate_id": identity.stable_id,
+            "canonical_place_id": identity.provider_place_id,
+            "resolved_latitude": identity.latitude,
+            "resolved_longitude": identity.longitude,
+            "resolved_duration_minutes": reserved_duration_minutes,
+            "fixed_day": fixed_day,
+            "fixed_time_start": start,
+            "fixed_time_end": end,
+            "intent_ownership": "user_must",
+            "verified_place": VerifiedPlaceRef(
+                stable_id=identity.stable_id,
+                original_name=identity.original_name,
+                canonical_name=identity.canonical_name,
+                provider=identity.provider,
+                provider_place_id=identity.provider_place_id,
+                latitude=identity.latitude,
+                longitude=identity.longitude,
+                category=identity.category,
+                source_fragment_ids=identity.source_fragment_ids,
+            ),
+        }
     raise PlannerHandoffBlockedError(
         "fixed_event_identity_not_verified",
         field_id=fixed_event.metadata.field_id,

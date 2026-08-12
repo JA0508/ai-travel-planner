@@ -1207,6 +1207,7 @@ def compile_source_linked_intent(
     verified_candidate_source_refs: dict[str, list[IntentSourceReference]] | None = None,
     candidate_verification_states: dict[str, str] | None = None,
     place_identities: list[PlaceIdentity] | None = None,
+    require_fixed_place_identity: bool = False,
 ) -> SourceLinkedTripIntentEnvelope:
     field_candidates: list[_CandidateField] = []
     manual_override_priority_enforced = False
@@ -1305,6 +1306,8 @@ def compile_source_linked_intent(
             )
     identities = list(place_identities or [])
     selected = _link_fixed_events_to_place_identities(selected, identities)
+    if require_fixed_place_identity:
+        clarifications.extend(_clarifications_for_fixed_events_without_identity(selected, identities))
     for identity in identities:
         if identity.ownership not in {"must", "fixed"} or identity.resolution_status == "verified":
             continue
@@ -2646,6 +2649,43 @@ def _link_fixed_events_to_place_identities(
         else item
         for item in selected
     ]
+
+
+def _clarifications_for_fixed_events_without_identity(
+    selected: list[IntentField],
+    identities: list[PlaceIdentity],
+) -> list[ClarificationQuestion]:
+    """Block a handoff before it reaches the planner with an unlocated booking."""
+
+    clarifications: list[ClarificationQuestion] = []
+    fixed_identities = [identity for identity in identities if identity.ownership == "fixed"]
+    for field in selected:
+        if field.field_path != "time.fixed_events" or not isinstance(field.value, IntentFixedEventValue):
+            continue
+        event_id = field.value.event_id or field.field_id
+        has_identity = any(
+            identity.fixed_event_id == event_id or identity.stable_id == event_id
+            for identity in fixed_identities
+        )
+        if has_identity:
+            continue
+        clarifications.append(
+            ClarificationQuestion(
+                question_id=f"clarify:fixed_place_identity_not_verified:{event_id}",
+                field_paths=["time.fixed_events"],
+                answer_field_path=None,
+                answer_value_type=None,
+                resolution_kind=IntentClarificationResolutionKind.EDIT_CONTRACT,
+                editor_field_path="time.fixed_events",
+                question=f"请补充“{field.value.name}”的具体地点后再生成路线。",
+                priority=100,
+                blocking=True,
+                impact="planner_blocking",
+                reason_code="fixed_place_identity_not_verified",
+                options=[],
+            )
+        )
+    return clarifications
 
 
 def _build_formal_contract(

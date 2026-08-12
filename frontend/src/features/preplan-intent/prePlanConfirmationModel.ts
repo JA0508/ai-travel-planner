@@ -5,13 +5,20 @@ type SummaryItem = {
   value: string;
 };
 
+type ConfirmationBlocker = {
+  title: string;
+  detail: string;
+  source: "clarification" | "readiness" | "fixed_place";
+};
+
 export type PrePlanConfirmationViewModel = {
   heading: string;
   summary: SummaryItem[];
-  blockers: Array<{ title: string; detail: string }>;
+  blockers: ConfirmationBlocker[];
   assumptions: Array<{ title: string; detail: string }>;
   fixedArrangements: Array<{ title: string; detail: string }>;
   sourceLines: Array<{ label: string; source: string }>;
+  unresolvedFixedEventIds: string[];
   canGeneratePreview: boolean;
   actionHint: string;
 };
@@ -20,15 +27,30 @@ export function buildPrePlanConfirmationViewModel(
   envelope: SourceLinkedTripIntentEnvelope,
 ): PrePlanConfirmationViewModel {
   const formal = envelope.formal_contract;
-  const blockers = envelope.clarification_queue
+  const clarificationBlockers = envelope.clarification_queue
     .filter((question) => question.blocking)
-    .map((question) => clarificationCopy(question));
-  const fallbackBlockers = formal.readiness.blocking_issue_codes.map((code) => issueCopy(code));
-  const requiredBlockers = blockers.length ? blockers : fallbackBlockers;
+    .map((question) => ({ ...clarificationCopy(question), source: "clarification" as const }));
+  const fallbackBlockers = formal.readiness.blocking_issue_codes.map((code) => ({ ...issueCopy(code), source: "readiness" as const }));
   const assumptions = envelope.typed_assumptions
     .filter((assumption) => assumption.has_assumed_value && !assumption.blocks_planner_ready)
     .map((assumption) => assumptionCopy(assumption));
-  const canGeneratePreview = isPlannerReady(envelope.planner_ready_status);
+  const unresolvedFixedEventIds = formal.fixed_events
+    .filter((event) => !hasVerifiedFixedPlace(event.event_id, formal.place_identities ?? []))
+    .map((event) => event.event_id);
+  const fixedPlaceBlockers = unresolvedFixedEventIds.map((eventId) => {
+    const event = formal.fixed_events.find((item) => item.event_id === eventId);
+    return {
+      title: "请确认固定安排的地点",
+      detail: `“${event?.title ?? "这个固定安排"}”需要明确地点，才能安全排进路线。`,
+      source: "fixed_place" as const,
+    };
+  });
+  const requiredBlockers = clarificationBlockers.length ? clarificationBlockers : fallbackBlockers;
+  const combinedBlockers = uniqueBlockers([...requiredBlockers, ...fixedPlaceBlockers]);
+  // Old Draft revisions may predate fixed-place readiness enforcement. Keep the
+  // browser from issuing a request that the server must reject, while the server
+  // remains the authority for every new immutable revision.
+  const canGeneratePreview = isPlannerReady(envelope.planner_ready_status) && unresolvedFixedEventIds.length === 0;
 
   return {
     heading: canGeneratePreview ? "可以开始规划" : "还需要补充信息",
@@ -39,22 +61,37 @@ export function buildPrePlanConfirmationViewModel(
       { label: "固定安排", value: formal.fixed_events.length ? `${formal.fixed_events.length} 个已安排` : "暂无" },
       { label: "想去的地方", value: formal.must_visit_places.length ? `${formal.must_visit_places.length} 个一定想去` : "暂未指定" },
     ],
-    blockers: requiredBlockers,
+    blockers: combinedBlockers,
     assumptions,
     fixedArrangements: formal.fixed_events.map(fixedArrangementCopy),
     sourceLines: envelope.fields
       .filter((field) => field.status === "selected")
       .map((field) => ({ label: userFieldLabel(field.field_path), source: sourceLabel(field.source_refs[0]?.source_type) }))
       .filter((item, index, values) => values.findIndex((value) => value.label === item.label) === index),
+    unresolvedFixedEventIds,
     canGeneratePreview,
     actionHint: canGeneratePreview
       ? assumptions.length
         ? `将按 ${assumptions.length} 项暂定设置生成，之后仍可修改。`
         : "关键信息已确认，可以先查看第一版路线。"
-      : requiredBlockers.length
-        ? `还需要补充 ${requiredBlockers.length} 个关键信息。`
+      : combinedBlockers.length
+        ? `还需要补充 ${combinedBlockers.length} 个关键信息。`
         : "请先补充会影响路线安排的关键信息。",
   };
+}
+
+function hasVerifiedFixedPlace(
+  eventId: string,
+  identities: NonNullable<SourceLinkedTripIntentEnvelope["formal_contract"]["place_identities"]>,
+): boolean {
+  const fixed = identities.filter((identity) => identity.ownership === "fixed");
+  const matches = fixed.filter((identity) => identity.fixed_event_id === eventId || identity.stable_id === eventId);
+  const candidates = matches.length ? matches : fixed.length === 1 ? fixed : [];
+  return candidates.some((identity) => identity.resolution_status === "verified");
+}
+
+function uniqueBlockers(items: ConfirmationBlocker[]): ConfirmationBlocker[] {
+  return items.filter((item, index) => items.findIndex((value) => value.title === item.title && value.detail === item.detail) === index);
 }
 
 function fixedArrangementCopy(event: FixedEventIntent): { title: string; detail: string } {
@@ -106,6 +143,9 @@ function issueCopy(code: string): { title: string; detail: string } {
       return { title: "固定安排时间有重叠", detail: "请调整重叠的安排后再生成路线。" };
     case "fixed_event_outside_trip_dates":
       return { title: "固定安排不在旅行日期范围内", detail: "请调整旅行日期或固定安排。" };
+    case "fixed_place_identity_not_verified":
+    case "fixed_event_identity_not_verified":
+      return { title: "请确认固定安排的地点", detail: "固定安排需要明确地点，才能安全排进路线。" };
     default:
       return { title: "还需要确认一项信息", detail: "补充后才能保证路线可执行。" };
   }

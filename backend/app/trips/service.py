@@ -48,6 +48,7 @@ from app.services.planning_run_creation import (
 from app.services.place_identity_resolution import (
     PlaceIdentityResolutionError,
     confirm_place_identity,
+    discover_fixed_event_identity,
     discover_place_identities,
 )
 from .access import (
@@ -129,6 +130,7 @@ from .draft_intent_edits import (
     DraftIntentEditRequest,
     DraftIntentEditValidationError,
     UpdateDestinationOperation,
+    UpdateFixedEventOperation,
     apply_operations_to_overrides,
     clarification_answer_to_operation,
 )
@@ -332,6 +334,7 @@ class TripPersistenceService:
             verified_candidate_source_refs=refs,
             candidate_verification_states=verification,
             place_identities=place_identities,
+            require_fixed_place_identity=True,
         )
         envelope.validation_report.update({"preplan_contract": True, "base_trip_revision_absent": True})
         record = DraftIntentRevisionRecord(
@@ -402,6 +405,50 @@ class TripPersistenceService:
                         direct_user_text=self.repository.get_draft_source_text(trip_id=trip_id),
                         city=operation.city,
                     )
+                elif isinstance(operation, UpdateFixedEventOperation):
+                    # A manually supplied booking location is new user authority.
+                    # Replace only this event's provider choices; unrelated
+                    # confirmations remain attached to the next Draft revision.
+                    event = next(
+                        (item for item in overrides.fixed_events if item.event_id == operation.fixed_event_id),
+                        None,
+                    )
+                    place_identities = [
+                        identity
+                        for identity in place_identities
+                        if identity.fixed_event_id != operation.fixed_event_id
+                        and identity.stable_id != operation.fixed_event_id
+                    ]
+                    if event is not None and event.location_text and event.location_text.strip():
+                        previous = next(
+                            (
+                                identity
+                                for identity in parent_envelope.formal_contract.place_identities
+                                if identity.fixed_event_id == operation.fixed_event_id
+                                or identity.stable_id == operation.fixed_event_id
+                            ),
+                            None,
+                        )
+                        city = (
+                            overrides.city
+                            or (
+                                parent_envelope.formal_contract.destinations[0].city_name
+                                if parent_envelope.formal_contract.destinations
+                                else None
+                            )
+                        )
+                        place_identities.append(
+                            discover_fixed_event_identity(
+                                event_id=operation.fixed_event_id,
+                                location_text=event.location_text.strip(),
+                                city=city,
+                                source_fragment_ids=(
+                                    previous.source_fragment_ids
+                                    if previous is not None
+                                    else [f"draft_intent:{parent.id}:fixed_event:{operation.fixed_event_id}"]
+                                ),
+                            )
+                        )
         except PlaceIdentityResolutionError as exc:
             raise DraftIntentEditError(exc.code) from exc
         candidate_ids = sorted({
@@ -445,6 +492,7 @@ class TripPersistenceService:
             verified_candidate_source_refs=refs,
             candidate_verification_states=verification,
             place_identities=place_identities,
+            require_fixed_place_identity=True,
         )
         operation_names = [operation.operation for operation in payload.operations]
         envelope.validation_report.update({
