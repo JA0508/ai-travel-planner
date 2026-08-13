@@ -1,0 +1,172 @@
+/* Saved workspace: an on-the-road roadbook, with existing repair controls intact. */
+.tc-page[data-visual-shell="road-movie-v0"].tc-route-page {
+  max-width: 1280px;
+  padding-top: 42px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px auto;
+  align-items: end;
+  gap: 24px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-hero h1 {
+  font-size: 70px;
+  line-height: 0.98;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-photo {
+  position: relative;
+  height: 120px;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 3px;
+  box-shadow: 8px 8px 0 rgba(23, 23, 23, 0.08);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: saturate(0.7);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-photo figcaption {
+  position: absolute;
+  right: 8px;
+  bottom: 7px;
+  background: var(--sunset);
+  padding: 4px 6px;
+  color: white;
+  font: 700 9px "Arial Narrow", sans-serif;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-shell {
+  gap: 28px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-header,
+.tc-page[data-visual-shell="road-movie-v0"] .erp-day,
+.tc-page[data-visual-shell="road-movie-v0"] .erp-repair-review {
+  border-radius: 3px;
+  box-shadow: none;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-header {
+  border: 0;
+  border-top: 2px solid var(--ink);
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  padding: 20px 0;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-header h2 {
+  font-size: 42px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-header-summary > * {
+  border-radius: 999px;
+  background: #e8ebe5;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-day {
+  padding: 0;
+  border: 0;
+  border-top: 2px solid var(--ink);
+  background: transparent;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-day-header {
+  padding: 18px 0;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-day-header h3 {
+  font-size: 36px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-load-grid {
+  gap: 1px;
+  margin: 0 0 22px;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-load-grid > div {
+  border: 0;
+  border-radius: 0;
+  background: var(--paper-light);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-timeline-row {
+  gap: 0;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-leg {
+  margin-left: 106px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--lake);
+  background: rgba(169, 187, 201, 0.12);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-stop {
+  grid-template-columns: 90px minmax(0, 1fr);
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  padding: 18px 12px 18px 0;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-stop-title::before {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 3px;
+  border: 3px solid var(--paper);
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: 0 0 0 1px var(--ink);
+  content: "";
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-fixed,
+.tc-page[data-visual-shell="road-movie-v0"] .erp-kind,
+.tc-page[data-visual-shell="road-movie-v0"] .erp-pace,
+.tc-page[data-visual-shell="road-movie-v0"] .erp-repair-button {
+  border-radius: 999px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .erp-repair-review {
+  border-left: 6px solid var(--sunset);
+  box-shadow: 0 18px 48px rgba(23, 23, 23, 0.18);
+}
+
+@media (max-width: 900px) {
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-route-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-route-photo {
+    width: 100%;
+    height: 170px;
+  }
+}
+
+@media (max-width: 560px) {
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-route-hero h1 {
+    font-size: 48px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .erp-header h2 {
+    font-size: 32px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .erp-leg {
+    margin-left: 0;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .erp-stop {
+    grid-template-columns: 1fr;
+  }
+}

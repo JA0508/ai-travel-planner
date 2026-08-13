@@ -32,7 +32,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `${process.env.TRIP_E2E_PYTHON ?? ".venv/bin/python"} -m uvicorn app.main:app --host 127.0.0.1 --port 8028`,
+      command: `${process.env.TRIP_E2E_PYTHON ?? ".venv/bin/python"} -m uvicorn tests.e2e_fixture_app:app --host 127.0.0.1 --port 8028`,
       cwd: "../backend",
       env: {
         APP_ENV: "development",

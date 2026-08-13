@@ -101,15 +101,16 @@ export function ExecutableRoutePreview({
   }
 
   return (
-    <section className="erp-shell" aria-label="可执行路线预览">
+    <section className="erp-shell" aria-label="可执行路线预览" data-route-surface="roadbook">
       <header className="erp-header">
         <div>
           <p>路线预览</p>
-          <h2>{variant === "draft" ? "你的第一版行程" : "当前可执行路线"}</h2>
-          <span>{variant === "draft" ? "确认后才会保存为正式行程。" : "每次确认调整都会保存为一个新版本。"}</span>
+          <h2>{variant === "draft" ? "你的第一版行程" : "带着这份路线上路"}</h2>
+          <span>{variant === "draft" ? "确认后才会保存为正式行程。" : "每次确认调整，都会留下一个可以回看的版本。"}</span>
         </div>
         <div className="erp-header-summary">
-          <strong>{itinerary.trip_days} 天</strong>
+          <strong>{variant === "saved" ? "当前版本" : `${itinerary.trip_days} 天`}</strong>
+          {variant === "saved" ? <span>{itinerary.trip_days} 天</span> : null}
           <span>{loads.reduce((total, day) => total + day.activityCount, 0)} 个活动</span>
           <span>{loads.reduce((total, day) => total + day.fixedCount, 0)} 项固定安排</span>
         </div>
@@ -137,12 +138,12 @@ export function ExecutableRoutePreview({
                 {item.travel_from_name ? <TravelLeg item={item} /> : null}
                 <div className="erp-stop">
                   <time>{item.start_time}–{item.end_time}</time>
-                  <div><div className="erp-stop-title"><strong>{item.name}</strong>{item.is_fixed ? <span className="erp-fixed">已预约 · 不可随意移动</span> : <span className="erp-kind">{isSystemSuggested(item) ? "系统补充" : item.source_label === "必去" ? "必去" : item.source_label === "可调整" ? "可调整" : item.type === "restaurant" ? "餐食" : item.type === "hotel" ? "住宿" : "用户地点"}</span>}</div>{item.placement_reason ? <p>{item.placement_reason}</p> : <p>暂时没有可验证的安排说明。</p>}</div>
+                  <div><div className="erp-stop-title"><strong>{item.name}</strong>{item.is_fixed ? <span className="erp-fixed">这段安排已固定，不会被随意改动</span> : <span className="erp-kind">{isSystemSuggested(item) ? "系统补充" : item.source_label === "必去" ? "必去" : item.source_label === "可调整" ? "可调整" : item.type === "restaurant" ? "餐食" : item.type === "hotel" ? "住宿" : "用户地点"}</span>}</div>{item.placement_reason ? <p>{item.placement_reason}</p> : <p>暂时没有可验证的安排说明。</p>}</div>
                 </div>
               </div>))}
             </div>
             <details className="erp-why"><summary>为什么这样安排</summary><DayReasons items={day.blocks.flatMap((block) => block.items)} /></details>
-            {canRepair && load.pace === "rushed" ? <button className="erp-repair-button" type="button" onClick={() => void previewRelaxation(day.day)} disabled={repair.status === "previewing" || repair.status === "applying"}>{repair.status === "previewing" && repair.day === day.day ? "正在评估调整……" : "让这一天轻松一些"}</button> : null}
+            {canRepair ? <button className="erp-repair-button" type="button" onClick={() => void previewRelaxation(day.day)} disabled={repair.status === "previewing" || repair.status === "applying"}>{repair.status === "previewing" && repair.day === day.day ? "正在评估调整……" : "这一天太赶"}</button> : null}
           </article>;
         })}
       </div>
@@ -160,7 +161,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function TravelLeg({ item }: { item: RoutePreviewItinerary["days"][number]["blocks"][number]["items"][number] }) {
   if (item.travel_data_status === "confirmed" && item.travel_duration_s != null) {
-    return <div className="erp-leg"><span>预计移动</span><strong>{item.travel_from_name} → {item.name}</strong><small>{formatMinutes(Math.round(item.travel_duration_s / 60))}{item.travel_distance_m != null ? ` · ${formatDistance(item.travel_distance_m)}` : ""}</small></div>;
+    return <div className="erp-leg"><span>路程已确认 · 预计移动</span><strong>{item.travel_from_name} → {item.name}</strong><small>{formatMinutes(Math.round(item.travel_duration_s / 60))}{item.travel_distance_m != null ? ` · ${formatDistance(item.travel_distance_m)}` : ""}</small></div>;
   }
   return <div className="erp-leg"><span>路线待确认</span><strong>{item.travel_from_name} → {item.name}</strong><small>暂时无法确认这段路程，不会把它当作已验证路线。</small></div>;
 }

@@ -1,8 +1,8 @@
 "use client";
 
-import type { RoutePreviewItinerary } from "@/features/executable-route-preview/routePreviewModel";
+import { formatDistance, formatMinutes, type RoutePreviewItinerary } from "@/features/executable-route-preview/routePreviewModel";
 
-export type CandidateMetrics = {
+type CandidateMetrics = {
   fixed_coverage: number;
   must_coverage: number;
   optional_coverage: number;
@@ -16,7 +16,7 @@ export type CandidateMetrics = {
   infeasible_day_count: number;
   risk_count: number;
   travel_data_completeness: "complete" | "partial" | "missing";
-  daily_windows: { day: number; available_start: string; available_end: string; available_window_minutes: number; activity_minutes: number; travel_minutes: number; slack_minutes: number }[];
+  daily_windows: unknown[];
 };
 
 export type PlanCandidate = {
@@ -38,35 +38,143 @@ export type PlanCandidateResponse = {
   expires_at: string;
 };
 
-export type PlanningRecord = { summary: string[]; evidence: { label: string; kind: string }[]; status: string; selected_candidate_id: string | null; trip_id: string | null };
-
-export function PlanCandidateComparison({ response, selectedId, busy, error, record, onSelect, onConfirm, onBack, onViewRecord }: {
+type Props = {
   response: PlanCandidateResponse;
   selectedId: string;
   busy: boolean;
   error: string | null;
-  record: PlanningRecord | null;
   onSelect: (candidateId: string) => void;
   onConfirm: () => void;
   onBack: () => void;
-  onViewRecord: () => void;
-}) {
+};
+
+const STRATEGY_LABELS = {
+  relaxed: "留白更多",
+  balanced: "节奏均衡",
+  low_travel: "少走一点",
+} as const;
+
+export function PlanCandidateComparison({
+  response,
+  selectedId,
+  busy,
+  error,
+  onSelect,
+  onConfirm,
+  onBack,
+}: Props) {
   const selected = response.candidates.find((candidate) => candidate.id === selectedId) ?? response.candidates[0];
-  return <main className="tc-page tc-candidate-page">
-    <header className="tc-confirm-header"><div><p className="tc-eyebrow">选择路线</p><h1>选一条更符合这次旅行的安排。</h1><p>每条路线都保留了固定安排和必去地点，只是取舍不同。</p></div><button type="button" className="tc-link-button" onClick={onBack} disabled={busy}>返回修改信息</button></header>
-    <section className="tc-candidate-grid" aria-label="路线方案比较">
-      {response.candidates.map((candidate) => {
-        const active = candidate.id === selected.id;
-        const highlights = response.comparison.find((item) => item.candidate_id === candidate.id)?.highlights ?? [];
-        return <button type="button" key={candidate.id} className={`tc-candidate-card${active ? " is-selected" : ""}`} aria-pressed={active} onClick={() => onSelect(candidate.id)} disabled={busy}>
-          <span className="tc-candidate-tag">{active ? "已选择" : "路线方案"}</span><strong>{candidate.title}</strong><span>{candidate.tradeoff_summary}</span>
-          <dl><div><dt>必去</dt><dd>{candidate.metrics.must_coverage}</dd></div><div><dt>可调整</dt><dd>{candidate.metrics.optional_coverage}</dd></div><div><dt>每天弹性</dt><dd>{candidate.metrics.minimum_daily_slack_minutes}m</dd></div></dl>
-          <ul>{highlights.slice(0, 2).map((highlight) => <li key={highlight}>{highlight}</li>)}</ul>
-        </button>;
-      })}
-    </section>
-    <section className="tc-selected-route" aria-label="完整路线预览"><div><p className="tc-eyebrow">完整路线</p><h2>{selected.title}</h2>{selected.itinerary.days.map((day) => <section className="tc-day-route" key={day.day}><h3>第 {day.day} 天</h3>{day.blocks.flatMap((block) => block.items).map((item) => <div className="tc-route-item" key={item.stable_id ?? `${day.day}:${item.start_time}:${item.name}`}><time>{item.start_time ?? "待定"}</time><span><strong>{item.name}</strong><small>{item.is_fixed ? "固定安排" : item.source_label ?? "系统补充"} · {item.duration_minutes ?? 0} 分钟</small></span></div>)}</section>)}</div><aside><details className="tc-source"><summary>查看依据</summary><p>每项安排都来自你确认的地点、时间和固定安排；系统补充会明确标为系统建议。</p></details><button type="button" className="tc-link-button" onClick={onViewRecord}>查看规划记录</button>{record ? <section className="tc-planning-record"><h3>这次规划</h3>{record.summary.map((item) => <p key={item}>{item}</p>)}{record.evidence.slice(0, 5).map((item) => <p className="tc-record-evidence" key={`${item.kind}:${item.label}`}>“{item.label}” · {item.kind}</p>)}</section> : null}</aside></section>
+  const selectedHighlights = response.comparison.find((item) => item.candidate_id === selected.id)?.highlights ?? [];
+
+  return <main className="tc-page tc-candidate-page" data-visual-shell="road-movie-v0">
+    <header className="tc-candidate-hero">
+      <img src="/editorial/shanghai-street-hero.png" alt="雨后城市街道与旅行中的自行车" />
+      <div className="tc-candidate-hero-shade" />
+      <div className="tc-candidate-hero-top">
+        <span className="tc-wordmark"><i aria-hidden="true">✦</i> 旅程编辑部</span>
+        <button type="button" className="tc-link" onClick={onBack} disabled={busy}>返回修改信息 ↗</button>
+      </div>
+      <div className="tc-candidate-hero-copy">
+        <p className="tc-eyebrow">ROUTE DIRECTORY</p>
+        <h1>路线怎么不同，<em>一眼就能看懂。</em></h1>
+        <p>固定安排和必去地点都保留，区别只在路上的取舍。</p>
+      </div>
+    </header>
+
+    <div className="tc-candidate-layout">
+      <nav className="tc-route-directory" aria-label="路线方案目录">
+        <p className="tc-eyebrow">{String(response.candidates.length).padStart(2, "0")} ROUTES</p>
+        {response.candidates.map((candidate, index) => {
+          const active = candidate.id === selected.id;
+          return <button
+            type="button"
+            key={candidate.id}
+            className={`tc-route-directory-item${active ? " is-selected" : ""}`}
+            aria-pressed={active}
+            onClick={() => onSelect(candidate.id)}
+            disabled={busy}
+          >
+            <span>0{index + 1}</span>
+            <div>
+              <small>{STRATEGY_LABELS[candidate.strategy]}</small>
+              <strong>{candidate.title}</strong>
+              <p>{candidate.tradeoff_summary}</p>
+            </div>
+            <i aria-hidden="true">{active ? "●" : "○"}</i>
+          </button>;
+        })}
+      </nav>
+
+      <section className="tc-selected-route" aria-label="完整路线预览">
+        <header className="tc-selected-route-header">
+          <div>
+            <p className="tc-eyebrow">SELECTED JOURNEY</p>
+            <h2>{selected.title}</h2>
+            <p>{selected.tradeoff_summary}</p>
+          </div>
+          <dl className="tc-route-facts">
+            <div><dt>必去地点</dt><dd>{selected.metrics.must_coverage} 个</dd></div>
+            <div><dt>路上时间</dt><dd>{formatOptionalMinutes(selected.metrics.total_travel_minutes)}</dd></div>
+            <div><dt>每天至少留白</dt><dd>{formatMinutes(selected.metrics.minimum_daily_slack_minutes)}</dd></div>
+          </dl>
+        </header>
+
+        <div className="tc-route-proof">
+          <span>{selected.metrics.fixed_coverage ? "固定安排已保护" : "没有固定安排"}</span>
+          <span>{selected.metrics.travel_data_completeness === "complete" ? "路程已确认" : "部分路程待确认"}</span>
+        </div>
+
+        <div className="tc-route-days">
+          {selected.itinerary.days.map((day) => <section className="tc-day-route" key={day.day}>
+            <header><span>DAY</span><b>{String(day.day).padStart(2, "0")}</b></header>
+            <div className="tc-day-route-body">
+              {day.blocks.flatMap((block) => block.items).map((item, index) => <div className="tc-route-item" key={item.stable_id ?? `${day.day}:${item.start_time}:${item.name}`}>
+                {item.travel_from_name ? <TravelEvidence item={item} /> : null}
+                <div className="tc-route-stop">
+                  <time>{item.start_time ?? "待定"}</time>
+                  <span className="tc-route-dot" aria-hidden="true" />
+                  <div>
+                    <strong>{item.name}</strong>
+                    <small>{item.is_fixed ? "固定安排已保护" : item.source_label ?? "系统补充"}{item.duration_minutes ? ` · ${item.duration_minutes} 分钟` : ""}</small>
+                  </div>
+                  <span className="tc-route-order">0{index + 1}</span>
+                </div>
+              </div>)}
+            </div>
+          </section>)}
+        </div>
+
+        <details className="tc-route-rationale" open>
+          <summary>为什么选这条路</summary>
+          <p>{selected.tradeoff_summary}</p>
+          {selectedHighlights.map((highlight) => <p key={highlight}>↳ {highlight}</p>)}
+        </details>
+      </section>
+    </div>
+
     {error ? <p className="tc-candidate-error" role="alert">{error}</p> : null}
-    <footer className="tc-confirm-footer"><span>确认后才会保存为第一版行程。</span><button type="button" className="tc-primary" onClick={onConfirm} disabled={busy}>{busy ? "正在保存这条路线" : "确认并保存这条路线"}</button></footer>
+    <footer className="tc-confirm-footer">
+      <span>确认后才会保存为第一版行程。</span>
+      <button type="button" className="tc-primary" onClick={onConfirm} disabled={busy}>{busy ? "正在保存这条路线" : "就选这条路线"}</button>
+    </footer>
   </main>;
+}
+
+function TravelEvidence({ item }: { item: RoutePreviewItinerary["days"][number]["blocks"][number]["items"][number] }) {
+  if (item.travel_data_status === "confirmed" && item.travel_duration_s != null) {
+    return <div className="tc-route-leg">
+      <span>路程已确认</span>
+      <strong>{item.travel_from_name} → {item.name}</strong>
+      <small>{formatMinutes(Math.round(item.travel_duration_s / 60))}{item.travel_distance_m != null ? ` · ${formatDistance(item.travel_distance_m)}` : ""}</small>
+    </div>;
+  }
+  return <div className="tc-route-leg is-unavailable">
+    <span>路程待确认</span>
+    <strong>{item.travel_from_name} → {item.name}</strong>
+    <small>这段移动不会被当成已经核实的数据。</small>
+  </div>;
+}
+
+function formatOptionalMinutes(minutes: number | null) {
+  return minutes == null ? "待确认" : formatMinutes(minutes);
 }

@@ -1,0 +1,696 @@
+.tc-page[data-visual-shell="road-movie-v0"] {
+  --ink: #171717;
+  --muted: #626970;
+  --line: #d8d2c8;
+  --paper: #f4efe6;
+  --paper-light: #fffdf8;
+  --sunset: #e6722e;
+  --lake: #a9bbc9;
+  --moss: #7b846e;
+  --sand: #bd9259;
+  --ec-line: #d8d2c8;
+  --ec-route-blue: #536b79;
+  --ec-slate: #626970;
+  --ec-ink: #171717;
+  --ec-shadow-2: none;
+  box-sizing: border-box;
+  max-width: 1440px;
+  min-height: 100vh;
+  padding: 24px 28px 96px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] *,
+.tc-page[data-visual-shell="road-movie-v0"] *::before,
+.tc-page[data-visual-shell="road-movie-v0"] *::after {
+  box-sizing: border-box;
+  letter-spacing: 0 !important;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"]::before {
+  background: none;
+  mask-image: none;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] h1,
+.tc-page[data-visual-shell="road-movie-v0"] h2,
+.tc-page[data-visual-shell="road-movie-v0"] h3 {
+  font-family: "Songti SC", "STSong", "Iowan Old Style", Georgia, serif;
+  font-weight: 700;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-eyebrow {
+  color: var(--sunset);
+  font-family: "Arial Narrow", "Avenir Next Condensed", sans-serif;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-primary {
+  min-height: 52px;
+  border-radius: 999px;
+  background: var(--ink);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-primary:hover:not(:disabled) {
+  background: var(--sunset);
+}
+
+/* Home: one immersive photographic stage, with the compiler as the framed tool. */
+.tc-page[data-visual-shell="road-movie-v0"].tc-input {
+  position: relative;
+  display: grid;
+  grid-template: "stage" minmax(760px, calc(100vh - 48px)) / 1fr;
+  align-items: stretch;
+  gap: 0;
+  padding-bottom: 24px;
+  overflow: hidden;
+  background: #2d332f;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-image,
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-copy {
+  grid-area: stage;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-image {
+  min-height: 0;
+  border-radius: 4px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-image::after {
+  background: rgba(13, 15, 14, 0.5);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-image img {
+  filter: saturate(0.76) contrast(1.08);
+  transform: scale(1.01);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-copy {
+  z-index: 4;
+  align-content: center;
+  max-width: 900px;
+  padding: 44px 0 44px 7%;
+  color: white;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-nav {
+  width: min(760px, 88%);
+  color: rgba(255, 255, 255, 0.76);
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-copy h1 {
+  width: min(850px, 92%);
+  max-width: none;
+  color: white;
+  font-size: 76px;
+  line-height: 0.98;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-copy h1 em {
+  display: block;
+  margin-top: 8px;
+  color: var(--sunset);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-lead {
+  max-width: 600px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 17px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-composer {
+  width: min(740px, 90%);
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  border-radius: 4px;
+  background: rgba(255, 253, 248, 0.96);
+  color: var(--ink);
+  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.22);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-note {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-city {
+  top: 4%;
+  right: 3%;
+  left: auto;
+  color: rgba(230, 114, 46, 0.78);
+  font-size: 116px;
+  mix-blend-mode: normal;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-cover-stamp {
+  top: auto;
+  right: 0;
+  bottom: 0;
+}
+
+/* Confirmation: photography leads, evidence follows as a compact editorial brief. */
+.tc-page[data-visual-shell="road-movie-v0"].tc-confirm-page,
+.tc-page[data-visual-shell="road-movie-v0"].tc-candidate-page {
+  max-width: 1320px;
+  padding-top: 0;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-confirm-hero,
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero {
+  position: relative;
+  min-height: 430px;
+  overflow: hidden;
+  margin: 0 -28px;
+  border-radius: 0 0 4px 4px;
+  background: #363a37;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-confirm-hero-shade,
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero-shade {
+  position: absolute;
+  inset: 0;
+  background: rgba(12, 13, 12, 0.48);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-confirm-hero-copy h1 {
+  font-size: 58px;
+  line-height: 1.03;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-fixed-ticket {
+  border-radius: 2px;
+  box-shadow: none;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-readiness-note {
+  border-radius: 2px;
+  box-shadow: 10px 12px 0 rgba(23, 23, 23, 0.08);
+}
+
+/* Candidate stage: a route directory and one long-form journey, not a card grid. */
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero {
+  display: grid;
+  min-height: 390px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 58%;
+  filter: saturate(0.7) contrast(1.08);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero-top,
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero-copy {
+  position: relative;
+  z-index: 2;
+  color: white;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero-top {
+  display: flex;
+  align-self: start;
+  justify-content: space-between;
+  padding: 26px 34px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero-copy {
+  align-self: end;
+  max-width: 840px;
+  padding: 0 34px 36px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero-copy h1 {
+  color: white;
+  font-size: 64px;
+  line-height: 1;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero-copy h1 em {
+  display: inline;
+  color: var(--sunset);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero-copy > p:last-child {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-layout {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.32fr) minmax(0, 0.68fr);
+  gap: 52px;
+  padding: 48px 0 12px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory {
+  align-self: start;
+  border-top: 2px solid var(--ink);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory > .tc-eyebrow {
+  padding: 18px 0 8px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item {
+  display: grid;
+  grid-template-columns: 28px 1fr 18px;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  padding: 18px 0;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item > span,
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item i {
+  color: var(--sunset);
+  font: 700 13px "Arial Narrow", sans-serif;
+  font-style: normal;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item > div {
+  display: grid;
+  gap: 5px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item small {
+  color: var(--muted);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item strong {
+  font: 700 25px "Songti SC", "STSong", serif;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item.is-selected {
+  background: var(--ink);
+  color: white;
+  margin-inline: -14px;
+  width: calc(100% + 28px);
+  padding-inline: 14px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item.is-selected p,
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item.is-selected small {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-selected-route {
+  display: block;
+  border-top: 2px solid var(--ink);
+  padding-top: 18px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-selected-route-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 28px;
+  align-items: end;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-selected-route-header h2 {
+  font-size: 48px;
+  line-height: 1;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-selected-route-header p:last-child {
+  max-width: 560px;
+  margin-bottom: 0;
+  color: var(--muted);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(92px, 1fr));
+  gap: 1px;
+  margin: 0;
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-facts > div {
+  display: grid;
+  gap: 4px;
+  min-width: 96px;
+  padding: 12px;
+  background: var(--paper-light);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-facts dt {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-facts dd {
+  margin: 0;
+  font-weight: 800;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-proof {
+  display: flex;
+  gap: 8px;
+  padding: 14px 0 0;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-proof span {
+  border: 1px solid var(--moss);
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: #4d5a49;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-days {
+  display: grid;
+  gap: 34px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-day-route {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 30px;
+  padding: 0;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-day-route::before {
+  display: none;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-day-route > header {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  border-right: 1px solid var(--ink);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-day-route > header span {
+  color: var(--sunset);
+  font: 700 11px "Arial Narrow", sans-serif;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-day-route > header b {
+  font: 700 48px "Arial Narrow", sans-serif;
+  line-height: 1;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-day-route-body {
+  display: grid;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-item {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+  padding: 0;
+  border: 0;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-item::before {
+  display: none;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-leg {
+  display: grid;
+  grid-template-columns: 110px 1fr auto;
+  gap: 12px;
+  padding: 10px 0 10px 30px;
+  border-left: 3px solid var(--lake);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-leg > span {
+  color: #526975;
+  font-weight: 800;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-leg > strong {
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-leg.is-unavailable {
+  border-color: var(--line);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-stop {
+  position: relative;
+  display: grid;
+  grid-template-columns: 78px 16px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 78px;
+  border-top: 1px solid var(--line);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-stop time {
+  font-weight: 800;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-dot {
+  width: 12px;
+  height: 12px;
+  border: 3px solid var(--paper);
+  border-radius: 50%;
+  background: var(--ink);
+  box-shadow: 0 0 0 1px var(--ink);
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-stop > div {
+  display: grid;
+  gap: 4px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-stop strong {
+  font: 700 24px "Songti SC", "STSong", serif;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-stop small,
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-order {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-rationale {
+  margin-top: 28px;
+  border-top: 2px solid var(--ink);
+  border-bottom: 1px solid var(--line);
+  padding: 18px 0;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-rationale summary {
+  cursor: pointer;
+  font: 700 25px "Songti SC", "STSong", serif;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-rationale p {
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+
+@media (max-width: 900px) {
+  .tc-page[data-visual-shell="road-movie-v0"] {
+    padding: 16px 18px 82px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"].tc-input {
+    grid-template-rows: minmax(760px, 100svh);
+    padding-bottom: 16px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-copy {
+    align-content: end;
+    width: 100%;
+    padding: 30px 20px 28px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-copy h1 {
+    width: 100%;
+    font-size: 54px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-lead,
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-note {
+    max-width: 620px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-composer,
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-nav {
+    width: 100%;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-city {
+    right: 18px;
+    font-size: 76px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-layout,
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-selected-route-header {
+    grid-template-columns: 1fr;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-layout {
+    gap: 36px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(220px, 1fr));
+    overflow-x: auto;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory > .tc-eyebrow {
+    grid-column: 1 / -1;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory-item.is-selected {
+    width: 100%;
+    margin-inline: 0;
+  }
+
+}
+
+@media (max-width: 560px) {
+  .tc-page[data-visual-shell="road-movie-v0"] {
+    padding-inline: 14px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"].tc-input {
+    grid-template-rows: minmax(830px, 100svh);
+    padding: 0;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-copy {
+    padding: 18px 16px 20px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-nav {
+    align-self: start;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-copy h1 {
+    font-size: 44px;
+    line-height: 1;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-lead {
+    font-size: 14px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-composer {
+    padding: 14px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-composer textarea {
+    min-height: 132px;
+    font-size: 15px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-city {
+    top: 9%;
+    right: 10px;
+    font-size: 49px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-stamp,
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-cover-caption {
+    display: none;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-confirm-hero,
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero {
+    min-height: 390px;
+    margin: 0 -14px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-confirm-hero-copy {
+    padding-bottom: 110px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-confirm-city {
+    right: 18px;
+    bottom: 18px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-confirm-city b {
+    font-size: 64px;
+    line-height: 0.86;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-confirm-hero-copy h1,
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero-copy h1 {
+    font-size: 39px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero-top,
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-candidate-hero-copy {
+    padding-inline: 18px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-route-directory {
+    grid-template-columns: 1fr;
+    overflow-x: visible;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-route-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-day-route {
+    grid-template-columns: 54px minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-day-route > header b {
+    font-size: 38px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-route-leg {
+    grid-template-columns: 1fr;
+    gap: 3px;
+    padding-left: 12px;
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-route-stop {
+    grid-template-columns: 58px 14px minmax(0, 1fr);
+  }
+
+  .tc-page[data-visual-shell="road-movie-v0"] .tc-route-order {
+    display: none;
+  }
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tc-page[data-visual-shell="road-movie-v0"] *,
+  .tc-page[data-visual-shell="road-movie-v0"] *::before,
+  .tc-page[data-visual-shell="road-movie-v0"] *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

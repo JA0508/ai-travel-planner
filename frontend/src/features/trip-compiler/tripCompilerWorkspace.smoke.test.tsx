@@ -16,9 +16,21 @@ test("trip compiler starts with one clear text input and no technical fields", (
   assert.match(html, /开始编排行程/);
   assert.match(html, /杭州两日轻松游/);
   assert.match(html, /shanghai-street-hero\.png/);
+  assert.match(html, /data-visual-shell="road-movie-v0"/);
+  assert.match(html, /不用一次规划完/);
   assert.doesNotMatch(html, /revision_id/i);
   assert.doesNotMatch(html, /trace_id/i);
   assert.doesNotMatch(html, /schema version/i);
+});
+
+test("golden path keeps the confirmation surface in plain travel language", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /旅行简报/);
+  assert.match(source, /已经留好的时间/);
+  assert.match(source, /这些地方，想和你确认一下/);
+  assert.match(source, /这段安排已固定，不会被随意改动/);
+  assert.doesNotMatch(source, />Planning Run</);
+  assert.doesNotMatch(source, />Revision</);
 });
 
 test("live compiler uses the immutable Draft Intent path before server candidate selection", () => {
@@ -32,6 +44,8 @@ test("live compiler uses the immutable Draft Intent path before server candidate
   assert.match(source, /postTripJson/);
   assert.match(source, /getTripJson/);
   assert.match(source, /ExecutableRoutePreview/);
+  assert.match(source, /onApplied=\{\(response\)/);
+  assert.match(source, /saved: response/);
   assert.doesNotMatch(source, /fixtures\//);
   assert.doesNotMatch(source, /buildDayRelaxationPlan/);
   assert.doesNotMatch(source, /move_stop/);

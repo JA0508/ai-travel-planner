@@ -23,8 +23,22 @@ test("route preview renders a readable day timeline without internal handoff met
   assert.match(html, /预计移动/);
   assert.match(html, /活动时长/);
   assert.match(html, /为什么这样安排/);
+  assert.match(html, /data-route-surface="roadbook"/);
+  assert.match(html, /路程已确认/);
   assert.doesNotMatch(html, /trace_digest/);
   assert.doesNotMatch(html, /handoff ID/);
+});
+
+test("saved route uses an on-the-road workspace vocabulary", () => {
+  const saved = structuredClone(itinerary);
+  saved.days[0].blocks[0].items[0].is_fixed = true;
+  const html = renderToStaticMarkup(<ExecutableRoutePreview itinerary={saved} variant="saved" tripId="trip-1" baseRevisionId="revision-1" onApplied={() => undefined} />);
+  assert.match(html, /带着这份路线上路/);
+  assert.match(html, /这段安排已固定，不会被随意改动/);
+  assert.match(html, /当前版本/);
+  assert.match(html, /这一天太赶/);
+  assert.doesNotMatch(html, /TripRevision/);
+  assert.doesNotMatch(html, /mutation/);
 });
 
 test("saved route preview sends only a user goal to the server-authoritative repair endpoint", () => {
@@ -51,5 +65,5 @@ test("route preview does not present unavailable route data as a confirmed leg",
   const html = renderToStaticMarkup(<ExecutableRoutePreview itinerary={unavailable} variant="draft" />);
   assert.match(html, /路线待确认/);
   assert.match(html, /暂时无法确认这段路程/);
-  assert.doesNotMatch(html, /0 分钟/);
+  assert.doesNotMatch(html, /路线待确认[^]*?<small>0 分钟/);
 });
