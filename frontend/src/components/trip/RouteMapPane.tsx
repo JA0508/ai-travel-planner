@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import React, { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { type EditableRouteStop } from "./MobileEditRouteWorkspace";
 import { RouteControlBar } from "./map/RouteControlBar";
 import { AMAP_BROWSER_CONFIG } from "./tripRuntimeConfig";
@@ -47,6 +47,7 @@ type RouteMapSegmentLike = {
 };
 
 type RouteMapPaneProps = {
+  appearance?: "default" | "roadbook";
   origin: {
     name: string;
     latitude?: number | null;
@@ -100,6 +101,7 @@ declare global {
 }
 
 export function RouteMapPane({
+  appearance = "default",
   origin,
   stops,
   ghostStops = [],
@@ -348,7 +350,7 @@ export function RouteMapPane({
         new amap.Marker({
           position: [stop.visualLongitude, stop.visualLatitude],
           title: stop.name,
-          content: buildGhostStopMarkerContent(`D${stop.day}`, stop.overlapTotal),
+          content: buildGhostStopMarkerContent(`D${stop.day}`, stop.overlapTotal, appearance),
           offset: new amap.Pixel(-18, -18),
         }),
       );
@@ -363,6 +365,7 @@ export function RouteMapPane({
             neighbor: neighborStopIdSet.has(stop.id),
             label: `D${stop.day}.${stop.order}`,
             overlapped: stop.overlapTotal > 1,
+            appearance,
           }),
         offset: new amap.Pixel(-28, -18),
       });
@@ -374,7 +377,7 @@ export function RouteMapPane({
     if (activePathPoints.length >= 2) {
       const realPolyline = new amap.Polyline({
         path: activePathPoints,
-        strokeColor: ROUTE_SPINE_BLUE,
+        strokeColor: appearance === "roadbook" ? ROADBOOK_ROUTE_ORANGE : ROUTE_SPINE_BLUE,
         strokeOpacity: selectedStopId ? 0.36 : activePathIsEstimated ? 0.78 : 0.96,
         strokeWeight: selectedStopId ? 4 : 6,
         strokeStyle: activePathIsEstimated ? "dashed" : "solid",
@@ -387,7 +390,7 @@ export function RouteMapPane({
     for (const group of highlightedPathGroups) {
       const highlightPolyline = new amap.Polyline({
         path: group.path,
-        strokeColor: ROUTE_SPINE_BLUE,
+        strokeColor: appearance === "roadbook" ? ROADBOOK_ROUTE_ORANGE : ROUTE_SPINE_BLUE,
         strokeOpacity: 0.98,
         strokeWeight: 7,
         lineJoin: "round",
@@ -419,6 +422,7 @@ export function RouteMapPane({
     activePathIsEstimated,
     activePathPoints,
     amap,
+    appearance,
     fitSignature,
     ghostDayPathGroups,
     highlightedPathGroups,
@@ -454,17 +458,21 @@ export function RouteMapPane({
   };
 
   return (
-    <section ref={shellRef} data-route-map-pane="true" style={mapShellStyle(compactLayout)}>
-      <div ref={containerRef} style={mapCanvasStyle} />
+    <section ref={shellRef} data-route-map-pane="true" data-map-appearance={appearance} style={mapShellStyle(compactLayout, appearance)}>
+      <div ref={containerRef} style={mapCanvasStyle(appearance)} />
       {state !== "ready" ? (
-        <div style={fallbackStyle}>
+        <div style={fallbackStyle(appearance)}>
           <strong>{state === "loading" ? "正在加载地图" : "地图暂未启用"}</strong>
           <span>
-            {state === "missing-key"
-              ? "未配置 NEXT_PUBLIC_AMAP_WEB_KEY，当前仍可继续编辑路线。"
-              : state === "failed"
-                ? "地图加载失败，已保留路线列表与编辑能力。"
-                : "正在准备当前 day 的实时路线。"}
+            {appearance === "roadbook"
+              ? state === "loading"
+                ? "正在准备当前日期的路线地图。"
+                : "路线时间线仍可正常查看。"
+              : state === "missing-key"
+                ? "未配置 NEXT_PUBLIC_AMAP_WEB_KEY，当前仍可继续编辑路线。"
+                : state === "failed"
+                  ? "地图加载失败，已保留路线列表与编辑能力。"
+                  : "正在准备当前 day 的实时路线。"}
           </span>
         </div>
       ) : null}
@@ -472,6 +480,7 @@ export function RouteMapPane({
         <>
           <div style={mapControlDockStyle(compactLayout)}>
           <RouteControlBar
+            appearance={appearance}
             compact={compactLayout}
             allDays={allDays}
             selectedDay={selectedDay}
@@ -613,13 +622,17 @@ function buildStopMarkerContent({
   neighbor,
   label,
   overlapped,
+  appearance,
 }: {
   active: boolean;
   neighbor: boolean;
   label: string;
   overlapped: boolean;
+  appearance: "default" | "roadbook";
 }): string {
-  const background = active ? ROUTE_SPINE_BLUE : neighbor ? "#b18a58" : "#5f7895";
+  const background = appearance === "roadbook"
+    ? active ? ROADBOOK_ROUTE_ORANGE : neighbor ? "#847768" : "#5f6859"
+    : active ? ROUTE_SPINE_BLUE : neighbor ? "#b18a58" : "#5f7895";
   const width = active ? 62 : neighbor ? 54 : 50;
   return `<div style="
     min-width:${width}px;
@@ -634,12 +647,13 @@ function buildStopMarkerContent({
     color:white;
     font:800 12px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     letter-spacing:.03em;
-    box-shadow:0 ${active ? 12 : 8}px ${active ? 24 : 18}px rgba(37,99,235,.24);
-    outline:${active ? "3px solid rgba(37,99,235,.22)" : neighbor ? "2px solid rgba(177,138,88,.34)" : overlapped ? "2px solid rgba(177,138,88,.48)" : "none"};
+    box-shadow:0 ${active ? 12 : 8}px ${active ? 24 : 18}px ${appearance === "roadbook" ? "rgba(93,55,34,.20)" : "rgba(37,99,235,.24)"};
+    outline:${active ? appearance === "roadbook" ? "3px solid rgba(230,90,40,.22)" : "3px solid rgba(37,99,235,.22)" : neighbor ? "2px solid rgba(177,138,88,.34)" : overlapped ? "2px solid rgba(177,138,88,.48)" : "none"};
   ">${label}</div>`;
 }
 
-function buildGhostStopMarkerContent(label: string, overlapTotal: number): string {
+function buildGhostStopMarkerContent(label: string, overlapTotal: number, appearance: "default" | "roadbook"): string {
+  const color = appearance === "roadbook" ? "#8b8176" : "#5f7895";
   return `<div style="
     width:36px;
     height:36px;
@@ -648,8 +662,8 @@ function buildGhostStopMarkerContent(label: string, overlapTotal: number): strin
     align-items:center;
     justify-content:center;
     background:rgba(255,253,249,0.78);
-    color:#5f7895;
-    border:2px solid rgba(95,120,149,0.52);
+    color:${color};
+    border:2px solid ${appearance === "roadbook" ? "rgba(139,129,118,.5)" : "rgba(95,120,149,0.52)"};
     font:800 11px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     box-shadow:0 4px 12px rgba(21,21,21,0.12);
     outline:${overlapTotal > 1 ? "2px solid rgba(177,138,88,.28)" : "none"};
@@ -679,8 +693,9 @@ function getGhostDayColor(day: number): string {
 
 const ROUTE_SPINE_BLUE = "#2563eb";
 const GHOST_ROUTE_BLUE = "#7b93ad";
+const ROADBOOK_ROUTE_ORANGE = "#e65a28";
 
-function mapShellStyle(compact: boolean): CSSProperties {
+function mapShellStyle(compact: boolean, appearance: "default" | "roadbook"): CSSProperties {
   return {
     position: "absolute",
     inset: 0,
@@ -690,22 +705,24 @@ function mapShellStyle(compact: boolean): CSSProperties {
     gap: compact ? 10 : 10,
     padding: compact ? 12 : 12,
     overflow: "hidden",
-    background:
+    background: appearance === "roadbook" ? "#e8e4dc" :
       "radial-gradient(circle at 16% 12%, rgba(37,99,235,0.12), transparent 26%), radial-gradient(circle at 86% 8%, rgba(177,138,88,0.12), transparent 22%), linear-gradient(180deg, rgba(239,244,241,0.98), rgba(231,236,232,0.96))",
   };
 }
 
-const mapCanvasStyle: CSSProperties = {
+function mapCanvasStyle(appearance: "default" | "roadbook"): CSSProperties {
+  return {
   position: "relative",
   minWidth: 0,
   minHeight: 0,
   width: "100%",
   height: "100%",
   overflow: "hidden",
-  borderRadius: 26,
-  border: "1px solid rgba(37,99,235,0.10)",
-  boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.56)",
-};
+  borderRadius: appearance === "roadbook" ? 0 : 26,
+  border: appearance === "roadbook" ? "1px solid rgba(23,22,19,.18)" : "1px solid rgba(37,99,235,0.10)",
+  boxShadow: appearance === "roadbook" ? "none" : "inset 0 0 0 1px rgba(255,255,255,0.56)",
+  };
+}
 
 function mapControlDockStyle(compact: boolean): CSSProperties {
   return {
@@ -717,7 +734,8 @@ function mapControlDockStyle(compact: boolean): CSSProperties {
   };
 }
 
-const fallbackStyle: CSSProperties = {
+function fallbackStyle(appearance: "default" | "roadbook"): CSSProperties {
+  return {
   position: "absolute",
   top: 16,
   right: 16,
@@ -725,9 +743,11 @@ const fallbackStyle: CSSProperties = {
   display: "grid",
   gap: 4,
   padding: "12px 14px",
-  borderRadius: 18,
-  background: "rgba(255,255,255,0.84)",
-  boxShadow: "0 16px 34px rgba(15,23,42,0.08)",
+  borderRadius: appearance === "roadbook" ? 0 : 18,
+  borderLeft: appearance === "roadbook" ? `4px solid ${ROADBOOK_ROUTE_ORANGE}` : undefined,
+  background: appearance === "roadbook" ? "rgba(250,246,240,.94)" : "rgba(255,255,255,0.84)",
+  boxShadow: appearance === "roadbook" ? "none" : "0 16px 34px rgba(15,23,42,0.08)",
   color: "#475569",
   backdropFilter: "blur(14px)",
-};
+  };
+}

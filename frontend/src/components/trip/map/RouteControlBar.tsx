@@ -3,6 +3,7 @@
 import type { RoutePreviewMode } from "../RouteMapPane";
 
 type RouteControlBarProps = {
+  appearance?: "default" | "roadbook";
   compact: boolean;
   allDays: number[];
   selectedDay: number;
@@ -24,6 +25,7 @@ const ROUTE_MODE_OPTIONS: Array<{ value: RoutePreviewMode; label: string; helper
 ];
 
 export function RouteControlBar({
+  appearance = "default",
   compact,
   allDays,
   selectedDay,
@@ -38,7 +40,7 @@ export function RouteControlBar({
   onFitRoute,
 }: RouteControlBarProps) {
   return (
-    <div className={`route-control-bar ${compact ? "is-compact" : ""}`}>
+    <div className={`route-control-bar ${compact ? "is-compact" : ""} ${appearance === "roadbook" ? "is-roadbook" : ""}`}>
       <div className="route-control-bar__status">
         <span>Map reasoning</span>
         <strong>Day {selectedDay}</strong>
@@ -122,6 +124,49 @@ export function RouteControlBar({
         .route-control-bar.is-compact {
           grid-template-columns: minmax(0, 1fr);
           align-items: stretch;
+        }
+
+        .route-control-bar.is-roadbook {
+          border-radius: 0;
+          border-color: rgba(23,22,19,.18);
+          border-right: 0;
+          border-bottom: 0;
+          border-left: 0;
+          background: rgba(250,246,240,.96);
+          box-shadow: none;
+          backdrop-filter: none;
+        }
+
+        .route-control-bar.is-roadbook .route-control-bar__status span,
+        .route-control-bar.is-roadbook .route-control-bar__group > span {
+          color: #e65a28;
+        }
+
+        .route-control-bar.is-roadbook .route-control-bar__segments {
+          border-radius: 0;
+          background: rgba(23,22,19,.05);
+        }
+
+        .route-control-bar.is-roadbook button {
+          border-radius: 0;
+        }
+
+        .route-control-bar.is-roadbook .route-control-bar__segments button[aria-pressed="true"] {
+          background: #e65a28;
+        }
+
+        .route-control-bar.is-roadbook .route-control-bar__days button[aria-pressed="true"] {
+          border-bottom-color: #e65a28;
+          background: transparent;
+          color: #171613;
+        }
+
+        .route-control-bar.is-roadbook .route-control-bar__legend {
+          display: none;
+        }
+
+        .route-control-bar.is-roadbook .route-control-bar__legend .is-active-route {
+          background: #e65a28;
         }
 
         .route-control-bar__status,

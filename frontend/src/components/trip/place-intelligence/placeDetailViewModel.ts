@@ -82,6 +82,7 @@ export type PlaceDetailViewModel = {
     name: string;
     category?: string;
     address?: string;
+    photoUrl?: string;
   };
   schedule: {
     dayIndex: number;
@@ -177,6 +178,7 @@ export function buildPlaceDetailViewModel({
       name: stop.item.name,
       category: poiDetail?.category ?? stop.item.source_label ?? formatStopType(stop.item.type),
       address: poiDetail?.address ?? undefined,
+      photoUrl: poiDetail?.photo_url ?? undefined,
     },
     schedule: {
       dayIndex: stop.day,

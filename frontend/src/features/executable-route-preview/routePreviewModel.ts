@@ -4,6 +4,9 @@ export type RoutePreviewItem = {
   stable_id?: string | null;
   name: string;
   type: "scenic" | "restaurant" | "hotel";
+  city?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   day?: number;
   start_time: string;
   end_time: string;
@@ -11,12 +14,20 @@ export type RoutePreviewItem = {
   is_fixed: boolean;
   source_type?: "user_seed" | "user_fixed" | "auto_seeded_poi" | "auto_seeded_meal" | "auto_filled";
   source_label?: string | null;
+  source_reason?: string | null;
   placement_reason?: string | null;
   travel_from_name?: string | null;
   travel_distance_m?: number | null;
   travel_duration_s?: number | null;
   travel_data_status?: "confirmed" | "unavailable" | "estimated" | null;
   travel_provider?: string | null;
+  poi_research?: {
+    overview: string;
+    access_tip: string;
+    practical_tip: string;
+    best_for: string;
+    source: string;
+  } | null;
 };
 
 export type RoutePreviewDay = {
@@ -31,6 +42,12 @@ export type RoutePreviewDay = {
 
 export type RoutePreviewItinerary = {
   trip_days: number;
+  planning_anchor_source?: {
+    source_type: string;
+    source_name: string;
+    latitude?: number | null;
+    longitude?: number | null;
+  };
   days: RoutePreviewDay[];
   planner_realism?: {
     status?: string | null;

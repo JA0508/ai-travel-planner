@@ -52,6 +52,8 @@ export type ScheduledItemLike = {
   travel_from_name: string | null;
   travel_distance_m: number | null;
   travel_duration_s: number | null;
+  travel_data_status?: "confirmed" | "unavailable" | "estimated" | null;
+  travel_provider?: string | null;
   poi_research?: POIResearchSummaryLike | null;
   selection_top_candidates?: CompletionCandidateTraceLike[];
   selection_rejected_candidates?: CompletionCandidateTraceLike[];
@@ -2061,7 +2063,7 @@ function RouteSummaryCard({
   );
 }
 
-function PlaceDetailPanelContainer({
+export function PlaceDetailPanelContainer({
   variant = "drawer",
   stop,
   allDays,
@@ -2073,12 +2075,13 @@ function PlaceDetailPanelContainer({
   poiDetailEndpoint,
   editing,
   onClose,
+  onSelectStop,
   onMoveStop,
   onDeleteStop,
   onToggleLockStop,
   onMoveToUnplanned,
 }: {
-  variant?: "drawer" | "panel";
+  variant?: "drawer" | "panel" | "roadbook";
   stop: EditableRouteStop;
   allDays: EditableRouteDay[];
   parsedIntent?: ParsedTripIntentLike | null;
@@ -2089,6 +2092,7 @@ function PlaceDetailPanelContainer({
   poiDetailEndpoint?: string;
   editing: boolean;
   onClose: () => void;
+  onSelectStop?: (stopId: string) => void;
   onMoveStop: (stopId: string, targetDay: number, targetBlockType: TimelineBlockType) => void;
   onDeleteStop: (stopId: string) => void;
   onToggleLockStop: (stopId: string) => void;
@@ -2182,16 +2186,18 @@ function PlaceDetailPanelContainer({
     poiDetail,
     poiDetailState,
   });
-  const panel = variant === "panel";
+  const panel = variant === "panel" || variant === "roadbook";
   const content = (
       <div
         data-stop-detail-panel={panel ? "panel" : "drawer"}
-        style={variant === "drawer" ? drawerSheetStyle : detailPanelStyle}
+        style={variant === "drawer" ? drawerSheetStyle : variant === "roadbook" ? undefined : detailPanelStyle}
         onClick={(event) => event.stopPropagation()}
       >
         <PlaceDetailPanel
           viewModel={viewModel}
           onBack={onClose}
+          appearance={variant === "roadbook" ? "roadbook" : "default"}
+          onSelectNext={onSelectStop}
           onMoveToUnplanned={
             editing && !stop.item.is_fixed
               ? () => {
@@ -2213,7 +2219,7 @@ function PlaceDetailPanelContainer({
       </div>
   );
 
-  if (variant === "panel") {
+  if (panel) {
     return content;
   }
 

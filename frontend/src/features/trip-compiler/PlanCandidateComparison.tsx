@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { formatDistance, formatMinutes, type RoutePreviewItinerary } from "@/features/executable-route-preview/routePreviewModel";
 
 type CandidateMetrics = {

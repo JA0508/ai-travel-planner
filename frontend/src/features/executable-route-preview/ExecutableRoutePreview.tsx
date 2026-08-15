@@ -12,6 +12,7 @@ import {
   type DayLoad,
   type RoutePreviewItinerary,
 } from "./routePreviewModel";
+import { SavedLivingRoadbook } from "./SavedLivingRoadbook";
 
 type MutationPreviewResponse = {
   proposal: { id: string; proposal_digest: string };
@@ -40,6 +41,7 @@ type Props = {
   tripId?: string;
   baseRevisionId?: string;
   onApplied?: (response: MutationApplyResponse) => void;
+  destination?: string | null;
 };
 
 type RepairState =
@@ -55,6 +57,7 @@ export function ExecutableRoutePreview({
   tripId,
   baseRevisionId,
   onApplied,
+  destination,
 }: Props) {
   const loads = useMemo(() => buildDayLoads(itinerary), [itinerary]);
   const risks = useMemo(() => buildUserFacingRisks(itinerary, loads), [itinerary, loads]);
@@ -100,17 +103,35 @@ export function ExecutableRoutePreview({
     setRepair({ status: "idle" });
   }
 
+  if (variant === "saved") {
+    return (
+      <section className="erp-shell" aria-label="可执行路线预览" data-route-surface="roadbook">
+        <SavedLivingRoadbook
+          itinerary={itinerary}
+          destination={destination}
+          loads={loads}
+          canRepair={canRepair}
+          repairStatus={repair.status}
+          repairDay={"day" in repair ? repair.day : undefined}
+          onRelaxDay={(day) => void previewRelaxation(day)}
+        />
+        {repair.status === "review" || repair.status === "applying" ? <RepairReview repair={repair} onCancel={() => setRepair({ status: "idle" })} onApply={() => void applyRelaxation(repair.day, repair.before, repair.preview)} /> : null}
+        {repair.status === "error" ? <p className="erp-error" role="alert">{repair.message}</p> : null}
+        <RoutePreviewStyles />
+      </section>
+    );
+  }
+
   return (
     <section className="erp-shell" aria-label="可执行路线预览" data-route-surface="roadbook">
       <header className="erp-header">
         <div>
           <p>路线预览</p>
-          <h2>{variant === "draft" ? "你的第一版行程" : "带着这份路线上路"}</h2>
-          <span>{variant === "draft" ? "确认后才会保存为正式行程。" : "每次确认调整，都会留下一个可以回看的版本。"}</span>
+          <h2>你的第一版行程</h2>
+          <span>确认后才会保存为正式行程。</span>
         </div>
         <div className="erp-header-summary">
-          <strong>{variant === "saved" ? "当前版本" : `${itinerary.trip_days} 天`}</strong>
-          {variant === "saved" ? <span>{itinerary.trip_days} 天</span> : null}
+          <strong>{itinerary.trip_days} 天</strong>
           <span>{loads.reduce((total, day) => total + day.activityCount, 0)} 个活动</span>
           <span>{loads.reduce((total, day) => total + day.fixedCount, 0)} 项固定安排</span>
         </div>
