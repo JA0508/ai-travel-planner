@@ -5,9 +5,11 @@ import { join } from "node:path";
 const VISUAL_TRIP = "去杭州玩三天，节奏轻松一点，想去西湖、灵隐寺和龙井村。第二天下午两点到四点预约了中国茶叶博物馆，不能改。";
 const SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-ui-01");
 const ROADBOOK_SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-ui-02");
+const REPAIR_SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-27");
 
 mkdirSync(SCREENSHOT_DIRECTORY, { recursive: true });
 mkdirSync(ROADBOOK_SCREENSHOT_DIRECTORY, { recursive: true });
+mkdirSync(REPAIR_SCREENSHOT_DIRECTORY, { recursive: true });
 
 function installNetworkGate(page: import("@playwright/test").Page) {
   const failures: string[] = [];
@@ -48,6 +50,47 @@ async function verifyMapEvidenceSettled(page: import("@playwright/test").Page) {
   }).toBe(true);
 }
 
+async function previewDayOneRepair(page: import("@playwright/test").Page) {
+  let applyRequests = 0;
+  const countApply = (request: import("@playwright/test").Request) => {
+    if (request.url().includes("/mutation-proposals/") && request.url().endsWith("/apply")) applyRequests += 1;
+  };
+  page.on("request", countApply);
+  const responsePromise = page.waitForResponse((response) => response.url().includes("/local-repairs/relax-day/preview") && response.request().method() === "POST");
+  const trigger = page.getByRole("button", { name: /帮我松一点/ });
+  await trigger.scrollIntoViewIfNeeded();
+  await trigger.click();
+  const response = await responsePromise;
+  expect(response.status()).toBe(200);
+  const payload = await response.json() as {
+    proposal: { id: string; proposal_digest: string };
+    current_revision: { id: string; revision_number: number };
+    impact_summary: { local_repair: { stop_name: string; from_day: number; to_day: number } };
+  };
+  const proof = page.locator("[data-repair-preview=true]");
+  await expect(proof).toBeVisible();
+  await expect(proof).toBeFocused();
+  await expect(proof.getByRole("heading", { name: "我们建议只调整这一段" })).toBeVisible();
+  await expect(proof.getByText("调整前", { exact: true })).toBeVisible();
+  await expect(proof.getByText("调整后", { exact: true })).toBeVisible();
+  await expect(proof.getByText("保持不变", { exact: true })).toBeVisible();
+  await expect(proof.locator(".repair-proof__protected").getByText("中国茶叶博物馆", { exact: false })).toBeVisible();
+  await expect(proof.locator(".repair-proof__protected").getByText("灵隐寺", { exact: false })).toBeVisible();
+  expect(applyRequests).toBe(0);
+  page.off("request", countApply);
+  return { payload, proof };
+}
+
+async function applyPreviewedRepair(page: import("@playwright/test").Page, proposalId: string) {
+  const responsePromise = page.waitForResponse((response) => response.url().includes(`/mutation-proposals/${proposalId}/apply`) && response.request().method() === "POST");
+  await page.getByRole("button", { name: "应用这次调整" }).click();
+  const response = await responsePromise;
+  expect(response.status()).toBe(200);
+  return await response.json() as {
+    current_revision: { id: string; revision_number: number; parent_revision_id: string | null; source_type: string };
+  };
+}
+
 test("Trip Compiler uses a Draft Intent revision before it creates a Planning Run", async ({ page }) => {
   const assertClean = installNetworkGate(page);
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -86,6 +129,7 @@ test("Trip Compiler uses a Draft Intent revision before it creates a Planning Ru
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: join(ROADBOOK_SCREENSHOT_DIRECTORY, "desktop-roadbook.png") });
+  await page.screenshot({ path: join(REPAIR_SCREENSHOT_DIRECTORY, "desktop-repair-before.png") });
   const desktopStops = page.locator("[data-roadbook-stop]");
   expect(await desktopStops.count()).toBeGreaterThan(1);
   await desktopStops.nth(1).click();
@@ -96,6 +140,26 @@ test("Trip Compiler uses a Draft Intent revision before it creates a Planning Ru
   await page.screenshot({ path: join(ROADBOOK_SCREENSHOT_DIRECTORY, "desktop-roadbook-selected-place.png") });
   await desktopDetail.getByRole("button", { name: /查看下一站/ }).click();
   await expect(desktopStops.nth(2)).toHaveAttribute("aria-pressed", "true");
+
+  const { payload: repairPreview, proof } = await previewDayOneRepair(page);
+  await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toBeVisible();
+  await proof.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: join(REPAIR_SCREENSHOT_DIRECTORY, "desktop-repair-preview.png") });
+  const applied = await applyPreviewedRepair(page, repairPreview.proposal.id);
+  expect(applied.current_revision.revision_number).toBe(repairPreview.current_revision.revision_number + 1);
+  expect(applied.current_revision.parent_revision_id).toBe(repairPreview.current_revision.id);
+  expect(applied.current_revision.source_type).toBe("route_edit");
+  await expect(page.getByText("这段路线已经松了一点，调整也已经保存。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "撤销刚才的调整" })).toBeVisible();
+  await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toHaveCount(0);
+  await page.locator(".erp-repair-feedback").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(REPAIR_SCREENSHOT_DIRECTORY, "desktop-repair-applied.png") });
+  await page.reload();
+  await expect(page.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
+  await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toHaveCount(0);
+  await page.locator(".roadbook__masthead nav button").nth(repairPreview.impact_summary.local_repair.to_day - 1).click();
+  await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toBeVisible();
   assertClean();
 });
 
@@ -138,5 +202,28 @@ test("Trip Compiler keeps the Draft Intent to candidate flow usable on mobile", 
   await page.screenshot({ path: join(ROADBOOK_SCREENSHOT_DIRECTORY, "mobile-roadbook-selected-place.png") });
   await mobileDetail.getByRole("button", { name: /查看下一站/ }).click();
   await expect(mobileStops.nth(2)).toHaveAttribute("aria-pressed", "true");
+
+  const { payload: repairPreview, proof } = await previewDayOneRepair(page);
+  await proof.evaluate((element) => element.scrollIntoView({ block: "start" }));
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: join(REPAIR_SCREENSHOT_DIRECTORY, "mobile-repair-preview.png") });
+  const applied = await applyPreviewedRepair(page, repairPreview.proposal.id);
+  await expect(page.getByText("这段路线已经松了一点，调整也已经保存。")).toBeVisible();
+  await page.locator(".erp-repair-feedback").scrollIntoViewIfNeeded();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: join(REPAIR_SCREENSHOT_DIRECTORY, "mobile-repair-applied.png") });
+  const undoResponsePromise = page.waitForResponse((response) => response.url().includes(`/revisions/${applied.current_revision.id}/undo`) && response.request().method() === "POST");
+  await page.getByRole("button", { name: "撤销刚才的调整" }).click();
+  const undoResponse = await undoResponsePromise;
+  expect(undoResponse.status()).toBe(200);
+  const undone = await undoResponse.json() as { current_revision: { revision_number: number; source_type: string; restored_from_revision_id: string | null } };
+  expect(undone.current_revision.revision_number).toBe(applied.current_revision.revision_number + 1);
+  expect(undone.current_revision.source_type).toBe("mutation_undo");
+  expect(undone.current_revision.restored_from_revision_id).toBe(repairPreview.current_revision.id);
+  await expect(page.getByText("已恢复调整前的路线。")).toBeVisible();
+  await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
+  await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toBeVisible();
   assertClean();
 });

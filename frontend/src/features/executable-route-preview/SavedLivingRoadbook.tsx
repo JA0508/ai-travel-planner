@@ -26,7 +26,7 @@ type Props = {
   destination?: string | null;
   loads: DayLoad[];
   canRepair: boolean;
-  repairStatus: "idle" | "previewing" | "review" | "applying" | "error";
+  repairStatus: "idle" | "previewing" | "review" | "applying" | "undoing" | "applied" | "restored" | "error";
   repairDay?: number;
   onRelaxDay: (day: number) => void;
 };
@@ -171,7 +171,8 @@ export function SavedLivingRoadbook({
           <RoadbookDayNote
             load={selectedLoad}
             canRepair={canRepair}
-            busy={(repairStatus === "previewing" || repairStatus === "applying") && repairDay === selectedDay}
+            busy={repairStatus === "previewing" || repairStatus === "applying" || repairStatus === "undoing"}
+            previewing={repairStatus === "previewing" && repairDay === selectedDay}
             onRelax={() => onRelaxDay(selectedDay)}
           />
         </section>
@@ -256,11 +257,13 @@ function RoadbookDayNote({
   load,
   canRepair,
   busy,
+  previewing,
   onRelax,
 }: {
   load: DayLoad | null;
   canRepair: boolean;
   busy: boolean;
+  previewing: boolean;
   onRelax: () => void;
 }) {
   const tight = load?.pace === "rushed" || load?.pace === "infeasible";
@@ -275,7 +278,7 @@ function RoadbookDayNote({
       </span>
       {canRepair ? (
         <button type="button" onClick={onRelax} disabled={busy}>
-          {busy ? "正在评估调整" : "帮我松一点"} <i aria-hidden="true">→</i>
+          {previewing ? "正在看看怎么把这一天松一点…" : busy ? "正在保存路线…" : "帮我松一点"} {!busy ? <i aria-hidden="true">→</i> : null}
         </button>
       ) : null}
     </aside>

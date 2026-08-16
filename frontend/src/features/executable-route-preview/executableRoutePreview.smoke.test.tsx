@@ -8,6 +8,8 @@ import { ExecutableRoutePreview } from "./ExecutableRoutePreview";
 import type { RoutePreviewItinerary } from "./routePreviewModel";
 
 const componentPath = fileURLToPath(new URL("./ExecutableRoutePreview.tsx", import.meta.url));
+const repairPreviewPath = fileURLToPath(new URL("./RoadbookRepairPreview.tsx", import.meta.url));
+const repairModelPath = fileURLToPath(new URL("./repairPreviewModel.ts", import.meta.url));
 
 const itinerary: RoutePreviewItinerary = {
   trip_days: 1,
@@ -58,18 +60,28 @@ test("saved route uses an on-the-road workspace vocabulary", () => {
 });
 
 test("saved route preview sends only a user goal to the server-authoritative repair endpoint", () => {
-  const source = readFileSync(componentPath, "utf8");
+  const source = `${readFileSync(componentPath, "utf8")}\n${readFileSync(repairPreviewPath, "utf8")}\n${readFileSync(repairModelPath, "utf8")}`;
   assert.match(source, /previewLocalRelaxDayRepair/);
   assert.match(source, /applyPersistedMutationProposal/);
+  assert.match(source, /undoPersistedRevision/);
   assert.match(source, /X-Idempotency-Key/);
-  assert.match(source, /固定安排没有移动/);
-  assert.match(source, /没有重新生成全部行程/);
+  assert.match(source, /路线刚刚发生了变化/);
+  assert.match(source, /你的原路线仍然保持不变/);
   assert.match(source, /target_day: day, goal: "relax_day"/);
-  assert.match(source, /调整前/);
-  assert.match(source, /系统补充/);
+  assert.match(source, /应用这次调整/);
+  assert.match(source, /保持原路线/);
+  assert.match(source, /撤销刚才的调整/);
+  assert.match(source, /重试撤销/);
+  assert.match(source, /errorMessage/);
+  assert.match(source, /proposal\.commands/);
+  assert.match(source, /previewRequestIdRef/);
+  assert.match(source, /requestId !== previewRequestIdRef\.current/);
+  assert.match(source, /tabIndex=\{-1\}/);
+  assert.match(source, /rootRef\.current\?\.focus/);
   assert.match(source, /暂时没有可验证的安排说明/);
   assert.doesNotMatch(source, /buildDayRelaxationPlan/);
-  assert.doesNotMatch(source, /move_stop/);
+  assert.doesNotMatch(source, /commands\s*:\s*\[/);
+  assert.doesNotMatch(source, /Apply mutation|Commit revision|Accept patch/);
 });
 
 test("route preview does not present unavailable route data as a confirmed leg", () => {
