@@ -181,7 +181,17 @@ class BrowserFixturePoiDiscoveryProvider:
 place_identity_resolution.default_poi_discovery_provider = BrowserFixturePoiDiscoveryProvider
 
 
-def _fixture_route(
+def _fixture_route(**_: object) -> dict[str, object]:
+    """Shared browser-planning route: preserve the established golden-path evidence."""
+    return {
+        "distance_m": 1100,
+        "duration_s": 840,
+        "path_points": [],
+        "source": "amap_fixture",
+    }
+
+
+def _fixture_replacement_route(
     *,
     origin_lat: float,
     origin_lng: float,
@@ -189,7 +199,7 @@ def _fixture_route(
     dest_lng: float,
     **_: object,
 ) -> dict[str, object]:
-    """CI-only Amap direction boundary: stable, non-zero verified route evidence."""
+    """Replacement-only routes distinguish safe nearby options from unsafe ones."""
     del origin_lng, dest_lng
     unsafe = origin_lat >= 30.4 or dest_lat >= 30.4
     return {
@@ -213,7 +223,7 @@ from app.trips import service as trip_service  # noqa: E402
 itinerary_completion_recommendation.default_poi_discovery_provider = (
     BrowserFixturePoiDiscoveryProvider
 )
-itinerary_completion_recommendation.get_walking_route = _fixture_route
+itinerary_completion_recommendation.get_walking_route = _fixture_replacement_route
 trip_service.default_poi_discovery_provider = BrowserFixturePoiDiscoveryProvider
 
 _production_bootstrap = itinerary_routes.build_sparse_city_bootstrap_pois
