@@ -17,10 +17,13 @@ from app.schemas import (
     ItineraryResponse,
     PlannerPreferencePolicy,
     POIType,
+    ReplacementRouteImpact,
+    ReplacementRouteLegEvidence,
     ScheduledPOI,
     ScheduledPOISourceType,
     SparseDaySummary,
     TimeBlockType,
+    VerifiedPlaceRef,
 )
 from app.services.amap_direction import RoutePlanningError, get_walking_route
 from app.services.amap_client import GEOCODE_CACHE
@@ -1234,6 +1237,319 @@ def preview_completion_task_candidates(
         source_summary,
         final_discovery_status,
     )
+
+
+def preview_safe_replace_candidates(
+    *,
+    itinerary: ItineraryResponse,
+    stop_id: str,
+    poi_discovery_provider: PoiDiscoveryProvider | None = None,
+    limit: int = 3,
+) -> tuple[
+    int | None,
+    TimeBlockType | None,
+    str,
+    list[ItineraryCompletionOption],
+    str | None,
+    str | None,
+]:
+    """Return a bounded provider-backed set for one verified flexible stop."""
+
+    located = find_scheduled_stop(itinerary, stop_id)
+    if located is None:
+        return None, None, "The selected stop no longer exists.", [], None, "empty"
+    day, block, target = located
+    source_type = target.source_type.value
+    if (
+        target.is_fixed
+        or source_type not in {"auto_seeded_poi", "auto_seeded_meal", "auto_filled"}
+        or target.source_label == "必去"
+        or not target.stable_id
+        or not target.canonical_place_id
+        or target.verified_place is None
+    ):
+        return (
+            day.day,
+            block.block_type,
+            "This stop is protected or does not yet have a verified place identity.",
+            [],
+            "Only verified system-suggested stops can be replaced.",
+            "empty",
+        )
+
+    provider = poi_discovery_provider or default_poi_discovery_provider()
+    capability = provider.capability()
+    if not capability.poi_discovery_enabled:
+        return (
+            day.day,
+            block.block_type,
+            "Verified replacement discovery is currently unavailable.",
+            [],
+            "No unverified catalog fallback is used for replacement.",
+            "empty",
+        )
+
+    keyword = "餐厅" if target.type == POIType.RESTAURANT else (target.verified_place.category or target.name)
+    try:
+        places = provider.search_around(
+            keyword=keyword,
+            city=target.city or "",
+            latitude=target.latitude,
+            longitude=target.longitude,
+            radius=COMPLETION_PREVIEW_AROUND_SEARCH_RADIUS_METERS,
+            offset=COMPLETION_PREVIEW_SEARCH_OFFSET,
+        )
+    except PoiDiscoveryUnavailable:
+        return (
+            day.day,
+            block.block_type,
+            "Verified replacement discovery is currently unavailable.",
+            [],
+            "The provider request failed; the current route remains unchanged.",
+            "empty",
+        )
+
+    options: list[ItineraryCompletionOption] = []
+    seen_ids: set[str] = set()
+    route_check_limit = max(1, min(limit, 3))
+    for place in places:
+        if (
+            not place.provider_place_id
+            or not place.name
+            or place.latitude is None
+            or place.longitude is None
+            or place.provider_place_id == target.canonical_place_id
+            or place.name.strip() == target.name.strip()
+            or place.provider_place_id in seen_ids
+        ):
+            continue
+        seen_ids.add(place.provider_place_id)
+        impact = replacement_route_impact(
+            day=day,
+            target=target,
+            candidate_name=place.name,
+            candidate_latitude=float(place.latitude),
+            candidate_longitude=float(place.longitude),
+        )
+        verified_place = VerifiedPlaceRef(
+            stable_id=f"amap:{place.provider_place_id}",
+            original_name=place.name,
+            canonical_name=place.name,
+            provider="amap",
+            provider_place_id=place.provider_place_id,
+            latitude=float(place.latitude),
+            longitude=float(place.longitude),
+            category=place.type,
+        )
+        options.append(
+            ItineraryCompletionOption(
+                stable_id=verified_place.stable_id,
+                name=place.name,
+                type=target.type,
+                suggested_day=day.day,
+                suggested_block=block.block_type,
+                reasoning_summary=replacement_candidate_reason(impact),
+                itinerary_relation_summary="只替换这一站，并重新检查它前后的两段路线。",
+                verified_place=verified_place,
+                route_impact=impact,
+            )
+        )
+        if len(options) >= route_check_limit:
+            break
+
+    options.sort(
+        key=lambda option: (
+            option.route_impact is None or not option.route_impact.safe_to_apply,
+            option.route_impact.after_duration_s if option.route_impact and option.route_impact.after_duration_s is not None else 10**9,
+            option.name,
+        )
+    )
+    bounded = options[:route_check_limit]
+    return (
+        day.day,
+        block.block_type,
+        f"Found {len(bounded)} verified replacement candidate(s).",
+        bounded,
+        "Candidates came from the existing POI provider and were checked against the adjacent route legs.",
+        "route_context" if bounded else "empty",
+    )
+
+
+def find_scheduled_stop(
+    itinerary: ItineraryResponse,
+    stop_id: str,
+) -> tuple[DayItinerary, DayTimeBlock, ScheduledPOI] | None:
+    for day in itinerary.days:
+        for block in day.blocks:
+            for item in block.items:
+                if item.stable_id == stop_id:
+                    return day, block, item
+    return None
+
+
+def replacement_route_impact(
+    *,
+    day: DayItinerary,
+    target: ScheduledPOI,
+    candidate_name: str,
+    candidate_latitude: float,
+    candidate_longitude: float,
+) -> ReplacementRouteImpact:
+    ordered = sorted(
+        (item for block in day.blocks for item in block.items),
+        key=lambda item: (item.start_time, item.end_time, item.name),
+    )
+    target_index = next(index for index, item in enumerate(ordered) if item.stable_id == target.stable_id)
+    previous = ordered[target_index - 1] if target_index > 0 else day.hotel
+    following = ordered[target_index + 1] if target_index + 1 < len(ordered) else None
+    inbound = verified_replacement_leg(
+        from_name=previous.name,
+        from_latitude=previous.latitude,
+        from_longitude=previous.longitude,
+        to_name=candidate_name,
+        to_latitude=candidate_latitude,
+        to_longitude=candidate_longitude,
+    )
+    outbound = (
+        verified_replacement_leg(
+            from_name=candidate_name,
+            from_latitude=candidate_latitude,
+            from_longitude=candidate_longitude,
+            to_name=following.name,
+            to_latitude=following.latitude,
+            to_longitude=following.longitude,
+        )
+        if following is not None
+        else None
+    )
+    before_parts = [target.travel_duration_s]
+    if following is not None:
+        before_parts.append(following.travel_duration_s)
+    before_duration = sum(part for part in before_parts if part is not None) if any(part is not None for part in before_parts) else None
+    if inbound is None or (following is not None and outbound is None):
+        return ReplacementRouteImpact(
+            safe_to_apply=False,
+            before_duration_s=before_duration,
+            blocking_reason="route_unavailable",
+        )
+
+    after_duration = inbound.duration_s + (outbound.duration_s if outbound is not None else 0)
+    inbound_budget = confirmed_adjacent_route_budget(
+        item=target,
+        expected_from_name=previous.name,
+    ) + (
+        seconds_between(previous.end_time, target.start_time)
+        if isinstance(previous, ScheduledPOI)
+        else 0
+    )
+    outbound_budget = (
+        confirmed_adjacent_route_budget(
+            item=following,
+            expected_from_name=target.name,
+        )
+        + seconds_between(target.end_time, following.start_time)
+        if following is not None
+        else None
+    )
+    blocking_reason = replacement_timing_conflict(
+        following=following,
+        inbound_duration_s=inbound.duration_s,
+        outbound_duration_s=outbound.duration_s if outbound is not None else None,
+        inbound_budget_s=inbound_budget,
+        outbound_budget_s=outbound_budget,
+    )
+    return ReplacementRouteImpact(
+        safe_to_apply=blocking_reason is None,
+        before_duration_s=before_duration,
+        after_duration_s=after_duration,
+        delta_duration_s=after_duration - before_duration if before_duration is not None else None,
+        inbound=inbound,
+        outbound=outbound,
+        blocking_reason=blocking_reason,
+    )
+
+
+def verified_replacement_leg(
+    *,
+    from_name: str,
+    from_latitude: float,
+    from_longitude: float,
+    to_name: str,
+    to_latitude: float,
+    to_longitude: float,
+) -> ReplacementRouteLegEvidence | None:
+    try:
+        route = get_walking_route(
+            origin_lat=from_latitude,
+            origin_lng=from_longitude,
+            dest_lat=to_latitude,
+            dest_lng=to_longitude,
+        )
+    except RoutePlanningError:
+        return None
+    distance_m = int(route.get("distance_m") or 0)
+    duration_s = int(route.get("duration_s") or 0)
+    if distance_m <= 0 or duration_s <= 0:
+        return None
+    return ReplacementRouteLegEvidence(
+        from_name=from_name,
+        to_name=to_name,
+        distance_m=distance_m,
+        duration_s=duration_s,
+        provider="amap",
+    )
+
+
+def replacement_timing_conflict(
+    *,
+    following: ScheduledPOI | None,
+    inbound_duration_s: int,
+    outbound_duration_s: int | None,
+    inbound_budget_s: int,
+    outbound_budget_s: int | None,
+) -> str | None:
+    if inbound_duration_s > inbound_budget_s:
+        return "time_slot_conflict"
+    if (
+        following is not None
+        and outbound_duration_s is not None
+        and outbound_budget_s is not None
+        and outbound_duration_s > outbound_budget_s
+    ):
+        return "fixed_event_at_risk" if following.is_fixed else "time_slot_conflict"
+    return None
+
+
+def confirmed_adjacent_route_budget(
+    *,
+    item: ScheduledPOI,
+    expected_from_name: str,
+) -> int:
+    if (
+        item.travel_data_status != "confirmed"
+        or item.travel_duration_s is None
+        or item.travel_duration_s <= 0
+        or not item.travel_from_name
+        or item.travel_from_name.strip() != expected_from_name.strip()
+    ):
+        return 0
+    return item.travel_duration_s
+
+
+def seconds_between(start: time, end: time) -> int:
+    return max(0, (end.hour * 3600 + end.minute * 60 + end.second) - (start.hour * 3600 + start.minute * 60 + start.second))
+
+
+def replacement_candidate_reason(impact: ReplacementRouteImpact) -> str:
+    if impact.blocking_reason == "fixed_event_at_risk":
+        return "这个地点是真实候选，但可能赶不上后面的固定安排。"
+    if not impact.safe_to_apply:
+        return "这个地点是真实候选，但当前路线证据还不足以安全换入。"
+    if impact.delta_duration_s is not None and impact.delta_duration_s < 0:
+        return "它仍适合当前时段，而且前后两段路程更短。"
+    if impact.delta_duration_s is not None and impact.delta_duration_s > 0:
+        return "它适合当前时段；路线会稍长，但仍能接上后面的安排。"
+    return "它适合当前时段，并且前后路线已经确认。"
 
 
 def search_completion_task_candidate_specs(

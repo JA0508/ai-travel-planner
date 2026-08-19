@@ -26,6 +26,7 @@ import {
   sameReferenceList,
   toggleRouteStopLock,
 } from "@/features/trip-workspace/routeWorkspaceEditModel";
+import type { VerifiedPlaceReference } from "@/features/executable-route-preview/routePreviewModel";
 
 export type TimelineItemType = "scenic" | "restaurant" | "hotel";
 export type TimelineBlockType = "morning" | "afternoon" | "evening";
@@ -49,6 +50,9 @@ export type ScheduledItemLike = {
   source_type?: "user_seed" | "user_fixed" | "auto_seeded_poi" | "auto_seeded_meal" | "auto_filled";
   source_label?: string | null;
   source_reason?: string | null;
+  candidate_id?: string | null;
+  canonical_place_id?: string | null;
+  verified_place?: VerifiedPlaceReference | null;
   travel_from_name: string | null;
   travel_distance_m: number | null;
   travel_duration_s: number | null;

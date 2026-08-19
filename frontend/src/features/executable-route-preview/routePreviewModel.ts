@@ -1,5 +1,17 @@
 export type RoutePreviewBlock = "morning" | "afternoon" | "evening";
 
+export type VerifiedPlaceReference = {
+  stable_id: string;
+  original_name: string;
+  canonical_name: string;
+  provider: "amap";
+  provider_place_id: string;
+  latitude: number;
+  longitude: number;
+  category?: string | null;
+  source_fragment_ids?: string[];
+};
+
 export type RoutePreviewItem = {
   stable_id?: string | null;
   name: string;
@@ -15,6 +27,9 @@ export type RoutePreviewItem = {
   source_type?: "user_seed" | "user_fixed" | "auto_seeded_poi" | "auto_seeded_meal" | "auto_filled";
   source_label?: string | null;
   source_reason?: string | null;
+  candidate_id?: string | null;
+  canonical_place_id?: string | null;
+  verified_place?: VerifiedPlaceReference | null;
   placement_reason?: string | null;
   travel_from_name?: string | null;
   travel_distance_m?: number | null;

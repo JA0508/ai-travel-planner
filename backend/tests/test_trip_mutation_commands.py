@@ -13,6 +13,7 @@ from app.schemas import (
     ScheduledPOI,
     ScheduledPOISourceType,
     TimeBlockType,
+    VerifiedPlaceRef,
 )
 from app.trips.errors import MutationCommandFailedError, MutationCommandNoEffectError
 from app.trips.mutation_commands import (
@@ -174,36 +175,41 @@ class TripMutationCommandTests(unittest.TestCase):
         self.assertEqual(preview.impact_summary["swapped_stop_ids"], [museum_id, bund_id])
 
     def test_replace_stop_preview_preserves_slot_identity_for_completion_swap(self) -> None:
-        snapshot = ensure_stable_item_ids(command_itinerary().model_dump(mode="json"))
-        museum_id = stop_id_by_name(snapshot, "上海博物馆")
+        snapshot = ensure_stable_item_ids(command_itinerary(system_yu=True).model_dump(mode="json"))
+        replaceable_id = stop_id_by_name(snapshot, "豫园")
 
         preview = TripMutationEngine().preview(
             base_snapshot=snapshot,
-            envelope=TripMutationCommandEnvelope.model_validate(
-                {
-                    "base_revision_id": "rev_1",
-                    "mutation_kind": "swap",
-                    "commands": [
-                        {
-                            "type": "replace_stop",
-                            "stop_id": museum_id,
-                            "replacement": {
-                                "name": "田子坊",
-                                "type": "scenic",
-                                "reasoning_summary": "更适合轻松街区体验。",
-                                "itinerary_relation_summary": "保留上午 slot，不改变固定时间边界。",
-                            },
-                        }
-                    ],
-                }
-            ),
+            envelope=replace_envelope(snapshot, "豫园"),
         )
 
         replacement = find_item(preview.resulting_snapshot, "田子坊")
-        self.assertEqual(replacement["stable_id"], museum_id)
-        self.assertEqual(replacement["start_time"], "09:00:00")
-        self.assertEqual(preview.impact_summary["replaced_stop_ids"], [museum_id])
+        self.assertEqual(replacement["stable_id"], replaceable_id)
+        self.assertEqual(replacement["start_time"], "11:15:00")
+        self.assertEqual(preview.impact_summary["replaced_stop_ids"], [replaceable_id])
+        self.assertEqual(replacement["canonical_place_id"], "shanghai:tianzifang")
+        self.assertEqual(
+            replacement["verified_place"]["provider_place_id"],
+            "shanghai:tianzifang",
+        )
         self.assertIn("selection", preview.invalidated_surfaces)
+
+    def test_replace_stop_rejects_user_fixed_and_must_visit_targets(self) -> None:
+        cases = (
+            (command_itinerary(), "上海博物馆", "replace_target_not_eligible"),
+            (command_itinerary(fixed_museum=True), "上海博物馆", "fixed_event_mutation_forbidden"),
+            (command_itinerary(system_yu=True, must_yu=True), "豫园", "replace_target_not_eligible"),
+        )
+        for itinerary, target_name, reason_code in cases:
+            snapshot = ensure_stable_item_ids(itinerary.model_dump(mode="json"))
+            with self.subTest(target_name=target_name), self.assertRaises(
+                MutationCommandFailedError
+            ) as caught:
+                TripMutationEngine().preview(
+                    base_snapshot=snapshot,
+                    envelope=replace_envelope(snapshot, target_name),
+                )
+            self.assertEqual(caught.exception.context["reason_code"], reason_code)
 
     def test_no_effect_command_is_rejected_before_persistence(self) -> None:
         snapshot = ensure_stable_item_ids(command_itinerary().model_dump(mode="json"))
@@ -272,15 +278,20 @@ class TripMutationCommandTests(unittest.TestCase):
         self.assertEqual(flattened_names(snapshot), ["上海博物馆", "豫园", "外滩"])
 
 
-def command_itinerary(*, fixed_museum: bool = False, system_yu: bool = False) -> ItineraryResponse:
+def command_itinerary(
+    *,
+    fixed_museum: bool = False,
+    system_yu: bool = False,
+    must_yu: bool = False,
+) -> ItineraryResponse:
     hotel = HotelStay(name="人民广场酒店", city="上海", latitude=31.2304, longitude=121.4737)
     return ItineraryResponse(
         trip_days=1,
         planning_anchor_source=PlanningAnchorSource(
-            source_type="city",
-            source_name="上海",
-            latitude=31.2304,
-            longitude=121.4737,
+            source_type="provided_hotel",
+            source_name=hotel.name,
+            latitude=hotel.latitude,
+            longitude=hotel.longitude,
         ),
         days=[
             DayItinerary(
@@ -309,6 +320,8 @@ def command_itinerary(*, fixed_museum: bool = False, system_yu: bool = False) ->
                                     if system_yu
                                     else ScheduledPOISourceType.USER_SEED
                                 ),
+                                source_label="必去" if must_yu else None,
+                                verified=system_yu,
                             ),
                         ],
                     ),
@@ -339,6 +352,8 @@ def scheduled_item(
     *,
     fixed: bool = False,
     source_type: ScheduledPOISourceType = ScheduledPOISourceType.USER_SEED,
+    source_label: str | None = None,
+    verified: bool = False,
 ) -> ScheduledPOI:
     return ScheduledPOI(
         name=name,
@@ -352,9 +367,79 @@ def scheduled_item(
         end_time=end,
         is_fixed=fixed,
         source_type=ScheduledPOISourceType.USER_FIXED if fixed else source_type,
+        source_label=source_label,
+        canonical_place_id=(f"amap:shanghai:{name}" if verified else None),
+        verified_place=(
+            VerifiedPlaceRef(
+                stable_id=f"place-shanghai:{name}",
+                original_name=name,
+                provider="amap",
+                provider_place_id=f"shanghai:{name}",
+                canonical_name=name,
+                latitude=31.23,
+                longitude=121.47,
+                category="风景名胜",
+            )
+            if verified
+            else None
+        ),
         travel_from_name="人民广场酒店" if block_type == TimeBlockType.MORNING else "豫园",
         travel_distance_m=1200,
         travel_duration_s=900,
+    )
+
+
+def replace_envelope(snapshot: dict, target_name: str) -> TripMutationCommandEnvelope:
+    return TripMutationCommandEnvelope.model_validate(
+        {
+            "base_revision_id": "rev_1",
+            "mutation_kind": "swap",
+            "commands": [
+                {
+                    "type": "replace_stop",
+                    "stop_id": stop_id_by_name(snapshot, target_name),
+                    "replacement": {
+                        "name": "田子坊",
+                        "type": "scenic",
+                        "reasoning_summary": "使用已验证的系统候选。",
+                        "itinerary_relation_summary": "只替换当前时间槽。",
+                        "verified_place": {
+                            "stable_id": "place-shanghai:tianzifang",
+                            "original_name": "田子坊",
+                            "provider": "amap",
+                            "provider_place_id": "shanghai:tianzifang",
+                            "canonical_name": "田子坊",
+                            "latitude": 31.2107,
+                            "longitude": 121.4688,
+                            "category": "风景名胜",
+                            "source_fragment_ids": [],
+                        },
+                        "route_impact": {
+                            "safe_to_apply": True,
+                            "before_duration_s": 1800,
+                            "after_duration_s": 1500,
+                            "delta_duration_s": -300,
+                            "inbound": {
+                                "from_name": "上海博物馆",
+                                "to_name": "田子坊",
+                                "distance_m": 900,
+                                "duration_s": 600,
+                                "provider": "amap",
+                                "data_status": "confirmed",
+                            },
+                            "outbound": {
+                                "from_name": "田子坊",
+                                "to_name": "外滩",
+                                "distance_m": 900,
+                                "duration_s": 900,
+                                "provider": "amap",
+                                "data_status": "confirmed",
+                            },
+                        },
+                    },
+                }
+            ],
+        }
     )
 
 

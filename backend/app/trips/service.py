@@ -35,6 +35,11 @@ from app.schemas import (
     ReplanItineraryRequest,
     ReplanItineraryResponse,
     TripIntentEnvelopeSource,
+    VerifiedPlaceRef,
+)
+from app.services.itinerary_completion_recommendation import (
+    find_scheduled_stop,
+    replacement_route_impact,
 )
 from app.services.intent_disambiguation import disambiguate_trip_intent
 from app.services.nl_parser import normalize_parsed_trip_intent, parse_trip_text
@@ -50,6 +55,10 @@ from app.services.place_identity_resolution import (
     confirm_place_identity,
     discover_fixed_event_identity,
     discover_place_identities,
+)
+from app.services.poi_discovery_provider import (
+    PoiDiscoveryUnavailable,
+    default_poi_discovery_provider,
 )
 from .access import (
     generate_capability,
@@ -86,6 +95,7 @@ from .digests import (
 )
 from .errors import (
     InvalidRevisionOperationError,
+    MutationCommandFailedError,
     PreviewApplyMismatchError,
     ProposalDigestMismatchError,
     ProposalIntegrityViolationError,
@@ -152,6 +162,7 @@ from .planner_handoff import (
     record_handoff_trace_context,
 )
 from .mutation_commands import (
+    ReplaceStopCommand,
     TripMutationCommandEnvelope,
     TripMutationEngine,
     ensure_stable_item_ids,
@@ -1575,6 +1586,10 @@ class TripPersistenceService:
                 current_revision_id=trip.current_revision_id,
             )
         envelope = TripMutationCommandEnvelope.model_validate(payload.model_dump(mode="json"))
+        envelope = authoritative_safe_replace_envelope(
+            base_snapshot=base_revision.itinerary_snapshot,
+            envelope=envelope,
+        )
         candidates_by_id = self._candidate_context_for_envelope(trip_id, envelope)
         preview = TripMutationEngine().preview(
             base_snapshot=base_revision.itinerary_snapshot,
@@ -2629,6 +2644,126 @@ def build_mutation_validation_report(
 def assert_mutation_validation_passed(validation_report: dict[str, Any]) -> None:
     if not validation_report.get("critical_passed"):
         raise InvalidRevisionOperationError("Mutation proposal failed deterministic validation.")
+
+
+def authoritative_safe_replace_envelope(
+    *,
+    base_snapshot: dict[str, Any],
+    envelope: TripMutationCommandEnvelope,
+) -> TripMutationCommandEnvelope:
+    """Re-read provider identity and route evidence before replace preview."""
+
+    replace_commands = [command for command in envelope.commands if isinstance(command, ReplaceStopCommand)]
+    if not replace_commands:
+        return envelope
+    if len(replace_commands) != 1 or len(envelope.commands) != 1:
+        raise MutationCommandFailedError(
+            command_index=0,
+            reason_code="replace_requires_single_target",
+        )
+
+    command = replace_commands[0]
+    itinerary = deserialize_itinerary_snapshot(base_snapshot)
+    located = find_scheduled_stop(itinerary, command.stop_id)
+    if located is None:
+        raise MutationCommandFailedError(
+            command_index=0,
+            reason_code="mutation_command_target_not_found",
+        )
+    _day, _block, target = located
+    if (
+        target.is_fixed
+        or target.source_type.value not in {"auto_seeded_poi", "auto_seeded_meal", "auto_filled"}
+        or target.source_label == "必去"
+        or not target.canonical_place_id
+        or target.verified_place is None
+    ):
+        raise MutationCommandFailedError(
+            command_index=0,
+            reason_code="replace_target_not_eligible",
+        )
+    if command.replacement.type != target.type.value:
+        raise MutationCommandFailedError(
+            command_index=0,
+            reason_code="replacement_category_mismatch",
+        )
+
+    requested_identity = command.replacement.verified_place
+    provider = default_poi_discovery_provider()
+    try:
+        provider_candidates = provider.search_text(
+            keyword=requested_identity.canonical_name,
+            city=target.city or "",
+            offset=20,
+        )
+    except PoiDiscoveryUnavailable as exc:
+        raise MutationCommandFailedError(
+            command_index=0,
+            reason_code="replacement_provider_unavailable",
+        ) from exc
+    selected = next(
+        (
+            candidate
+            for candidate in provider_candidates
+            if candidate.provider_place_id == requested_identity.provider_place_id
+        ),
+        None,
+    )
+    if (
+        selected is None
+        or not selected.provider_place_id
+        or not selected.name
+        or selected.latitude is None
+        or selected.longitude is None
+    ):
+        raise MutationCommandFailedError(
+            command_index=0,
+            reason_code="replacement_identity_not_verified",
+        )
+    if selected.provider_place_id == target.canonical_place_id:
+        raise MutationCommandFailedError(
+            command_index=0,
+            reason_code="replacement_matches_current_place",
+        )
+
+    verified_place = VerifiedPlaceRef(
+        stable_id=f"amap:{selected.provider_place_id}",
+        original_name=selected.name,
+        canonical_name=selected.name,
+        provider="amap",
+        provider_place_id=selected.provider_place_id,
+        latitude=float(selected.latitude),
+        longitude=float(selected.longitude),
+        category=selected.type,
+    )
+    route_impact = replacement_route_impact(
+        day=located[0],
+        target=target,
+        candidate_name=verified_place.canonical_name,
+        candidate_latitude=verified_place.latitude,
+        candidate_longitude=verified_place.longitude,
+    )
+    if not route_impact.safe_to_apply:
+        reason_code = {
+            "fixed_event_at_risk": "replacement_breaks_fixed_event",
+            "route_unavailable": "replacement_route_unavailable",
+            "time_slot_conflict": "replacement_breaks_time_slot",
+        }.get(route_impact.blocking_reason or "", "replacement_route_unavailable")
+        raise MutationCommandFailedError(command_index=0, reason_code=reason_code)
+
+    authoritative_replacement = command.replacement.model_copy(
+        update={
+            "name": verified_place.canonical_name,
+            "verified_place": verified_place,
+            "route_impact": route_impact,
+        },
+        deep=True,
+    )
+    authoritative_command = command.model_copy(
+        update={"replacement": authoritative_replacement},
+        deep=True,
+    )
+    return envelope.model_copy(update={"commands": [authoritative_command]}, deep=True)
 
 
 def serialize_itinerary_snapshot(itinerary: ItineraryResponse) -> dict[str, Any]:

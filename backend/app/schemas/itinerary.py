@@ -438,7 +438,39 @@ class CompletionDecisionEvidence(BaseModel):
     rejected_candidates: list[CompletionCandidateTrace] = Field(default_factory=list)
 
 
+class ReplacementRouteLegEvidence(BaseModel):
+    """Provider-confirmed evidence for one leg adjacent to a replacement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_name: str = Field(..., min_length=1)
+    to_name: str = Field(..., min_length=1)
+    distance_m: int = Field(..., gt=0)
+    duration_s: int = Field(..., gt=0)
+    provider: Literal["amap"]
+    data_status: Literal["confirmed"] = "confirmed"
+
+
+class ReplacementRouteImpact(BaseModel):
+    """Bounded route evidence for replacing one scheduled stop in place."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    safe_to_apply: bool
+    before_duration_s: int | None = Field(default=None, ge=0)
+    after_duration_s: int | None = Field(default=None, ge=0)
+    delta_duration_s: int | None = None
+    inbound: ReplacementRouteLegEvidence | None = None
+    outbound: ReplacementRouteLegEvidence | None = None
+    blocking_reason: Literal[
+        "route_unavailable",
+        "time_slot_conflict",
+        "fixed_event_at_risk",
+    ] | None = None
+
+
 class ItineraryCompletionOption(BaseModel):
+    stable_id: str | None = Field(default=None, min_length=1)
     name: str
     type: POIType
     suggested_day: int = Field(..., ge=1)
@@ -446,6 +478,8 @@ class ItineraryCompletionOption(BaseModel):
     reasoning_summary: str
     itinerary_relation_summary: str
     decision_evidence: CompletionDecisionEvidence | None = None
+    verified_place: VerifiedPlaceRef | None = None
+    route_impact: ReplacementRouteImpact | None = None
 
 
 class ItineraryCompletionRecommendation(BaseModel):
@@ -830,6 +864,7 @@ class CompletionTaskCandidatePreviewRequest(BaseModel):
     task_instance_key: str | None = None
     day: int | None = Field(default=None, ge=1)
     block_type: TimeBlockType | None = None
+    replacement_stop_id: str | None = Field(default=None, min_length=1)
     completion_candidate_history: list[ItineraryCompletionOption] = Field(default_factory=list)
 
 

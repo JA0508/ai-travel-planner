@@ -18,6 +18,18 @@ import {
   type LocalRepairImpact,
 } from "./repairPreviewModel";
 import { SavedLivingRoadbook } from "./SavedLivingRoadbook";
+import { SafeReplaceCandidates, SafeReplacePreview } from "./SafeReplaceExperience";
+import {
+  LatestReplaceRequest,
+  buildSafeReplaceCommandEnvelope,
+  buildSafeReplacePreviewModel,
+  parseSafeReplaceCandidates,
+  safeReplaceFailureMessage,
+  type SafeReplaceCandidate,
+  type SafeReplaceCandidateResponse,
+  type SafeReplacePreviewModel,
+} from "./safeReplaceModel";
+import type { RoutePreviewItem } from "./routePreviewModel";
 
 type MutationPreviewResponse = {
   proposal: {
@@ -55,6 +67,17 @@ type RepairState =
   | { status: "restored" }
   | { status: "error"; message: string };
 
+type ReplaceState =
+  | { status: "idle" }
+  | { status: "candidates"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; loading: boolean; errorMessage?: string }
+  | { status: "previewing"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate }
+  | { status: "unsafe"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate }
+  | { status: "review"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate; before: RoutePreviewItinerary; preview: MutationPreviewResponse; model: SafeReplacePreviewModel }
+  | { status: "applying"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate; before: RoutePreviewItinerary; preview: MutationPreviewResponse; model: SafeReplacePreviewModel }
+  | { status: "applied"; stopId: string; previousName: string; replacementName: string; revisionId: string; undoing: boolean; errorMessage?: string }
+  | { status: "restored"; stopId: string }
+  | { status: "error"; message: string; stopId?: string };
+
 export function ExecutableRoutePreview({
   itinerary,
   variant,
@@ -66,11 +89,15 @@ export function ExecutableRoutePreview({
   const loads = useMemo(() => buildDayLoads(itinerary), [itinerary]);
   const risks = useMemo(() => buildUserFacingRisks(itinerary, loads), [itinerary, loads]);
   const [repair, setRepair] = useState<RepairState>({ status: "idle" });
+  const [replace, setReplace] = useState<ReplaceState>({ status: "idle" });
   const previewRequestIdRef = useRef(0);
+  const replaceRequestsRef = useRef(new LatestReplaceRequest());
   const canRepair = variant === "saved" && Boolean(tripId && baseRevisionId && onApplied);
+  const replaceActive = replace.status !== "idle" && replace.status !== "restored";
 
   async function previewRelaxation(day: number) {
     if (!tripId || !baseRevisionId) return;
+    if (replaceActive) return;
     if (!loads.some((load) => load.day === day)) {
       setRepair({ status: "error", message: "暂时无法读取这一天的行程负载，当前行程没有被修改。" });
       return;
@@ -155,6 +182,137 @@ export function ExecutableRoutePreview({
     setRepair({ status: "restored" });
   }
 
+  async function findReplacementCandidates(target: RoutePreviewItem) {
+    if (!tripId || !baseRevisionId || !target.stable_id || repair.status !== "idle") return;
+    const requestId = replaceRequestsRef.current.begin();
+    setReplace({ status: "candidates", target, options: [], loading: true });
+    const response = await postTripJson<SafeReplaceCandidateResponse>(
+      TRIP_API_ENDPOINTS.previewCompletionTaskCandidates,
+      {
+        itinerary,
+        task_id: "replace_stop",
+        task_instance_key: `replace:${target.stable_id}`,
+        replacement_stop_id: target.stable_id,
+      },
+      "暂时无法寻找替代地点。",
+      "服务暂时不可用，先保留现在这一站。",
+    );
+    if (!replaceRequestsRef.current.isLatest(requestId)) return;
+    if (!response.ok) {
+      setReplace({
+        status: "candidates",
+        target,
+        options: [],
+        loading: false,
+        errorMessage: safeReplaceFailureMessage(response.code, "candidates"),
+      });
+      return;
+    }
+    setReplace({
+      status: "candidates",
+      target,
+      options: parseSafeReplaceCandidates(
+        response.data.options,
+        target.verified_place?.provider_place_id,
+      ),
+      loading: false,
+    });
+  }
+
+  async function previewReplacement(
+    target: RoutePreviewItem,
+    options: SafeReplaceCandidate[],
+    candidate: SafeReplaceCandidate,
+  ) {
+    if (!tripId || !baseRevisionId) return;
+    if (!candidate.route_impact.safe_to_apply) {
+      setReplace({ status: "unsafe", target, options, candidate });
+      return;
+    }
+    const requestId = replaceRequestsRef.current.begin();
+    setReplace({ status: "previewing", target, options, candidate });
+    let envelope;
+    try {
+      envelope = buildSafeReplaceCommandEnvelope(baseRevisionId, target, candidate);
+    } catch {
+      setReplace({ status: "error", message: "这个地点暂时不能安全替换。原路线没有被改变。", stopId: target.stable_id ?? undefined });
+      return;
+    }
+    const response = await postTripJson<MutationPreviewResponse>(
+      TRIP_API_ENDPOINTS.previewPersistedMutation(tripId),
+      envelope,
+      "暂时无法生成替换预览。",
+      "服务暂时不可用，原路线没有被改变。",
+    );
+    if (!replaceRequestsRef.current.isLatest(requestId)) return;
+    if (!response.ok) {
+      setReplace({ status: "error", message: safeReplaceFailureMessage(response.code, "preview", response.context), stopId: target.stable_id ?? undefined });
+      return;
+    }
+    let model: SafeReplacePreviewModel;
+    try {
+      model = buildSafeReplacePreviewModel(itinerary, response.data.itinerary, target.stable_id!);
+    } catch {
+      setReplace({ status: "error", message: "替换预览缺少可验证的局部路线。原路线没有被改变。", stopId: target.stable_id ?? undefined });
+      return;
+    }
+    setReplace({ status: "review", target, options, candidate, before: itinerary, preview: response.data, model });
+  }
+
+  async function applyReplacement(state: Extract<ReplaceState, { status: "review" | "applying" }>) {
+    if (!tripId || !baseRevisionId || !onApplied) return;
+    setReplace({ ...state, status: "applying" });
+    const response = await postTripJson<MutationApplyResponse>(
+      TRIP_API_ENDPOINTS.applyPersistedMutationProposal(tripId, state.preview.proposal.id),
+      { base_revision_id: baseRevisionId, proposal_digest: state.preview.proposal.proposal_digest },
+      "暂时无法保存这次替换。",
+      "服务暂时不可用，原来的地点仍然保留。",
+      { headers: { "X-Idempotency-Key": `safe-replace:${state.preview.proposal.id}:${state.preview.proposal.proposal_digest.slice(0, 16)}` } },
+    );
+    if (!response.ok) {
+      setReplace({ status: "error", message: safeReplaceFailureMessage(response.code, "apply", response.context), stopId: state.target.stable_id ?? undefined });
+      return;
+    }
+    onApplied(response.data);
+    setReplace({
+      status: "applied",
+      stopId: state.target.stable_id!,
+      previousName: state.target.name,
+      replacementName: state.candidate.name,
+      revisionId: response.data.current_revision.id,
+      undoing: false,
+    });
+  }
+
+  async function undoReplacement(state: Extract<ReplaceState, { status: "applied" }>) {
+    if (!tripId || !onApplied) return;
+    setReplace({ ...state, undoing: true, errorMessage: undefined });
+    const response = await postTripJson<MutationApplyResponse>(
+      TRIP_API_ENDPOINTS.undoPersistedRevision(tripId, state.revisionId),
+      { base_revision_id: state.revisionId },
+      "暂时无法撤销这次替换。",
+      "服务暂时不可用，当前路线仍然保留。",
+      { headers: { "X-Idempotency-Key": `undo-safe-replace:${state.revisionId}` } },
+    );
+    if (!response.ok) {
+      setReplace({ ...state, undoing: false, errorMessage: safeReplaceFailureMessage(response.code, "undo", response.context) });
+      return;
+    }
+    onApplied(response.data);
+    setReplace({ status: "restored", stopId: state.stopId });
+  }
+
+  function dismissReplacement() {
+    replaceRequestsRef.current.cancel();
+    setReplace({ status: "idle" });
+  }
+
+  function showOtherCandidates() {
+    if (replace.status !== "unsafe" && replace.status !== "review" && replace.status !== "applying") return;
+    replaceRequestsRef.current.cancel();
+    setReplace({ status: "candidates", target: replace.target, options: replace.options, loading: false });
+  }
+
   if (variant === "saved") {
     return (
       <section className="erp-shell" aria-label="可执行路线预览" data-route-surface="roadbook">
@@ -166,7 +324,60 @@ export function ExecutableRoutePreview({
           repairStatus={repair.status === "applied" && repair.undoing ? "undoing" : repair.status}
           repairDay={"day" in repair ? repair.day : undefined}
           onRelaxDay={(day) => void previewRelaxation(day)}
+          replaceControlStatus={
+            replace.status === "idle" || replace.status === "restored"
+              ? "available"
+              : replace.status === "applied"
+                ? "applied"
+                : replace.status === "previewing" || replace.status === "applying"
+                  ? "processing"
+                  : replace.status === "error"
+                    ? "attention"
+                    : "choosing"
+          }
+          focusedStopId={"stopId" in replace ? replace.stopId : undefined}
+          onReplaceStop={(target) => void findReplacementCandidates(target)}
         />
+        {replace.status === "candidates" ? (
+          <SafeReplaceCandidates
+            targetName={replace.target.name}
+            candidates={replace.options}
+            loading={replace.loading}
+            errorMessage={replace.errorMessage}
+            onSelect={(candidate) => void previewReplacement(replace.target, replace.options, candidate)}
+            onKeep={dismissReplacement}
+          />
+        ) : null}
+        {replace.status === "previewing" ? (
+          <SafeReplaceCandidates
+            targetName={replace.target.name}
+            candidates={replace.options}
+            loading
+            onSelect={() => undefined}
+            onKeep={dismissReplacement}
+          />
+        ) : null}
+        {replace.status === "unsafe" ? (
+          <SafeReplacePreview
+            targetName={replace.target.name}
+            candidate={replace.candidate}
+            applying={false}
+            onApply={() => undefined}
+            onKeep={dismissReplacement}
+            onOtherCandidates={showOtherCandidates}
+          />
+        ) : null}
+        {replace.status === "review" || replace.status === "applying" ? (
+          <SafeReplacePreview
+            targetName={replace.target.name}
+            candidate={replace.candidate}
+            model={replace.model}
+            applying={replace.status === "applying"}
+            onApply={() => void applyReplacement(replace)}
+            onKeep={dismissReplacement}
+            onOtherCandidates={showOtherCandidates}
+          />
+        ) : null}
         {repair.status === "review" || repair.status === "applying" ? (
           <RoadbookRepairPreview
             before={repair.before}
@@ -189,6 +400,17 @@ export function ExecutableRoutePreview({
         ) : null}
         {repair.status === "restored" ? <RepairFeedback message="已恢复调整前的路线。" /> : null}
         {repair.status === "error" ? <RepairError message={repair.message} onDismiss={dismissRepair} /> : null}
+        {replace.status === "applied" ? (
+          <RepairFeedback
+            message={`这个地点已经从${replace.previousName}换成${replace.replacementName}。其他已经确认的安排没有被改动。`}
+            errorMessage={replace.errorMessage}
+            actionLabel={replace.undoing ? "正在恢复…" : replace.errorMessage ? "重试撤销" : "撤销刚才的替换"}
+            busy={replace.undoing}
+            onAction={() => void undoReplacement(replace)}
+          />
+        ) : null}
+        {replace.status === "restored" ? <RepairFeedback message="已恢复原来的地点和相邻路线。" /> : null}
+        {replace.status === "error" ? <RepairError message={replace.message} onDismiss={dismissReplacement} /> : null}
         <RoutePreviewStyles />
       </section>
     );
@@ -299,6 +521,6 @@ function RepairError({ message, onDismiss }: { message: string; onDismiss: () =>
 
 function RoutePreviewStyles() {
   return <style>{`
-    .erp-shell{display:grid;gap:18px;margin:0 0 24px}.erp-header,.erp-day{border:1px solid var(--ec-line);background:rgba(255,253,249,.94);box-shadow:var(--ec-shadow-2)}.erp-header{display:flex;justify-content:space-between;gap:18px;align-items:end;padding:24px 26px;border-radius:20px}.erp-header p,.erp-day-header p{margin:0 0 5px;color:var(--ec-route-blue);font-size:12px;font-weight:900;letter-spacing:.08em}.erp-header h2,.erp-day h3{margin:0;font-family:"Iowan Old Style",Georgia,serif;color:var(--ec-ink);letter-spacing:0}.erp-header h2{font-size:30px}.erp-header span,.erp-day-header span{color:var(--ec-slate);font-size:14px;line-height:1.55}.erp-header-summary{display:flex;gap:10px;flex-wrap:wrap;justify-content:end}.erp-header-summary>*{padding:7px 10px;border-radius:999px;background:rgba(21,21,21,.05);font-size:12px}.erp-risks{border:1px solid rgba(185,78,72,.35);background:rgba(255,244,242,.85);padding:16px 18px;border-radius:14px;color:#822b27}.erp-risks p{margin:6px 0 0;line-height:1.5}.erp-days{display:grid;gap:16px}.erp-day{border-radius:18px;padding:22px}.erp-day-header{display:flex;justify-content:space-between;gap:16px;align-items:start;padding-bottom:16px;border-bottom:1px solid var(--ec-line)}.erp-day-header h3{font-size:25px;margin-bottom:4px}.erp-pace{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:900;white-space:nowrap}.erp-pace--relaxed{background:#e9f3e8;color:#3f6c43}.erp-pace--balanced{background:#edf2f7;color:#486273}.erp-pace--rushed{background:#fff1dd;color:#8b5e1f}.erp-pace--infeasible{background:#fde9e6;color:#9d302a}.erp-load-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:16px 0}.erp-load-grid div{padding:11px;border:1px solid var(--ec-line);border-radius:10px;background:rgba(247,244,238,.72)}.erp-load-grid span{display:block;font-size:11px;color:var(--ec-slate);font-weight:800}.erp-load-grid strong{font-size:14px;color:var(--ec-ink)}.erp-timeline{display:grid;gap:10px}.erp-timeline-row{display:grid;gap:8px}.erp-leg{margin-left:26px;padding:8px 10px;border-left:2px solid rgba(37,99,235,.35);display:grid;gap:2px;color:var(--ec-slate);font-size:12px}.erp-leg span{color:var(--ec-route-blue);font-weight:900}.erp-leg strong{color:var(--ec-ink);font-size:13px}.erp-stop{display:grid;grid-template-columns:98px minmax(0,1fr);gap:14px;padding:14px 12px;border-radius:10px;background:rgba(255,255,255,.76);border:1px solid rgba(21,21,21,.08)}.erp-stop time{font-weight:900;color:var(--ec-route-blue);font-size:13px}.erp-stop-title{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.erp-stop strong{color:var(--ec-ink);font-size:17px}.erp-stop p{margin:5px 0 0;color:var(--ec-slate);font-size:13px;line-height:1.55}.erp-fixed,.erp-kind{padding:4px 7px;border-radius:999px;font-size:11px;font-weight:900}.erp-fixed{background:rgba(117,91,40,.12);color:#76531f}.erp-kind{background:rgba(37,99,235,.08);color:#285eae}.erp-why{margin-top:14px;color:var(--ec-slate);font-size:13px}.erp-why summary{cursor:pointer;font-weight:900;color:var(--ec-ink)}.erp-why div{display:grid;gap:6px;margin-top:9px}.erp-why p{margin:0;line-height:1.55}.erp-why p strong{margin-right:5px;color:var(--ec-ink)}.erp-repair-button{border:0;border-radius:10px;padding:10px 13px;background:var(--ec-ink);color:#fff;font-weight:900;cursor:pointer;margin-top:16px}.erp-repair-button:disabled{opacity:.55;cursor:wait}.erp-repair-feedback,.erp-repair-error{display:flex;justify-content:space-between;align-items:center;gap:18px;border-top:3px solid #5f6859;border-bottom:1px solid rgba(23,22,19,.18);background:#f7f3eb;padding:18px 22px;color:#171613}.erp-repair-feedback p,.erp-repair-error p{margin:0 0 4px;color:#5f6859;font-size:9px;font-weight:900;letter-spacing:.14em}.erp-repair-feedback strong,.erp-repair-error strong{font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:18px}.erp-repair-feedback__error{display:block;margin-top:6px;color:#8d3028;font-size:12px;font-weight:800}.erp-repair-feedback button,.erp-repair-error button{border:0;border-bottom:1px solid currentColor;background:transparent;padding:7px 0;color:#171613;font-weight:900;cursor:pointer}.erp-repair-feedback button:disabled{opacity:.55;cursor:wait}.erp-repair-error{border-top-color:#a23d32}.erp-repair-error p{color:#a23d32}.erp-repair-error>button{border:0;font-size:24px}.erp-error{margin:0;color:#9d302a;font-weight:800}@media(max-width:720px){.erp-header{display:grid;align-items:start;padding:19px}.erp-header-summary{justify-content:start}.erp-day{padding:16px}.erp-load-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.erp-stop{grid-template-columns:1fr;gap:5px}.erp-day-header{display:grid}.erp-header h2{font-size:27px}.erp-repair-feedback,.erp-repair-error{align-items:start;margin:0 -18px;padding:16px 18px}.erp-repair-feedback strong,.erp-repair-error strong{font-size:16px}}
+    .erp-shell{display:grid;gap:18px;margin:0 0 24px}.erp-header,.erp-day{border:1px solid var(--ec-line);background:rgba(255,253,249,.94);box-shadow:var(--ec-shadow-2)}.erp-header{display:flex;justify-content:space-between;gap:18px;align-items:end;padding:24px 26px;border-radius:20px}.erp-header p,.erp-day-header p{margin:0 0 5px;color:var(--ec-route-blue);font-size:12px;font-weight:900;letter-spacing:.08em}.erp-header h2,.erp-day h3{margin:0;font-family:"Iowan Old Style",Georgia,serif;color:var(--ec-ink);letter-spacing:0}.erp-header h2{font-size:30px}.erp-header span,.erp-day-header span{color:var(--ec-slate);font-size:14px;line-height:1.55}.erp-header-summary{display:flex;gap:10px;flex-wrap:wrap;justify-content:end}.erp-header-summary>*{padding:7px 10px;border-radius:999px;background:rgba(21,21,21,.05);font-size:12px}.erp-risks{border:1px solid rgba(185,78,72,.35);background:rgba(255,244,242,.85);padding:16px 18px;border-radius:14px;color:#822b27}.erp-risks p{margin:6px 0 0;line-height:1.5}.erp-days{display:grid;gap:16px}.erp-day{border-radius:18px;padding:22px}.erp-day-header{display:flex;justify-content:space-between;gap:16px;align-items:start;padding-bottom:16px;border-bottom:1px solid var(--ec-line)}.erp-day-header h3{font-size:25px;margin-bottom:4px}.erp-pace{padding:7px 10px;border-radius:999px;font-size:12px;font-weight:900;white-space:nowrap}.erp-pace--relaxed{background:#e9f3e8;color:#3f6c43}.erp-pace--balanced{background:#edf2f7;color:#486273}.erp-pace--rushed{background:#fff1dd;color:#8b5e1f}.erp-pace--infeasible{background:#fde9e6;color:#9d302a}.erp-load-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:16px 0}.erp-load-grid div{padding:11px;border:1px solid var(--ec-line);border-radius:10px;background:rgba(247,244,238,.72)}.erp-load-grid span{display:block;font-size:11px;color:var(--ec-slate);font-weight:800}.erp-load-grid strong{font-size:14px;color:var(--ec-ink)}.erp-timeline{display:grid;gap:10px}.erp-timeline-row{display:grid;gap:8px}.erp-leg{margin-left:26px;padding:8px 10px;border-left:2px solid rgba(37,99,235,.35);display:grid;gap:2px;color:var(--ec-slate);font-size:12px}.erp-leg span{color:var(--ec-route-blue);font-weight:900}.erp-leg strong{color:var(--ec-ink);font-size:13px}.erp-stop{display:grid;grid-template-columns:98px minmax(0,1fr);gap:14px;padding:14px 12px;border-radius:10px;background:rgba(255,255,255,.76);border:1px solid rgba(21,21,21,.08)}.erp-stop time{font-weight:900;color:var(--ec-route-blue);font-size:13px}.erp-stop-title{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.erp-stop strong{color:var(--ec-ink);font-size:17px}.erp-stop p{margin:5px 0 0;color:var(--ec-slate);font-size:13px;line-height:1.55}.erp-fixed,.erp-kind{padding:4px 7px;border-radius:999px;font-size:11px;font-weight:900}.erp-fixed{background:rgba(117,91,40,.12);color:#76531f}.erp-kind{background:rgba(37,99,235,.08);color:#285eae}.erp-why{margin-top:14px;color:var(--ec-slate);font-size:13px}.erp-why summary{cursor:pointer;font-weight:900;color:var(--ec-ink)}.erp-why div{display:grid;gap:6px;margin-top:9px}.erp-why p{margin:0;line-height:1.55}.erp-why p strong{margin-right:5px;color:var(--ec-ink)}.erp-repair-button{border:0;border-radius:10px;padding:10px 13px;background:var(--ec-ink);color:#fff;font-weight:900;cursor:pointer;margin-top:16px}.erp-repair-button:disabled{opacity:.55;cursor:wait}.erp-repair-feedback,.erp-repair-error{display:flex;justify-content:space-between;align-items:center;gap:18px;border-top:3px solid #5f6859;border-bottom:1px solid rgba(23,22,19,.18);background:#f7f3eb;padding:18px 22px;color:#171613}.erp-repair-feedback p,.erp-repair-error p{margin:0 0 4px;color:#5f6859;font-size:9px;font-weight:900;letter-spacing:.14em}.erp-repair-feedback strong,.erp-repair-error strong{font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:18px}.erp-repair-feedback__error{display:block;margin-top:6px;color:#8d3028;font-size:12px;font-weight:800}.erp-repair-feedback button,.erp-repair-error button{border:0;border-bottom:1px solid currentColor;background:transparent;padding:7px 0;color:#171613;font-weight:900;cursor:pointer}.erp-repair-feedback button:disabled{opacity:.55;cursor:wait}.erp-repair-error{border-top-color:#a23d32}.erp-repair-error p{color:#a23d32}.erp-repair-error>button{border:0;font-size:24px}.erp-error{margin:0;color:#9d302a;font-weight:800}@media(max-width:720px){.erp-header{display:grid;align-items:start;padding:19px}.erp-header-summary{justify-content:start}.erp-day{padding:16px}.erp-load-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.erp-stop{grid-template-columns:1fr;gap:5px}.erp-day-header{display:grid}.erp-header h2{font-size:27px}.erp-repair-feedback,.erp-repair-error{display:grid;align-items:start;margin:0 -18px;padding:16px 18px}.erp-repair-feedback button,.erp-repair-error button{justify-self:start}.erp-repair-feedback strong,.erp-repair-error strong{font-size:16px}}
   `}</style>;
 }

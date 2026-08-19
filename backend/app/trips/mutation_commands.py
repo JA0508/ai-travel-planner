@@ -13,7 +13,7 @@ from app.evaluation.invariants import (
     within_arrival_departure_boundaries,
     within_day_availability,
 )
-from app.schemas import ItineraryResponse, TimeBlockType
+from app.schemas import ItineraryResponse, ReplacementRouteImpact, TimeBlockType, VerifiedPlaceRef
 from .digests import (
     TRIP_MUTATION_COMMAND_SCHEMA_VERSION,
     TRIP_MUTATION_ENGINE_VERSION,
@@ -106,6 +106,14 @@ class ReplacementCandidate(BaseModel):
     type: Literal["scenic", "restaurant"]
     reasoning_summary: str = Field(..., min_length=1)
     itinerary_relation_summary: str = Field(..., min_length=1)
+    verified_place: VerifiedPlaceRef
+    route_impact: ReplacementRouteImpact
+
+    @model_validator(mode="after")
+    def validate_verified_route(self) -> "ReplacementCandidate":
+        if not self.route_impact.safe_to_apply or self.route_impact.inbound is None:
+            raise ValueError("replacement requires verified, safe adjacent route evidence.")
+        return self
 
 
 class ReplaceStopCommand(BaseModel):
@@ -439,6 +447,20 @@ def assert_mutable_stop(item: dict[str, Any], *, command_index: int = 0) -> None
         )
 
 
+def assert_replaceable_stop(item: dict[str, Any], *, command_index: int = 0) -> None:
+    assert_mutable_stop(item, command_index=command_index)
+    if (
+        item.get("source_type") not in SYSTEM_REPAIR_SOURCE_TYPES
+        or item.get("source_label") == "必去"
+        or not item.get("canonical_place_id")
+        or not item.get("verified_place")
+    ):
+        raise MutationCommandFailedError(
+            command_index=command_index,
+            reason_code="replace_target_not_eligible",
+        )
+
+
 SYSTEM_REPAIR_SOURCE_TYPES = {"auto_seeded_poi", "auto_seeded_meal", "auto_filled"}
 
 
@@ -635,14 +657,32 @@ def apply_replace_stop(
 ) -> None:
     day, block, index = require_stop(snapshot, command.stop_id)
     item = block["items"][index]
-    assert_mutable_stop(item)
+    assert_replaceable_stop(item)
     replacement = command.replacement
-    if item.get("name") == replacement.name and item.get("type") == replacement.type:
+    verified_place = replacement.verified_place
+    if item.get("canonical_place_id") == verified_place.provider_place_id:
         raise MutationCommandNoEffectError()
+    ordered_items = sorted(
+        all_day_items(day),
+        key=lambda value: (str(value.get("start_time") or ""), str(value.get("end_time") or ""), str(value.get("name") or "")),
+    )
+    ordered_index = next(
+        position for position, value in enumerate(ordered_items) if value.get("stable_id") == command.stop_id
+    )
+    following = ordered_items[ordered_index + 1] if ordered_index + 1 < len(ordered_items) else None
+    inbound = replacement.route_impact.inbound
+    outbound = replacement.route_impact.outbound
+    if following is not None and outbound is None:
+        raise MutationCommandFailedError(
+            command_index=0,
+            reason_code="replacement_route_unavailable",
+        )
     block["items"][index] = {
         **item,
-        "name": replacement.name,
+        "name": verified_place.canonical_name,
         "type": replacement.type,
+        "latitude": verified_place.latitude,
+        "longitude": verified_place.longitude,
         "is_fixed": False,
         "placement_reason": (
             f"{replacement.reasoning_summary} This was swapped into the same time slot after generation."
@@ -650,6 +690,22 @@ def apply_replace_stop(
         "source_type": "auto_filled",
         "source_label": "已替换",
         "source_reason": replacement.itinerary_relation_summary,
+        "candidate_id": None,
+        "canonical_place_id": verified_place.provider_place_id,
+        "verified_place": verified_place.model_dump(mode="json"),
+        "travel_from_name": inbound.from_name,
+        "travel_distance_m": inbound.distance_m,
+        "travel_duration_s": inbound.duration_s,
+        "travel_calculation_status": "provider_verified",
+        "travel_to_place_id": verified_place.provider_place_id,
+        "travel_provider": inbound.provider,
+        "travel_data_status": inbound.data_status,
+        "candidate_provenance": {
+            "source_kind": "poi_provider",
+            "provider": verified_place.provider,
+            "provider_place_id": verified_place.provider_place_id,
+            "verification_status": "verified",
+        },
         "local_edit": {
             "previous_name": item.get("name"),
             "source": "completion_recommendation",
@@ -663,7 +719,17 @@ def apply_replace_stop(
             "original_source_reason": item.get("source_reason"),
         },
     }
+    if following is not None and outbound is not None:
+        following["travel_from_name"] = verified_place.canonical_name
+        following["travel_from_place_id"] = verified_place.provider_place_id
+        following["travel_distance_m"] = outbound.distance_m
+        following["travel_duration_s"] = outbound.duration_s
+        following["travel_calculation_status"] = "provider_verified"
+        following["travel_provider"] = outbound.provider
+        following["travel_data_status"] = outbound.data_status
     impact["replaced_stop_ids"].append(command.stop_id)
+    impact["replacement_route_impact"] = replacement.route_impact.model_dump(mode="json")
+    impact["execution_evidence"]["route_provider_calls"] = 1 + int(outbound is not None)
     record_day_impact(impact, day.get("day"))
 
 
@@ -776,8 +842,14 @@ def slot_fields(item: dict[str, Any]) -> dict[str, Any]:
 
 def normalize_snapshot_after_mutation(snapshot: dict[str, Any], impact: dict[str, Any]) -> None:
     affected = {int(day) for day in impact["affected_day_references"] if str(day).isdigit()}
+    replacement_only = bool(impact["replaced_stop_ids"]) and not any(
+        impact[key]
+        for key in ("moved_stop_ids", "removed_stop_ids", "reordered_day_references", "swapped_stop_ids", "admitted_candidate_ids")
+    )
     for day in snapshot.get("days", []):
         if int(day.get("day") or 0) not in affected:
+            continue
+        if replacement_only:
             continue
         anchor = snapshot.get("planning_anchor_source", {})
         previous_name = anchor.get("source_name")

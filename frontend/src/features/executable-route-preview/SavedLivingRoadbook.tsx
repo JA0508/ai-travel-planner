@@ -20,6 +20,7 @@ import {
   type RoutePreviewItinerary,
   type RoutePreviewItem,
 } from "./routePreviewModel";
+import { isSafeReplaceEligible } from "./safeReplaceModel";
 
 type Props = {
   itinerary: RoutePreviewItinerary;
@@ -29,6 +30,9 @@ type Props = {
   repairStatus: "idle" | "previewing" | "review" | "applying" | "undoing" | "applied" | "restored" | "error";
   repairDay?: number;
   onRelaxDay: (day: number) => void;
+  replaceControlStatus: "available" | "choosing" | "processing" | "applied" | "attention";
+  focusedStopId?: string;
+  onReplaceStop: (item: RoutePreviewItem) => void;
 };
 
 export function SavedLivingRoadbook({
@@ -39,6 +43,9 @@ export function SavedLivingRoadbook({
   repairStatus,
   repairDay,
   onRelaxDay,
+  replaceControlStatus,
+  focusedStopId,
+  onReplaceStop,
 }: Props) {
   const workspaceItinerary = useMemo(() => toWorkspaceItinerary(itinerary), [itinerary]);
   const workspace = useEditableRouteWorkspaceState({
@@ -71,6 +78,14 @@ export function SavedLivingRoadbook({
       setActiveStopId(day.stops[0].id);
     }
   }, [activeStop, editableDays, selectedDay, setActiveStopId]);
+
+  useEffect(() => {
+    if (!focusedStopId || activeStopId === focusedStopId) return;
+    const focused = editableDays.flatMap((day) => day.stops).find((stop) => stop.id === focusedStopId);
+    if (!focused) return;
+    setSelectedDay(focused.day);
+    setActiveStopId(focused.id);
+  }, [activeStopId, editableDays, focusedStopId]);
 
   const selectedNeighborStopIds = activeStop
     ? buildNeighborStopIds(activeStop, editableDays)
@@ -207,22 +222,29 @@ export function SavedLivingRoadbook({
             />
           </div>
           {activeStop ? (
-            <PlaceDetailPanelContainer
-              variant="roadbook"
-              stop={activeStop}
-              allDays={editableDays}
-              originLabel={mapOrigin.name}
-              routePreviewMap={routePreviewMap}
-              routeMode={routeMode}
-              poiDetailEndpoint={TRIP_API_ENDPOINTS.previewPoiDetail}
-              editing={false}
-              onClose={() => setActiveStopId(selectedDayView?.stops[0]?.id ?? null)}
-              onSelectStop={setActiveStopId}
-              onMoveStop={() => undefined}
-              onDeleteStop={() => undefined}
-              onToggleLockStop={() => undefined}
-              onMoveToUnplanned={() => undefined}
-            />
+            <>
+              <PlaceDetailPanelContainer
+                variant="roadbook"
+                stop={activeStop}
+                allDays={editableDays}
+                originLabel={mapOrigin.name}
+                routePreviewMap={routePreviewMap}
+                routeMode={routeMode}
+                poiDetailEndpoint={TRIP_API_ENDPOINTS.previewPoiDetail}
+                editing={false}
+                onClose={() => setActiveStopId(selectedDayView?.stops[0]?.id ?? null)}
+                onSelectStop={setActiveStopId}
+                onMoveStop={() => undefined}
+                onDeleteStop={() => undefined}
+                onToggleLockStop={() => undefined}
+                onMoveToUnplanned={() => undefined}
+              />
+              <RoadbookReplaceEntry
+                item={activeStop.item}
+                controlStatus={replaceControlStatus}
+                onReplace={() => onReplaceStop(activeStop.item)}
+              />
+            </>
           ) : (
             <div className="roadbook__selection-note">
               <p>FIELD NOTE</p>
@@ -318,6 +340,9 @@ function toScheduledItem(item: RoutePreviewItem): ScheduledItemLike {
     source_type: item.source_type,
     source_label: item.source_label,
     source_reason: item.source_reason,
+    candidate_id: item.candidate_id,
+    canonical_place_id: item.canonical_place_id,
+    verified_place: item.verified_place,
     travel_from_name: item.travel_from_name ?? null,
     travel_distance_m: item.travel_distance_m ?? null,
     travel_duration_s: item.travel_duration_s ?? null,
@@ -325,6 +350,46 @@ function toScheduledItem(item: RoutePreviewItem): ScheduledItemLike {
     travel_provider: item.travel_provider,
     poi_research: item.poi_research,
   } as ScheduledItemLike;
+}
+
+function RoadbookReplaceEntry({
+  item,
+  controlStatus,
+  onReplace,
+}: {
+  item: ScheduledItemLike;
+  controlStatus: "available" | "choosing" | "processing" | "applied" | "attention";
+  onReplace: () => void;
+}) {
+  const eligible = isSafeReplaceEligible(item);
+  const controlLabel = {
+    available: "换一个",
+    choosing: "选择中",
+    processing: "正在处理…",
+    applied: "刚刚换好",
+    attention: "查看提示",
+  }[controlStatus];
+  return (
+    <section className={`roadbook-replace-entry ${eligible ? "is-eligible" : "is-protected"}`}>
+      <div>
+        <p>LOCAL CONTROL / ONE STOP ONLY</p>
+        <strong>{eligible ? "这一站还有几个更合适的选择。" : protectedReplaceMessage(item)}</strong>
+        {eligible ? <span>只换这一站，前后路线会先重新检查。</span> : null}
+      </div>
+      {eligible ? (
+        <button type="button" onClick={onReplace} disabled={controlStatus !== "available"}>
+          {controlLabel} {controlStatus === "available" ? <i aria-hidden="true">→</i> : null}
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+function protectedReplaceMessage(item: ScheduledItemLike): string {
+  if (item.is_fixed || item.source_type === "user_fixed" || item.source_label === "必去" || item.source_type === "user_seed") {
+    return "这个地点是你明确保留的安排，目前不会被自动替换。";
+  }
+  return "这个地点还没有完成身份确认，暂时不会被替换。";
 }
 
 function dayTitle(firstName?: string, lastName?: string): string {
@@ -373,10 +438,10 @@ function RoadbookStyles() {
     .roadbook__sr-only{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
     .roadbook__mobile-current{display:none}.roadbook__layout{display:grid;grid-template-columns:minmax(0,.9fr) minmax(520px,1.1fr);border-top:1px solid var(--roadbook-line);border-bottom:1px solid var(--roadbook-line)}.roadbook__timeline{position:relative;min-width:0;padding:10px 46px 42px 8px;border-right:1px solid var(--roadbook-line)}.roadbook__route-line{position:absolute;top:32px;bottom:210px;left:116px;width:2px;background:var(--roadbook-orange);transform-origin:top;animation:roadbook-route-reveal 480ms ease-out both}.roadbook__route-unit{position:relative}.roadbook-leg{display:grid;grid-template-columns:22px minmax(0,1fr);gap:0;margin-left:100px;padding:16px 0 12px;color:var(--roadbook-muted)}.roadbook-leg>span{grid-row:1/3;color:var(--roadbook-orange);font-size:28px;line-height:.75}.roadbook-leg p{margin:0;font-size:12px;font-weight:900}.roadbook-leg small{font-size:10px;line-height:1.45}.roadbook-leg.is-unconfirmed p{color:#965b3e}.roadbook-stop{position:relative;display:grid;grid-template-columns:84px 42px minmax(0,1fr);gap:12px;width:100%;border:0;border-top:1px solid var(--roadbook-line);background:transparent;padding:23px 0;text-align:left;color:inherit;cursor:pointer;transition:background 170ms ease,transform 170ms ease}.roadbook-stop time{padding-top:7px;color:var(--roadbook-muted);font-size:13px;font-weight:900}.roadbook-stop__node{position:relative;z-index:1;display:grid;width:38px;height:38px;place-items:center;border:2px solid var(--roadbook-paper);border-radius:50%;background:var(--roadbook-orange);color:#fff;font-size:11px;font-weight:900;box-shadow:0 0 0 1px var(--roadbook-orange)}.roadbook-stop__copy{display:grid;gap:6px;padding-right:10px}.roadbook-stop__meta{color:var(--roadbook-orange);font-size:9px;font-weight:900;letter-spacing:.13em}.roadbook-stop__copy>strong{font-family:"Arial Narrow","Avenir Next Condensed","Noto Sans SC",sans-serif;font-size:28px;line-height:1}.roadbook-stop__copy>small{max-width:440px;color:var(--roadbook-muted);font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:14px;line-height:1.55}.roadbook-stop.is-selected{background:rgba(230,90,40,.07);transform:translateX(6px)}.roadbook-stop.is-selected .roadbook-stop__node{background:var(--roadbook-ink);box-shadow:0 0 0 1px var(--roadbook-ink)}.roadbook-stop.is-fixed{border-top:2px solid var(--roadbook-ink);border-bottom:2px solid var(--roadbook-ink);margin:5px 0}.roadbook-stop.is-fixed .roadbook-stop__node{background:var(--roadbook-ink);box-shadow:0 0 0 1px var(--roadbook-ink)}.roadbook-stop__locked{display:flex;flex-wrap:wrap;gap:7px 12px;align-items:center;margin-top:5px;color:var(--roadbook-ink)}.roadbook-stop__locked b{background:var(--roadbook-ink);color:#fff;padding:4px 7px;font-size:9px;letter-spacing:.1em}.roadbook-stop__locked i{font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:12px;font-style:normal}
     .roadbook-day-note{display:grid;gap:8px;margin:34px 0 0 100px;border-top:3px solid var(--roadbook-orange);padding:18px 0 0}.roadbook-day-note h3{margin:0;font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:25px}.roadbook-day-note>span{color:var(--roadbook-muted);font-size:12px}.roadbook-day-note button{justify-self:start;border:0;border-bottom:1px solid currentColor;background:transparent;padding:7px 0;color:var(--roadbook-ink);font:inherit;font-size:13px;font-weight:900;cursor:pointer}.roadbook-day-note button i{margin-left:9px;color:var(--roadbook-orange);font-style:normal}.roadbook-day-note button:disabled{opacity:.55;cursor:wait}
-    .roadbook__context{display:grid;align-content:start;min-width:0;background:var(--roadbook-paper-deep)}.roadbook__map-heading{display:flex;justify-content:space-between;gap:22px;padding:15px 18px;border-bottom:1px solid var(--roadbook-line)}.roadbook__map-heading span{overflow:hidden;color:var(--roadbook-muted);font-size:11px;font-weight:800;text-overflow:ellipsis;white-space:nowrap}.roadbook__map-frame{position:relative;min-height:470px;border-bottom:1px solid var(--roadbook-line)}.roadbook__selection-note{display:grid;gap:8px;min-height:240px;align-content:center;padding:28px}.roadbook__selection-note strong{font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:26px}.roadbook__selection-note span{max-width:430px;color:var(--roadbook-muted);line-height:1.6}
+    .roadbook__context{display:grid;align-content:start;min-width:0;background:var(--roadbook-paper-deep)}.roadbook__map-heading{display:flex;justify-content:space-between;gap:22px;padding:15px 18px;border-bottom:1px solid var(--roadbook-line)}.roadbook__map-heading span{overflow:hidden;color:var(--roadbook-muted);font-size:11px;font-weight:800;text-overflow:ellipsis;white-space:nowrap}.roadbook__map-frame{position:relative;min-height:470px;border-bottom:1px solid var(--roadbook-line)}.roadbook__selection-note{display:grid;gap:8px;min-height:240px;align-content:center;padding:28px}.roadbook__selection-note strong{font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:26px}.roadbook__selection-note span{max-width:430px;color:var(--roadbook-muted);line-height:1.6}.roadbook-replace-entry{display:flex;justify-content:space-between;align-items:center;gap:24px;border-bottom:1px solid var(--roadbook-line);padding:20px 24px;background:#f8f3eb}.roadbook-replace-entry>div{display:grid;gap:5px}.roadbook-replace-entry p{margin:0;color:var(--roadbook-orange);font-size:9px;font-weight:900;letter-spacing:.12em}.roadbook-replace-entry strong{font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:16px}.roadbook-replace-entry span{color:var(--roadbook-muted);font-size:11px}.roadbook-replace-entry>button{flex:0 0 auto;border:0;border-bottom:1px solid currentColor;background:transparent;padding:8px 0;color:var(--roadbook-ink);font:inherit;font-size:13px;font-weight:900;cursor:pointer}.roadbook-replace-entry>button i{margin-left:8px;color:var(--roadbook-orange);font-style:normal}.roadbook-replace-entry>button:disabled{opacity:.5;cursor:wait}.roadbook-replace-entry.is-protected{border-left:3px solid var(--roadbook-ink)}
     @keyframes roadbook-route-reveal{from{transform:scaleY(0)}to{transform:scaleY(1)}}
     @media(max-width:980px){.roadbook__layout{grid-template-columns:minmax(0,1fr)}.roadbook__timeline{border-right:0;border-bottom:1px solid var(--roadbook-line)}.roadbook__context{position:static}.roadbook__map-frame{min-height:420px}}
-    @media(max-width:620px){.roadbook{margin:0 -18px 30px;border-top:0}.roadbook__masthead{display:grid;gap:20px;padding:20px 18px}.roadbook__masthead h1{font-size:46px}.roadbook__masthead nav{overflow-x:auto;margin:0 -18px;padding:0 18px}.roadbook__masthead nav button{min-width:64px}.roadbook__day-intro{grid-template-columns:1fr;gap:12px;padding:25px 18px 20px}.roadbook__day-intro h2{font-size:32px}.roadbook__day-intro>p{font-size:14px}.roadbook__mobile-current{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:12px;align-items:center;margin:0 18px 18px;border-top:1px solid var(--roadbook-line);border-bottom:1px solid var(--roadbook-line);padding:13px 0}.roadbook__mobile-current div{display:grid;gap:3px;min-width:0}.roadbook__mobile-current div:last-child{text-align:right}.roadbook__mobile-current span{color:var(--roadbook-orange);font-size:9px;font-weight:900;letter-spacing:.12em}.roadbook__mobile-current strong{overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.roadbook__mobile-current i{color:var(--roadbook-orange);font-style:normal}.roadbook__timeline{padding:4px 18px 32px}.roadbook__route-line{left:91px;bottom:190px}.roadbook-leg{margin-left:76px;padding:14px 0 10px}.roadbook-stop{grid-template-columns:55px 32px minmax(0,1fr);gap:8px;padding:20px 0}.roadbook-stop time{font-size:11px}.roadbook-stop__node{width:30px;height:30px;font-size:9px}.roadbook-stop__copy>strong{font-size:24px}.roadbook-stop__copy>small{font-size:13px}.roadbook-stop.is-selected{transform:none}.roadbook-day-note{margin:28px 0 0 76px}.roadbook__map-heading{display:grid;gap:5px;padding:13px 18px}.roadbook__map-frame{min-height:410px}.roadbook__selection-note{min-height:210px;padding:22px 18px}}
+    @media(max-width:620px){.roadbook{margin:0 -18px 30px;border-top:0}.roadbook__masthead{display:grid;gap:20px;padding:20px 18px}.roadbook__masthead h1{font-size:46px}.roadbook__masthead nav{overflow-x:auto;margin:0 -18px;padding:0 18px}.roadbook__masthead nav button{min-width:64px}.roadbook__day-intro{grid-template-columns:1fr;gap:12px;padding:25px 18px 20px}.roadbook__day-intro h2{font-size:32px}.roadbook__day-intro>p{font-size:14px}.roadbook__mobile-current{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:12px;align-items:center;margin:0 18px 18px;border-top:1px solid var(--roadbook-line);border-bottom:1px solid var(--roadbook-line);padding:13px 0}.roadbook__mobile-current div{display:grid;gap:3px;min-width:0}.roadbook__mobile-current div:last-child{text-align:right}.roadbook__mobile-current span{color:var(--roadbook-orange);font-size:9px;font-weight:900;letter-spacing:.12em}.roadbook__mobile-current strong{overflow:hidden;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.roadbook__mobile-current i{color:var(--roadbook-orange);font-style:normal}.roadbook__timeline{padding:4px 18px 32px}.roadbook__route-line{left:91px;bottom:190px}.roadbook-leg{margin-left:76px;padding:14px 0 10px}.roadbook-stop{grid-template-columns:55px 32px minmax(0,1fr);gap:8px;padding:20px 0}.roadbook-stop time{font-size:11px}.roadbook-stop__node{width:30px;height:30px;font-size:9px}.roadbook-stop__copy>strong{font-size:24px}.roadbook-stop__copy>small{font-size:13px}.roadbook-stop.is-selected{transform:none}.roadbook-day-note{margin:28px 0 0 76px}.roadbook__map-heading{display:grid;gap:5px;padding:13px 18px}.roadbook__map-frame{min-height:410px}.roadbook__selection-note{min-height:210px;padding:22px 18px}.roadbook-replace-entry{display:grid;gap:14px;padding:18px}.roadbook-replace-entry>button{justify-self:start}}
     @media(prefers-reduced-motion:reduce){.roadbook__route-line{animation:none}.roadbook-stop{transition:none}}
   `}</style>;
 }

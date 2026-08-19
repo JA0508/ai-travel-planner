@@ -1,6 +1,7 @@
 """Deterministic external-POI boundary for browser acceptance tests only."""
 
 from app.services import place_identity_resolution
+from app.schemas import VerifiedPlaceRef
 from app.services.poi_discovery_provider import PoiDiscoveryCandidate, PoiDiscoveryCapability
 
 
@@ -58,6 +59,96 @@ class BrowserFixturePoiDiscoveryProvider:
             longitude=121.473,
             provider_place_id="fixture-shanghai-museum",
         ),
+        "龙井村茶歇": PoiDiscoveryCandidate(
+            name="龙井村茶歇",
+            address="杭州市西湖区龙井路",
+            type="中餐厅",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.21829,
+            longitude=120.10924,
+            provider_place_id="fixture-longjing-tea-stop",
+        ),
+        "河坊街小吃街": PoiDiscoveryCandidate(
+            name="河坊街小吃街",
+            address="杭州市上城区河坊街",
+            type="特色餐食",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.24204,
+            longitude=120.17331,
+            provider_place_id="fixture-hefang-food-street",
+        ),
+        "湖滨银泰夜景": PoiDiscoveryCandidate(
+            name="湖滨银泰夜景",
+            address="杭州市上城区湖滨",
+            type="餐饮服务",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.25739,
+            longitude=120.16089,
+            provider_place_id="fixture-hubin-dinner",
+        ),
+        "武林夜市": PoiDiscoveryCandidate(
+            name="武林夜市",
+            address="杭州市拱墅区武林路",
+            type="特色餐食",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.27431,
+            longitude=120.16548,
+            provider_place_id="fixture-wulin-night-market",
+        ),
+        "青芝坞餐厅": PoiDiscoveryCandidate(
+            name="青芝坞餐厅",
+            address="杭州市西湖区青芝坞",
+            type="中餐厅",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.26049,
+            longitude=120.12745,
+            provider_place_id="fixture-qingzhiwu",
+        ),
+        "满觉陇茶歇": PoiDiscoveryCandidate(
+            name="满觉陇茶歇",
+            address="杭州市西湖区满觉陇",
+            type="中餐厅",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.21477,
+            longitude=120.11953,
+            provider_place_id="fixture-manjuelong-tea-stop",
+        ),
+        "茶人村": PoiDiscoveryCandidate(
+            name="茶人村",
+            address="杭州市西湖区龙井路",
+            type="杭帮菜",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.229,
+            longitude=120.111,
+            provider_place_id="fixture-tea-village",
+        ),
+        "龙井草堂": PoiDiscoveryCandidate(
+            name="龙井草堂",
+            address="杭州市西湖区龙井路",
+            type="杭帮菜",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.226,
+            longitude=120.109,
+            provider_place_id="fixture-longjing-cottage",
+        ),
+        "远山宴": PoiDiscoveryCandidate(
+            name="远山宴",
+            address="杭州市临安区",
+            type="中餐厅",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.5,
+            longitude=119.7,
+            provider_place_id="fixture-far-dinner",
+        ),
     }
 
     def capability(self) -> PoiDiscoveryCapability:
@@ -79,17 +170,31 @@ class BrowserFixturePoiDiscoveryProvider:
         return [candidate] if candidate and candidate.business_area == city.strip() else []
 
     def search_around(self, **_: object) -> list[PoiDiscoveryCandidate]:
-        return []
+        return [
+            self._CANDIDATES["青芝坞餐厅"],
+            self._CANDIDATES["茶人村"],
+            self._CANDIDATES["龙井草堂"],
+            self._CANDIDATES["远山宴"],
+        ]
 
 
 place_identity_resolution.default_poi_discovery_provider = BrowserFixturePoiDiscoveryProvider
 
 
-def _fixture_route(**_: object) -> dict[str, object]:
+def _fixture_route(
+    *,
+    origin_lat: float,
+    origin_lng: float,
+    dest_lat: float,
+    dest_lng: float,
+    **_: object,
+) -> dict[str, object]:
     """CI-only Amap direction boundary: stable, non-zero verified route evidence."""
+    del origin_lng, dest_lng
+    unsafe = origin_lat >= 30.4 or dest_lat >= 30.4
     return {
-        "distance_m": 1100,
-        "duration_s": 840,
+        "distance_m": 8000 if unsafe else 800,
+        "duration_s": 9000 if unsafe else 600,
         "path_points": [],
         "source": "amap_fixture",
     }
@@ -100,3 +205,47 @@ from app.core import scheduler  # noqa: E402
 scheduler.get_route = _fixture_route
 
 from app.main import app  # noqa: E402
+
+from app.api.routes import itinerary as itinerary_routes  # noqa: E402
+from app.services import itinerary_completion_recommendation  # noqa: E402
+from app.trips import service as trip_service  # noqa: E402
+
+itinerary_completion_recommendation.default_poi_discovery_provider = (
+    BrowserFixturePoiDiscoveryProvider
+)
+itinerary_completion_recommendation.get_walking_route = _fixture_route
+trip_service.default_poi_discovery_provider = BrowserFixturePoiDiscoveryProvider
+
+_production_bootstrap = itinerary_routes.build_sparse_city_bootstrap_pois
+
+
+def _fixture_verified_bootstrap(**kwargs):
+    scenic, restaurants = _production_bootstrap(**kwargs)
+    provider = BrowserFixturePoiDiscoveryProvider()
+
+    def attach_identity(poi):
+        candidate = provider._CANDIDATES.get(poi.name)
+        if candidate is None or candidate.provider_place_id is None:
+            return poi
+        verified = VerifiedPlaceRef(
+            stable_id=f"amap:{candidate.provider_place_id}",
+            original_name=candidate.name,
+            canonical_name=candidate.name,
+            provider="amap",
+            provider_place_id=candidate.provider_place_id,
+            latitude=float(candidate.latitude),
+            longitude=float(candidate.longitude),
+            category=candidate.type,
+        )
+        return poi.model_copy(
+            update={
+                "canonical_place_id": candidate.provider_place_id,
+                "verified_place": verified,
+            },
+            deep=True,
+        )
+
+    return [attach_identity(poi) for poi in scenic], [attach_identity(poi) for poi in restaurants]
+
+
+itinerary_routes.build_sparse_city_bootstrap_pois = _fixture_verified_bootstrap

@@ -81,6 +81,7 @@ from app.services.itinerary_completion_recommendation import (
     build_itinerary_completion_recommendation,
     normalize_city_name as normalize_candidate_city_name,
     preview_completion_task_candidates,
+    preview_safe_replace_candidates,
     repair_missing_meal_slots,
 )
 from app.services.intent_disambiguation import disambiguate_trip_intent
@@ -658,6 +659,29 @@ def preview_completion_task_candidate_options(
         parsed_style_preferences=(intent.style_preferences if intent is not None else None),
         parsed_style_preference_sources=(intent.style_preference_sources if intent is not None else None),
     )
+    preview = (
+        preview_safe_replace_candidates(
+            itinerary=payload.itinerary,
+            stop_id=payload.replacement_stop_id,
+        )
+        if payload.task_id == "replace_stop" and payload.replacement_stop_id
+        else preview_completion_task_candidates(
+            itinerary=payload.itinerary,
+            task_id=payload.task_id,
+            day=payload.day,
+            block_type=payload.block_type,
+            completion_candidate_history=[
+                *(
+                    payload.itinerary.trip_intent.completion_candidate_history
+                    if payload.itinerary.trip_intent is not None
+                    else []
+                ),
+                *payload.completion_candidate_history,
+            ],
+            preference_policy=preference_policy,
+            request_style_preferences=request_style_signal,
+        )
+    )
     (
         target_day,
         target_block,
@@ -665,22 +689,7 @@ def preview_completion_task_candidate_options(
         options,
         candidate_source_summary,
         candidate_discovery_status,
-    ) = preview_completion_task_candidates(
-        itinerary=payload.itinerary,
-        task_id=payload.task_id,
-        day=payload.day,
-        block_type=payload.block_type,
-        completion_candidate_history=[
-            *(
-                payload.itinerary.trip_intent.completion_candidate_history
-                if payload.itinerary.trip_intent is not None
-                else []
-            ),
-            *payload.completion_candidate_history,
-        ],
-        preference_policy=preference_policy,
-        request_style_preferences=request_style_signal,
-    )
+    ) = preview
     return CompletionTaskCandidatePreviewResponse(
         task_id=payload.task_id,
         task_instance_key=payload.task_instance_key,

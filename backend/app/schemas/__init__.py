@@ -57,6 +57,8 @@ from .itinerary import (
     ReplanItineraryRequest,
     RegenerationIntentSummary,
     RemainingBlockWindow,
+    ReplacementRouteImpact,
+    ReplacementRouteLegEvidence,
     RestaurantInput,
     RoutePreviewRequest,
     RoutePreviewResponse,
@@ -79,6 +81,7 @@ from .itinerary import (
     TripIntentPatch,
     UserConfirmedReplacement,
     TravelMode,
+    VerifiedPlaceRef,
 )
 from .intent import (
     IntentDisambiguationSummary,
@@ -167,6 +170,8 @@ __all__ = [
     "ReplanItineraryRequest",
     "RegenerationIntentSummary",
     "RemainingBlockWindow",
+    "ReplacementRouteImpact",
+    "ReplacementRouteLegEvidence",
     "RestaurantInput",
     "RoutePreviewRequest",
     "RoutePreviewResponse",
@@ -189,6 +194,7 @@ __all__ = [
     "TripIntentPatch",
     "UserConfirmedReplacement",
     "TravelMode",
+    "VerifiedPlaceRef",
     "ParseTripTextRequest",
     "IntentDisambiguationSummary",
     "ParsedFixedEvent",

@@ -9,7 +9,7 @@
     "test:workspace": "node --import tsx --test src/features/trip-workspace/*.test.ts src/features/imports/*.test.ts src/features/intent-confirmation/*.test.ts src/features/preplan-intent/*.test.ts src/features/executable-route-preview/*.test.ts src/features/product-reset-prototype/*.test.tsx src/features/trip-compiler/*.smoke.test.tsx",
     "test:browser-smoke": "node --import tsx --test src/features/intent-confirmation/*.smoke.test.tsx src/features/preplan-intent/*.smoke.test.tsx src/features/executable-route-preview/*.smoke.test.tsx src/features/trip-compiler/*.smoke.test.tsx",
     "test:e2e:intent": "TRIP_API_PROXY_TARGET=http://127.0.0.1:8018 npm run build && playwright test --config=playwright.intent.config.ts",
-    "test:e2e:trip-compiler": "TRIP_API_PROXY_TARGET=http://127.0.0.1:8028 npm run build && playwright test --config=playwright.trip-compiler.config.ts",
+    "test:e2e:trip-compiler": "NEXT_PUBLIC_AMAP_WEB_KEY= NEXT_PUBLIC_AMAP_SECURITY_JS_CODE= TRIP_API_PROXY_TARGET=http://127.0.0.1:8028 npm run build && playwright test --config=playwright.trip-compiler.config.ts",
     "test:e2e:product-reset": "npm run build && playwright test --config=playwright.product-reset.config.ts",
     "test:e2e:golden-path-live": "TRIP_API_PROXY_TARGET=http://127.0.0.1:8026 npm run build && playwright test --config=playwright.golden-path-live.config.ts",
     "start": "next start"
