@@ -7,11 +7,13 @@ const SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-ui-01");
 const ROADBOOK_SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-ui-02");
 const REPAIR_SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-27");
 const REPLACE_SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-28");
+const REPLACE_QUALITY_SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-28-1");
 
 mkdirSync(SCREENSHOT_DIRECTORY, { recursive: true });
 mkdirSync(ROADBOOK_SCREENSHOT_DIRECTORY, { recursive: true });
 mkdirSync(REPAIR_SCREENSHOT_DIRECTORY, { recursive: true });
 mkdirSync(REPLACE_SCREENSHOT_DIRECTORY, { recursive: true });
+mkdirSync(REPLACE_QUALITY_SCREENSHOT_DIRECTORY, { recursive: true });
 
 function installNetworkGate(page: import("@playwright/test").Page) {
   const failures: string[] = [];
@@ -112,12 +114,16 @@ async function createSavedRoadbook(page: import("@playwright/test").Page) {
   };
 }
 
-async function openSafeReplaceCandidates(page: import("@playwright/test").Page) {
+async function openSafeReplaceCandidates(
+  page: import("@playwright/test").Page,
+  targetName = "青芝坞餐厅",
+  expectedCount?: number,
+) {
   const dayButtons = page.locator(".roadbook__masthead nav button");
-  let target = page.locator("[data-roadbook-stop]").filter({ hasText: "青芝坞餐厅" });
+  let target = page.locator("[data-roadbook-stop]").filter({ hasText: targetName });
   for (let index = 0; index < await dayButtons.count() && await target.count() === 0; index += 1) {
     await dayButtons.nth(index).click();
-    target = page.locator("[data-roadbook-stop]").filter({ hasText: "青芝坞餐厅" });
+    target = page.locator("[data-roadbook-stop]").filter({ hasText: targetName });
   }
   await expect(target).toHaveCount(1);
   await target.click();
@@ -130,10 +136,17 @@ async function openSafeReplaceCandidates(page: import("@playwright/test").Page) 
   const payload = await response.json() as {
     options: Array<{ name: string; verified_place: { provider_place_id: string }; route_impact: { safe_to_apply: boolean } }>;
   };
-  expect(payload.options.length).toBeGreaterThanOrEqual(2);
+  if (expectedCount == null) expect(payload.options.length).toBeGreaterThanOrEqual(1);
+  else expect(payload.options).toHaveLength(expectedCount);
   expect(payload.options.length).toBeLessThanOrEqual(3);
   expect(payload.options.every((option) => Boolean(option.verified_place.provider_place_id))).toBe(true);
-  expect(payload.options.some((option) => option.name === "青芝坞餐厅")).toBe(false);
+  expect(payload.options.every((option) => option.route_impact.safe_to_apply)).toBe(true);
+  expect(payload.options.some((option) => option.name === targetName)).toBe(false);
+  if (payload.options.length) {
+    await expect(page.getByText(`找到 ${payload.options.length} 个可以安全换进去的地点`)).toBeVisible();
+  } else {
+    await expect(page.getByText("附近暂时没有找到一个真正适合换进去的地点。")).toBeVisible();
+  }
   return payload;
 }
 
@@ -290,25 +303,13 @@ test("Saved Roadbook safely replaces one stop and preserves the result on deskto
   const assertClean = installNetworkGate(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   const saved = await createSavedRoadbook(page);
-  const candidates = await openSafeReplaceCandidates(page);
+  const candidates = await openSafeReplaceCandidates(page, "青芝坞餐厅", 2);
   expect(candidates.options.some((option) => option.name === "茶人村" && option.route_impact.safe_to_apply)).toBe(true);
-  expect(candidates.options.some((option) => option.name === "远山宴" && !option.route_impact.safe_to_apply)).toBe(true);
+  expect(candidates.options.some((option) => option.name === "龙井草堂" && option.route_impact.safe_to_apply)).toBe(true);
+  expect(candidates.options.some((option) => option.name === "远山宴")).toBe(false);
+  await expect(page.getByText("远山宴", { exact: true })).toHaveCount(0);
   await page.locator(".safe-replace--candidates").scrollIntoViewIfNeeded();
-  await page.screenshot({ path: join(REPLACE_SCREENSHOT_DIRECTORY, "desktop-replace-candidates.png") });
-
-  const beforeUnsafe = await currentRevision(page, saved.trip.id);
-  let unsafeMutationRequests = 0;
-  const countUnsafeMutation = (request: import("@playwright/test").Request) => {
-    if (request.url().includes("/mutations/preview") || request.url().includes("/mutation-proposals/")) unsafeMutationRequests += 1;
-  };
-  page.on("request", countUnsafeMutation);
-  await selectReplacementCandidate(page, "远山宴");
-  await expect(page.getByRole("heading", { name: "这个地点现在不太适合换进去。" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "换成这个地点" })).toBeDisabled();
-  expect(unsafeMutationRequests).toBe(0);
-  expect((await currentRevision(page, saved.trip.id)).id).toBe(beforeUnsafe.id);
-  page.off("request", countUnsafeMutation);
-  await page.getByRole("button", { name: "看看其他地点" }).click();
+  await page.screenshot({ path: join(REPLACE_QUALITY_SCREENSHOT_DIRECTORY, "desktop-replace-quality-candidates.png") });
 
   const previewResponse = page.waitForResponse((response) => response.url().includes("/mutations/preview") && response.request().method() === "POST");
   await selectReplacementCandidate(page, "茶人村");
@@ -339,7 +340,27 @@ test("Saved Roadbook safely replaces one stop and preserves the result on deskto
   await expect(page.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
   await expect(page.getByText("茶人村", { exact: true }).first()).toBeVisible();
   expect((await currentRevision(page, saved.trip.id)).id).toBe(applied.current_revision.id);
+
+  const beforeEmpty = await currentRevision(page, saved.trip.id);
+  await openSafeReplaceCandidates(page, "龙井村茶歇", 0);
+  await page.locator(".safe-replace--candidates").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(REPLACE_QUALITY_SCREENSHOT_DIRECTORY, "desktop-replace-quality-empty.png") });
+  await page.getByRole("button", { name: "保留原地点" }).click();
+  expect((await currentRevision(page, saved.trip.id)).id).toBe(beforeEmpty.id);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  assertClean();
+});
+
+test("Safe replacement shows one useful candidate without padding", async ({ page }) => {
+  const assertClean = installNetworkGate(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const saved = await createSavedRoadbook(page);
+  const before = await currentRevision(page, saved.trip.id);
+  const candidates = await openSafeReplaceCandidates(page, "满觉陇茶歇", 1);
+  expect(candidates.options.map((option) => option.name)).toEqual(["茶人村"]);
+  await expect(page.locator(".safe-replace-candidate")).toHaveCount(1);
+  await page.getByRole("button", { name: "关闭候选地点" }).click();
+  expect((await currentRevision(page, saved.trip.id)).id).toBe(before.id);
   assertClean();
 });
 
@@ -347,10 +368,10 @@ test("Safe replacement remains usable and undoable on mobile", async ({ page }) 
   const assertClean = installNetworkGate(page);
   await page.setViewportSize({ width: 390, height: 844 });
   const saved = await createSavedRoadbook(page);
-  await openSafeReplaceCandidates(page);
+  await openSafeReplaceCandidates(page, "青芝坞餐厅", 2);
   await page.locator(".safe-replace--candidates").scrollIntoViewIfNeeded();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await page.screenshot({ path: join(REPLACE_SCREENSHOT_DIRECTORY, "mobile-replace-candidates.png") });
+  await page.screenshot({ path: join(REPLACE_QUALITY_SCREENSHOT_DIRECTORY, "mobile-replace-quality-candidates.png") });
 
   const previewResponse = page.waitForResponse((response) => response.url().includes("/mutations/preview") && response.request().method() === "POST");
   await selectReplacementCandidate(page, "茶人村");
@@ -384,6 +405,13 @@ test("Safe replacement remains usable and undoable on mobile", async ({ page }) 
   await page.reload();
   await expect(page.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
   await expect(page.getByText("青芝坞餐厅", { exact: true }).first()).toBeVisible();
+  const beforeEmpty = await currentRevision(page, saved.trip.id);
+  await openSafeReplaceCandidates(page, "龙井村茶歇", 0);
+  await page.locator(".safe-replace--candidates").scrollIntoViewIfNeeded();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: join(REPLACE_QUALITY_SCREENSHOT_DIRECTORY, "mobile-replace-quality-empty.png") });
+  await page.getByRole("button", { name: "保留原地点" }).click();
+  expect((await currentRevision(page, saved.trip.id)).id).toBe(beforeEmpty.id);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect((await currentRevision(page, saved.trip.id)).revision_number).toBe(undone.current_revision.revision_number);
   assertClean();

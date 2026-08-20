@@ -39,7 +39,9 @@ from app.schemas import (
 )
 from app.services.itinerary_completion_recommendation import (
     find_scheduled_stop,
+    replacement_candidate_category_compatible,
     replacement_route_impact,
+    replacement_route_is_actionable,
 )
 from app.services.intent_disambiguation import disambiguate_trip_intent
 from app.services.nl_parser import normalize_parsed_trip_intent, parse_trip_text
@@ -2725,6 +2727,11 @@ def authoritative_safe_replace_envelope(
             command_index=0,
             reason_code="replacement_matches_current_place",
         )
+    if not replacement_candidate_category_compatible(target.type, selected):
+        raise MutationCommandFailedError(
+            command_index=0,
+            reason_code="replacement_category_mismatch",
+        )
 
     verified_place = VerifiedPlaceRef(
         stable_id=f"amap:{selected.provider_place_id}",
@@ -2743,7 +2750,7 @@ def authoritative_safe_replace_envelope(
         candidate_latitude=verified_place.latitude,
         candidate_longitude=verified_place.longitude,
     )
-    if not route_impact.safe_to_apply:
+    if not replacement_route_is_actionable(day=located[0], target=target, impact=route_impact):
         reason_code = {
             "fixed_event_at_risk": "replacement_breaks_fixed_event",
             "route_unavailable": "replacement_route_unavailable",

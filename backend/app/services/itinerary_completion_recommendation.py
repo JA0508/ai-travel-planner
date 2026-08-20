@@ -1311,8 +1311,8 @@ def preview_safe_replace_candidates(
 
     options: list[ItineraryCompletionOption] = []
     seen_ids: set[str] = set()
-    route_check_limit = max(1, min(limit, 3))
-    for place in places:
+    display_limit = max(0, min(limit, 3))
+    for place in places[:COMPLETION_PREVIEW_SEARCH_OFFSET]:
         if (
             not place.provider_place_id
             or not place.name
@@ -1321,6 +1321,7 @@ def preview_safe_replace_candidates(
             or place.provider_place_id == target.canonical_place_id
             or place.name.strip() == target.name.strip()
             or place.provider_place_id in seen_ids
+            or not replacement_candidate_category_compatible(target.type, place)
         ):
             continue
         seen_ids.add(place.provider_place_id)
@@ -1331,6 +1332,8 @@ def preview_safe_replace_candidates(
             candidate_latitude=float(place.latitude),
             candidate_longitude=float(place.longitude),
         )
+        if not replacement_route_is_actionable(day=day, target=target, impact=impact):
+            continue
         verified_place = VerifiedPlaceRef(
             stable_id=f"amap:{place.provider_place_id}",
             original_name=place.name,
@@ -1354,17 +1357,16 @@ def preview_safe_replace_candidates(
                 route_impact=impact,
             )
         )
-        if len(options) >= route_check_limit:
-            break
 
     options.sort(
         key=lambda option: (
-            option.route_impact is None or not option.route_impact.safe_to_apply,
-            option.route_impact.after_duration_s if option.route_impact and option.route_impact.after_duration_s is not None else 10**9,
-            option.name,
+            option.route_impact.delta_duration_s,
+            option.route_impact.after_duration_s,
+            replacement_route_distance(option.route_impact),
+            option.verified_place.provider_place_id,
         )
     )
-    bounded = options[:route_check_limit]
+    bounded = options[:display_limit]
     return (
         day.day,
         block.block_type,
@@ -1372,6 +1374,51 @@ def preview_safe_replace_candidates(
         bounded,
         "Candidates came from the existing POI provider and were checked against the adjacent route legs.",
         "route_context" if bounded else "empty",
+    )
+
+
+def replacement_candidate_category_compatible(
+    target_type: POIType,
+    place: PoiDiscoveryCandidate,
+) -> bool:
+    """Apply the existing same-type replacement boundary to AMap categories."""
+
+    typecode = (place.typecode or "").strip()
+    if target_type == POIType.RESTAURANT:
+        return typecode.startswith("05")
+    if target_type == POIType.SCENIC:
+        return typecode.startswith(("11", "14"))
+    return False
+
+
+def replacement_route_is_actionable(
+    *,
+    day: DayItinerary,
+    target: ScheduledPOI,
+    impact: ReplacementRouteImpact,
+) -> bool:
+    ordered = sorted(
+        (item for block in day.blocks for item in block.items),
+        key=lambda item: (item.start_time, item.end_time, item.name),
+    )
+    target_index = next(index for index, item in enumerate(ordered) if item.stable_id == target.stable_id)
+    has_successor = target_index + 1 < len(ordered)
+    return bool(
+        impact.safe_to_apply
+        and impact.blocking_reason is None
+        and impact.before_duration_s is not None
+        and impact.after_duration_s is not None
+        and impact.delta_duration_s is not None
+        and impact.inbound is not None
+        and (not has_successor or impact.outbound is not None)
+    )
+
+
+def replacement_route_distance(impact: ReplacementRouteImpact) -> int:
+    return sum(
+        leg.distance_m
+        for leg in (impact.inbound, impact.outbound)
+        if leg is not None
     )
 
 

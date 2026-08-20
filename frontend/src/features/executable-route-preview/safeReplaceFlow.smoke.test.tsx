@@ -15,11 +15,11 @@ const experiencePath = fileURLToPath(new URL("./SafeReplaceExperience.tsx", impo
 const previewPath = fileURLToPath(new URL("./ExecutableRoutePreview.tsx", import.meta.url));
 const roadbookPath = fileURLToPath(new URL("./SavedLivingRoadbook.tsx", import.meta.url));
 
-test("candidate stage presents a bounded field-note choice without exposing provider internals", () => {
+test("candidate stage presents only safe choices and an exact quality count", () => {
   const html = renderToStaticMarkup(
     <SafeReplaceCandidates
       targetName="青芝坞餐厅"
-      candidates={[candidate("茶人村", -240, true), candidate("远山宴", 7200, false)]}
+      candidates={[candidate("茶人村", -240, true)]}
       loading={false}
       onSelect={() => undefined}
       onKeep={() => undefined}
@@ -28,13 +28,29 @@ test("candidate stage presents a bounded field-note choice without exposing prov
 
   assert.match(html, /换一个更适合你的地点/);
   assert.match(html, /我们只替换这一站/);
+  assert.match(html, /找到 1 个可以安全换进去的地点/);
   assert.match(html, /茶人村/);
   assert.match(html, /路上约少 4 分钟/);
-  assert.match(html, /远山宴/);
-  assert.match(html, /可能赶不上后面的固定安排/);
   assert.match(html, /看看换成这里/);
   assert.doesNotMatch(html, /provider_place_id|latitude|longitude|score|ranking/);
   assert.doesNotMatch(html, /换成这个地点/);
+});
+
+test("zero safe candidates explains restraint and keeps the original stop", () => {
+  const html = renderToStaticMarkup(
+    <SafeReplaceCandidates
+      targetName="青芝坞餐厅"
+      candidates={[]}
+      loading={false}
+      onSelect={() => undefined}
+      onKeep={() => undefined}
+    />,
+  );
+
+  assert.match(html, /附近暂时没有找到一个真正适合换进去的地点/);
+  assert.match(html, /我们不会为了凑一个推荐/);
+  assert.match(html, /保留原地点/);
+  assert.doesNotMatch(html, /看看换成这里/);
 });
 
 test("safe preview makes the bounded change, route evidence and protected items readable", () => {

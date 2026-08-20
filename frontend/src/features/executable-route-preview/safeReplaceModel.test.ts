@@ -42,27 +42,31 @@ test("builds a single existing replace_stop command from verified server candida
   });
 });
 
-test("accepts at most three verified candidates and excludes the current provider place", () => {
+test("accepts only safe candidates without padding and keeps deterministic server order", () => {
   const current = candidate();
   current.verified_place.provider_place_id = "current-place";
+  const unsafe = candidate();
+  unsafe.verified_place.provider_place_id = "unsafe-place";
+  unsafe.route_impact.safe_to_apply = false;
+  unsafe.route_impact.blocking_reason = "fixed_event_at_risk";
   const unverified = structuredClone(candidate()) as unknown as Record<string, unknown>;
   delete (unverified.verified_place as Record<string, unknown>).provider_place_id;
   const first = candidate();
   const second = candidate();
-  const third = candidate();
   first.verified_place.provider_place_id = "candidate-1";
   second.verified_place.provider_place_id = "candidate-2";
-  third.verified_place.provider_place_id = "candidate-3";
-  const values: unknown[] = [current, first, second, third, unverified];
+  const duplicate = structuredClone(first);
+  duplicate.name = "茶人村（龙井店）";
+  const values: unknown[] = [current, second, unsafe, duplicate, first, unverified];
 
   const parsed = parseSafeReplaceCandidates(values, "current-place");
 
-  assert.equal(parsed.length, 3);
+  assert.equal(parsed.length, 2);
   assert.deepEqual(parsed.map((entry) => entry.verified_place.provider_place_id), [
-    "candidate-1",
     "candidate-2",
-    "candidate-3",
+    "candidate-1",
   ]);
+  assert.equal(parsed.every((entry) => entry.route_impact.safe_to_apply), true);
 });
 
 test("derives one changed slot and protected items only from authoritative snapshots", () => {

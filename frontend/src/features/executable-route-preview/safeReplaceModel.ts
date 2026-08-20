@@ -99,6 +99,14 @@ export function parseSafeReplaceCandidates(
   const candidates: SafeReplaceCandidate[] = [];
   for (const entry of value) {
     if (!isSafeReplaceCandidate(entry)) continue;
+    if (
+      !entry.route_impact.safe_to_apply
+      || entry.route_impact.blocking_reason !== null
+      || entry.route_impact.before_duration_s === null
+      || entry.route_impact.after_duration_s === null
+      || entry.route_impact.delta_duration_s === null
+      || entry.route_impact.inbound === null
+    ) continue;
     const providerPlaceId = entry.verified_place.provider_place_id;
     if (providerPlaceId === currentProviderPlaceId || seen.has(providerPlaceId)) continue;
     seen.add(providerPlaceId);

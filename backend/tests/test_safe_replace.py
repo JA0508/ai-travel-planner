@@ -135,12 +135,96 @@ class ManySafeReplaceCandidatesProvider(SafeReplaceProvider):
     )
 
 
+class CandidateQualityProvider(SafeReplaceProvider):
+    candidates = (
+        SafeReplaceProvider.candidates[0],
+        PoiDiscoveryCandidate(
+            name="顺路小馆",
+            address="杭州市西湖区龙井路",
+            type="杭帮菜",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.231,
+            longitude=120.111,
+            provider_place_id="amap-route-a",
+        ),
+        PoiDiscoveryCandidate(
+            name="龙井小院",
+            address="杭州市西湖区龙井路",
+            type="杭帮菜",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.232,
+            longitude=120.112,
+            provider_place_id="amap-route-b",
+        ),
+        PoiDiscoveryCandidate(
+            name="茶山餐厅",
+            address="杭州市西湖区龙井路",
+            type="杭帮菜",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.233,
+            longitude=120.113,
+            provider_place_id="amap-route-c",
+        ),
+        PoiDiscoveryCandidate(
+            name="顺路小馆（别名）",
+            address="杭州市西湖区龙井路",
+            type="杭帮菜",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.231,
+            longitude=120.111,
+            provider_place_id="amap-route-a",
+        ),
+        PoiDiscoveryCandidate(
+            name="西湖博物馆",
+            address="杭州市西湖区",
+            type="科教文化服务",
+            typecode="140100",
+            business_area="杭州",
+            latitude=30.234,
+            longitude=120.114,
+            provider_place_id="amap-wrong-category",
+        ),
+        SafeReplaceProvider.candidates[3],
+        SafeReplaceProvider.candidates[4],
+    )
+
+
+class SingleCandidateProvider(SafeReplaceProvider):
+    def __init__(self, candidate: PoiDiscoveryCandidate) -> None:
+        self.candidates = (candidate,)
+
+
 def verified_route(*, origin_lat: float, origin_lng: float, dest_lat: float, dest_lng: float) -> dict:
     del origin_lng, dest_lng
     unsafe = origin_lat >= 30.4 or dest_lat >= 30.4
     return {
         "distance_m": 8_000 if unsafe else 800,
         "duration_s": 9_000 if unsafe else 600,
+        "path_points": [],
+        "source": "amap_test",
+    }
+
+
+def ordered_route(*, origin_lat: float, origin_lng: float, dest_lat: float, dest_lng: float) -> dict:
+    del origin_lng, dest_lng
+    candidate_latitude = next(
+        (value for value in (origin_lat, dest_lat) if value in {30.231, 30.232, 30.233, 30.5}),
+        None,
+    )
+    duration_by_candidate = {
+        30.231: 1_170,
+        30.232: 1_320,
+        30.233: 1_500,
+        30.5: 9_000,
+    }
+    duration = duration_by_candidate.get(candidate_latitude, 600)
+    return {
+        "distance_m": duration,
+        "duration_s": duration,
         "path_points": [],
         "source": "amap_test",
     }
@@ -166,18 +250,18 @@ class SafeReplaceTests(unittest.TestCase):
         self.env.stop()
         self.temp_dir.cleanup()
 
-    def test_replacement_candidates_are_bounded_verified_and_exclude_current_place(self) -> None:
+    def test_replacement_candidates_admit_only_safe_compatible_places_in_deterministic_order(self) -> None:
         client = TestClient(app)
         itinerary = safe_replace_itinerary()
 
         with (
             patch(
                 "app.services.itinerary_completion_recommendation.default_poi_discovery_provider",
-                return_value=ManySafeReplaceCandidatesProvider(),
+                return_value=CandidateQualityProvider(),
             ),
             patch(
                 "app.services.itinerary_completion_recommendation.get_walking_route",
-                side_effect=verified_route,
+                side_effect=ordered_route,
             ) as route_lookup,
         ):
             response = client.post(
@@ -193,15 +277,60 @@ class SafeReplaceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         options = response.json()["options"]
-        self.assertGreaterEqual(len(options), 2)
-        self.assertLessEqual(len(options), 3)
-        self.assertNotIn("青芝坞餐厅", {option["name"] for option in options})
+        self.assertEqual([option["name"] for option in options], ["顺路小馆", "龙井小院", "茶山餐厅"])
+        self.assertEqual(
+            [option["route_impact"]["delta_duration_s"] for option in options],
+            [240, 540, 900],
+        )
         self.assertTrue(all(option["verified_place"]["provider"] == "amap" for option in options))
         self.assertTrue(all(option["verified_place"]["provider_place_id"] for option in options))
         self.assertTrue(all(option["stable_id"] for option in options))
-        self.assertTrue(any(option["route_impact"]["safe_to_apply"] is False for option in options))
-        self.assertTrue(any(option["route_impact"]["safe_to_apply"] is True for option in options))
-        self.assertLessEqual(route_lookup.call_count, 6)
+        self.assertTrue(all(option["route_impact"]["safe_to_apply"] is True for option in options))
+        self.assertNotIn("青芝坞餐厅", {option["name"] for option in options})
+        self.assertNotIn("顺路小馆（别名）", {option["name"] for option in options})
+        self.assertNotIn("西湖博物馆", {option["name"] for option in options})
+        self.assertNotIn("远山宴", {option["name"] for option in options})
+        self.assertEqual(route_lookup.call_count, 8)
+
+    def test_replacement_candidates_do_not_pad_with_unsafe_places(self) -> None:
+        candidate_counts = (
+            (ManySafeReplaceCandidatesProvider(), 3),
+            (SafeReplaceProvider(), 2),
+            (
+                SingleCandidateProvider(SafeReplaceProvider.candidates[1]),
+                1,
+            ),
+            (
+                SingleCandidateProvider(SafeReplaceProvider.candidates[3]),
+                0,
+            ),
+        )
+        for provider, expected_count in candidate_counts:
+            with self.subTest(expected_count=expected_count):
+                options = self.preview_candidates(provider=provider, route=verified_route)
+                self.assertEqual(len(options), expected_count)
+                self.assertTrue(all(option["route_impact"]["safe_to_apply"] for option in options))
+
+    def test_route_unavailable_slot_conflict_and_fixed_event_risk_are_rejected_before_display(self) -> None:
+        candidate = SafeReplaceProvider.candidates[1]
+
+        def unavailable_route(**_: float) -> dict:
+            return {"distance_m": 0, "duration_s": 0, "path_points": [], "source": "amap_test"}
+
+        def slot_conflict_route(*, origin_lat: float, origin_lng: float, dest_lat: float, dest_lng: float) -> dict:
+            del origin_lng, dest_lng
+            duration = 3_000 if dest_lat == candidate.latitude else 600
+            return {"distance_m": duration, "duration_s": duration, "path_points": [], "source": "amap_test"}
+
+        def fixed_event_risk_route(*, origin_lat: float, origin_lng: float, dest_lat: float, dest_lng: float) -> dict:
+            del origin_lng, dest_lng
+            duration = 9_000 if origin_lat == candidate.latitude else 600
+            return {"distance_m": duration, "duration_s": duration, "path_points": [], "source": "amap_test"}
+
+        provider = SingleCandidateProvider(candidate)
+        for route in (unavailable_route, slot_conflict_route, fixed_event_risk_route):
+            with self.subTest(route=route.__name__):
+                self.assertEqual(self.preview_candidates(provider=provider, route=route), [])
 
     def test_replacement_can_reuse_the_confirmed_adjacent_route_budget(self) -> None:
         itinerary = safe_replace_itinerary(no_outbound_slack=True)
@@ -260,6 +389,71 @@ class SafeReplaceTests(unittest.TestCase):
         self.assertEqual(unverified_response.status_code, 422, unverified_response.text)
         self.assertEqual(user_owned_response.status_code, 422, user_owned_response.text)
         self.assertEqual(user_owned_response.json()["error"]["reason_code"], "replace_target_not_eligible")
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 1)
+
+    def test_authoritative_preview_rejects_a_forged_safe_candidate_that_risks_a_fixed_event(self) -> None:
+        client, trip_id, revision_id, itinerary = self.create_trip()
+        target_id = item_by_name(itinerary, "青芝坞餐厅")["stable_id"]
+        candidate = SafeReplaceProvider.candidates[1]
+
+        def fixed_event_risk_route(*, origin_lat: float, origin_lng: float, dest_lat: float, dest_lng: float) -> dict:
+            del origin_lng, dest_lng
+            duration = 9_000 if origin_lat == candidate.latitude else 600
+            return {"distance_m": duration, "duration_s": duration, "path_points": [], "source": "amap_test"}
+
+        with (
+            patch("app.trips.service.default_poi_discovery_provider", return_value=SafeReplaceProvider()),
+            patch(
+                "app.services.itinerary_completion_recommendation.get_walking_route",
+                side_effect=fixed_event_risk_route,
+            ),
+        ):
+            response = client.post(
+                f"/trips/{trip_id}/mutations/preview",
+                json=replacement_command(
+                    base_revision_id=revision_id,
+                    stop_id=target_id,
+                    option=verified_option("茶人村", "amap-tea-village", 30.229, 120.111),
+                ),
+                headers={"Origin": "http://testserver"},
+            )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(
+            response.json()["error"]["reason_code"],
+            "replacement_breaks_fixed_event",
+        )
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 1)
+
+    def test_authoritative_preview_rejects_a_forged_wrong_category_candidate(self) -> None:
+        client, trip_id, revision_id, itinerary = self.create_trip()
+        target_id = item_by_name(itinerary, "青芝坞餐厅")["stable_id"]
+
+        with (
+            patch(
+                "app.trips.service.default_poi_discovery_provider",
+                return_value=CandidateQualityProvider(),
+            ),
+            patch(
+                "app.services.itinerary_completion_recommendation.get_walking_route",
+                side_effect=verified_route,
+            ),
+        ):
+            response = client.post(
+                f"/trips/{trip_id}/mutations/preview",
+                json=replacement_command(
+                    base_revision_id=revision_id,
+                    stop_id=target_id,
+                    option=verified_option("西湖博物馆", "amap-wrong-category", 30.234, 120.114),
+                ),
+                headers={"Origin": "http://testserver"},
+            )
+
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(
+            response.json()["error"]["reason_code"],
+            "replacement_category_mismatch",
+        )
         self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 1)
 
     def test_safe_replace_apply_reload_and_undo_preserve_other_stops_and_routes(self) -> None:
@@ -368,6 +562,31 @@ class SafeReplaceTests(unittest.TestCase):
         self.assertEqual(created.status_code, 201, created.text)
         body = created.json()
         return client, body["trip"]["id"], body["current_revision"]["id"], body["itinerary"]
+
+    def preview_candidates(self, *, provider: SafeReplaceProvider, route: object) -> list[dict]:
+        client = TestClient(app)
+        with (
+            patch(
+                "app.services.itinerary_completion_recommendation.default_poi_discovery_provider",
+                return_value=provider,
+            ),
+            patch(
+                "app.services.itinerary_completion_recommendation.get_walking_route",
+                side_effect=route,
+            ),
+        ):
+            response = client.post(
+                "/preview-completion-task-candidates",
+                json={
+                    "itinerary": safe_replace_itinerary().model_dump(mode="json"),
+                    "task_id": "replace_stop",
+                    "replacement_stop_id": "stop-meal",
+                    "day": 1,
+                    "block_type": "afternoon",
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()["options"]
 
 
 def safe_replace_itinerary(*, no_outbound_slack: bool = False) -> ItineraryResponse:

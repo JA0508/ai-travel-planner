@@ -169,7 +169,19 @@ class BrowserFixturePoiDiscoveryProvider:
         candidate = self._CANDIDATES.get(keyword.strip())
         return [candidate] if candidate and candidate.business_area == city.strip() else []
 
-    def search_around(self, **_: object) -> list[PoiDiscoveryCandidate]:
+    def search_around(self, **query: object) -> list[PoiDiscoveryCandidate]:
+        latitude = float(query.get("latitude") or 0)
+        if abs(latitude - 30.21477) < 0.00001:
+            return [
+                self._CANDIDATES["满觉陇茶歇"],
+                self._CANDIDATES["茶人村"],
+                self._CANDIDATES["远山宴"],
+            ]
+        if abs(latitude - 30.21829) < 0.00001:
+            return [
+                self._CANDIDATES["龙井村茶歇"],
+                self._CANDIDATES["远山宴"],
+            ]
         return [
             self._CANDIDATES["青芝坞餐厅"],
             self._CANDIDATES["茶人村"],
