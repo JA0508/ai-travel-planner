@@ -311,6 +311,49 @@ class SafeReplaceTests(unittest.TestCase):
                 self.assertEqual(len(options), expected_count)
                 self.assertTrue(all(option["route_impact"]["safe_to_apply"] for option in options))
 
+    def test_terminal_replacement_rejects_an_extreme_local_detour(self) -> None:
+        itinerary = safe_replace_itinerary()
+        source_day = itinerary.days[0]
+        terminal_target = source_day.blocks[1].items[0].model_copy(
+            update={"start_time": time(17, 40), "end_time": time(18, 40)}
+        )
+        afternoon = source_day.blocks[1].model_copy(
+            update={
+                "block_type": TimeBlockType.EVENING,
+                "start_time": time(17, 30),
+                "end_time": time(20, 30),
+                "items": [terminal_target],
+            }
+        )
+        terminal_itinerary = itinerary.model_copy(
+            update={"days": [source_day.model_copy(update={"blocks": [source_day.blocks[0], afternoon]})]}
+        )
+        client = TestClient(app)
+
+        with (
+            patch(
+                "app.services.itinerary_completion_recommendation.default_poi_discovery_provider",
+                return_value=SingleCandidateProvider(SafeReplaceProvider.candidates[3]),
+            ),
+            patch(
+                "app.services.itinerary_completion_recommendation.get_walking_route",
+                side_effect=verified_route,
+            ),
+        ):
+            response = client.post(
+                "/preview-completion-task-candidates",
+                json={
+                    "itinerary": terminal_itinerary.model_dump(mode="json"),
+                    "task_id": "replace_stop",
+                    "replacement_stop_id": "stop-meal",
+                    "day": 1,
+                    "block_type": "afternoon",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["options"], [])
+
     def test_route_unavailable_slot_conflict_and_fixed_event_risk_are_rejected_before_display(self) -> None:
         candidate = SafeReplaceProvider.candidates[1]
 

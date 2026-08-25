@@ -334,35 +334,52 @@ test(`Scenario E: confirms canonical places before creating one existing Plannin
 test("Scenario F: previews and applies a local relaxation without regenerating the saved route", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const gate = installErrorGate(page);
-  gate.allowExpectedInitialIntentAbsence();
   // The replaced route workspace cancels its in-flight map segment preview.
   // The route preview and mutation APIs remain subject to the normal error gate.
   gate.allowExpectedRouteSegmentAbort();
-  const tripId = await createDraftThroughHome(page, "周末去杭州玩两天，轻松一点。");
-
-  const firstPreview = page.waitForResponse((response) => response.url().includes("/preplan-handoff/preview") && response.request().method() === "POST");
-  await page.getByRole("button", { name: "生成路线预览" }).click();
-  expect((await firstPreview).status()).toBe(200);
-  const beforeSave = readDraftDatabase(tripId);
-  const save = page.waitForResponse((response) => response.url().includes("/preplan-handoff/runs/") && response.url().includes("/apply") && response.request().method() === "POST");
-  await page.getByRole("button", { name: "确认并生成行程" }).click();
-  expect((await save).status()).toBe(200);
+  await createTripCompilerDraft(page, "去杭州玩三天，节奏轻松一点，想去西湖、灵隐寺和龙井村。第二天下午两点到四点预约了中国茶叶博物馆，不能改。");
+  const choices = page.locator(".tc-place-options button");
+  while (await choices.count()) {
+    const confirmed = page.waitForResponse(isDraftIntentEditResponse);
+    await choices.first().click();
+    expect((await confirmed).status()).toBe(201);
+  }
+  const planned = page.waitForResponse((response) => response.url().includes("/preplan-intent/planning-run") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "生成我的路线" }).click();
+  expect((await planned).status()).toBe(200);
+  const save = page.waitForResponse((response) => response.url().includes("/planning-runs/") && response.url().includes("/candidates/") && response.url().includes("/select") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "就选这条路线" }).click();
+  const savedPayload = await (await save).json() as { trip: { id: string } };
+  const tripId = savedPayload.trip.id;
 
   const routePreview = page.getByRole("region", { name: "可执行路线预览" });
   await expect(routePreview.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
+  const dayButtons = routePreview.getByRole("navigation", { name: "选择行程日期" }).getByRole("button");
+  const relaxButton = routePreview.getByRole("button", { name: "帮我松一点" });
+  for (let index = 0; index < await dayButtons.count() && await relaxButton.count() === 0; index += 1) {
+    await dayButtons.nth(index).click();
+  }
   await expect(routePreview.getByRole("heading", { name: "今天稍微赶了一点。" })).toBeVisible();
+  await expect(relaxButton).toBeVisible();
   const beforeRepair = readDraftDatabase(tripId);
   expect(beforeRepair.trip_revisions).toHaveLength(1);
-  expect(flattenedStopNames(beforeRepair.trip_revisions[0].snapshot)).toContain("武林夜市");
+  expect(flattenedItems(beforeRepair.trip_revisions[0].snapshot).some((item) => (
+    !item.is_fixed && ["auto_seeded_poi", "auto_filled", "auto_seeded_meal"].includes(String(item.source_type))
+  ))).toBe(true);
 
   const previewRepair = page.waitForResponse((response) => response.url().includes("/local-repairs/relax-day/preview") && response.request().method() === "POST");
-  await routePreview.getByRole("button", { name: "帮我松一点" }).click();
+  await relaxButton.click();
   expect((await previewRepair).status()).toBe(200);
   const review = page.getByRole("region", { name: "我们建议只调整这一段" });
-  await expect(review).toContainText(/把“.+”从第 1 天挪到第 2 天/);
+  await expect(review).toContainText(/把“.+”从第 \d+ 天挪到第 \d+ 天/);
   await expect(review.getByText("固定安排和你明确想去的地点不会被随意移动。")).toBeVisible();
-  const movedStop = (await review.textContent())?.match(/把“(.+)”从第 1 天挪到第 2 天/)?.[1];
+  const move = (await review.textContent())?.match(/把“(.+)”从第 (\d+) 天挪到第 (\d+) 天/);
+  const movedStop = move?.[1];
+  const fromDay = Number(move?.[2]);
+  const toDay = Number(move?.[3]);
   expect(movedStop).toBeTruthy();
+  expect(fromDay).toBeGreaterThan(0);
+  expect(toDay).toBeGreaterThan(0);
 
   const applyRepair = page.waitForResponse((response) => response.url().includes("/mutation-proposals/") && response.url().includes("/apply") && response.request().method() === "POST");
   await review.getByRole("button", { name: "应用这次调整" }).click();
@@ -370,14 +387,14 @@ test("Scenario F: previews and applies a local relaxation without regenerating t
   await expect(review).toHaveCount(0);
 
   const afterRepair = readDraftDatabase(tripId);
-  expect(afterRepair.preview_count).toBe(beforeSave.preview_count);
+  expect(afterRepair.planning_run_count).toBe(beforeRepair.planning_run_count);
   expect(afterRepair.trip_revisions).toHaveLength(2);
   expect(afterRepair.trip_revisions.map((revision) => revision.revision_number)).toEqual([1, 2]);
   expect(afterRepair.trip_revisions[1].source_type).toBe("route_edit");
   expect(afterRepair.trip_revisions[1].parent_revision_id).toBe(afterRepair.trip_revisions[0].id);
   expect(flattenedStopNames(afterRepair.trip_revisions[0].snapshot)).toContain(movedStop);
-  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 1)).not.toContain(movedStop);
-  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, 2)).toContain(movedStop);
+  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, fromDay)).not.toContain(movedStop);
+  expect(dayStopNames(afterRepair.trip_revisions[1].snapshot, toDay)).toContain(movedStop);
   await assertViewportFits(page);
   gate.assertClean();
 });

@@ -23,6 +23,18 @@ class TimeBlockType(str, Enum):
     EVENING = "evening"
 
 
+class MealRole(str, Enum):
+    LUNCH = "lunch"
+    DINNER = "dinner"
+
+
+class MealCoverageStatus(str, Enum):
+    COVERED = "covered"
+    AUTO_COMPLETED = "auto_completed"
+    UNRESOLVED = "unresolved"
+    NOT_APPLICABLE = "not_applicable"
+
+
 class TravelMode(str, Enum):
     AIRPLANE = "airplane"
     HIGH_SPEED_RAIL = "high_speed_rail"
@@ -266,6 +278,30 @@ class POIResearchSummary(BaseModel):
     source: str = "route_context"
 
 
+class MealAdjacentRouteEvidence(BaseModel):
+    """Provider-confirmed evidence for one route leg beside an inserted meal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    from_name: str = Field(..., min_length=1)
+    to_name: str = Field(..., min_length=1)
+    from_place_id: str | None = None
+    to_place_id: str | None = None
+    distance_m: int = Field(..., gt=0)
+    duration_s: int = Field(..., gt=0)
+    provider: Literal["amap"] = "amap"
+    data_status: Literal["confirmed"] = "confirmed"
+
+
+class MealRouteEvidence(BaseModel):
+    """Both adjacent provider routes required for an executable system meal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inbound: MealAdjacentRouteEvidence
+    outbound: MealAdjacentRouteEvidence
+
+
 class ScheduledPOI(BaseModel):
     stable_id: str | None = Field(
         default=None,
@@ -302,6 +338,8 @@ class ScheduledPOI(BaseModel):
     travel_data_status: Literal["confirmed", "unavailable", "estimated"] | None = None
     candidate_provenance: dict[str, Any] | None = None
     local_edit: dict[str, Any] | None = None
+    meal_role: MealRole | None = None
+    meal_route_evidence: MealRouteEvidence | None = None
 
 
 class DayTimeBlock(BaseModel):
@@ -783,6 +821,32 @@ class PlannerRealismSummary(BaseModel):
     daily_loads: list[DailyRouteLoad] = Field(default_factory=list)
 
 
+class MealRhythmSlot(BaseModel):
+    role: MealRole
+    status: MealCoverageStatus
+    window_start: time
+    window_end: time
+    scheduled_item_stable_id: str | None = None
+    scheduled_item_name: str | None = None
+    explanation: str
+
+
+class MealRhythmDay(BaseModel):
+    day: int = Field(..., ge=1)
+    slots: list[MealRhythmSlot] = Field(default_factory=list)
+    field_notes: list[str] = Field(default_factory=list)
+
+
+class MealRhythmSummary(BaseModel):
+    policy_version: str
+    days: list[MealRhythmDay] = Field(default_factory=list)
+    meal_slots_evaluated: int = Field(default=0, ge=0)
+    poi_candidates_evaluated: int = Field(default=0, ge=0)
+    route_calls: int = Field(default=0, ge=0)
+    successful_completions: int = Field(default=0, ge=0)
+    unresolved_gaps: int = Field(default=0, ge=0)
+
+
 class ItineraryResponse(BaseModel):
     trip_days: int = Field(..., ge=1)
     hotel: HotelStay | None = None
@@ -795,6 +859,7 @@ class ItineraryResponse(BaseModel):
     stay_recommendation: StayRecommendation | None = None
     departure_recommendation: DepartureRecommendation | None = None
     planner_realism: PlannerRealismSummary | None = None
+    meal_rhythm: MealRhythmSummary | None = None
     boundary_explanation: BoundaryInfluenceExplanation = Field(
         default_factory=BoundaryInfluenceExplanation
     )

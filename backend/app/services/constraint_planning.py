@@ -10,7 +10,7 @@ from app.schemas.plan_candidates import (
 from app.schemas.trip_compiler import TravelIntent
 from app.trips.digests import sha256_digest
 from app.trips.mutation_commands import ensure_stable_item_ids
-from app.schemas.itinerary import ItineraryResponse
+from app.schemas.itinerary import DayItinerary, ItineraryResponse, ScheduledPOI
 
 
 STRATEGY_ORDER = ("balanced", "relaxed", "low_travel")
@@ -86,6 +86,23 @@ def build_planning_snapshot_manifest(
                             "calculation_status": item.travel_data_status or "unavailable",
                             "provider": item.travel_provider,
                             "source": "frozen_scheduler_output",
+                        })
+                    if (
+                        item.meal_route_evidence is not None
+                        and not _meal_outbound_is_represented(day, item)
+                    ):
+                        outbound = item.meal_route_evidence.outbound
+                        route_segments.append({
+                            "from_place_id": outbound.from_place_id,
+                            "to_place_id": outbound.to_place_id,
+                            "from_poi": outbound.from_name,
+                            "to_poi": outbound.to_name,
+                            "travel_mode": intent.travel_mode.value if intent.travel_mode else None,
+                            "duration_seconds": outbound.duration_s,
+                            "distance_meters": outbound.distance_m,
+                            "calculation_status": outbound.data_status,
+                            "provider": outbound.provider,
+                            "source": "frozen_meal_rhythm_output",
                         })
     poi_snapshot = sorted(poi_by_id.values(), key=lambda item: item["stable_poi_identity"])
     route_snapshot = sorted(
@@ -257,15 +274,16 @@ def _metrics(itinerary, intent: TravelIntent) -> CandidateMetrics:
     names = {item.name for item in items}
     must = sum(place.name in names for place in intent.must_visit_places)
     optional = sum(place.name in names for place in intent.optional_places)
-    travel_values = [item.travel_duration_s for item in items if item.travel_duration_s is not None]
-    travel_known = len(travel_values) == len([item for item in items if item.travel_from_name])
+    daily_route_values = [_route_duration_values(day) for day in itinerary.days]
+    route_values = [value for day_values in daily_route_values for value in day_values]
+    travel_values = [value for value in route_values if value is not None]
+    travel_known = len(travel_values) == len(route_values)
     activity = sum(item.duration_minutes for item in items)
     daily = [sum(item.duration_minutes for block in day.blocks for item in block.items) for day in itinerary.days]
     day_windows = _daily_windows(intent, itinerary)
-    daily_travel = [sum(item.travel_duration_s or 0 for block in day.blocks for item in block.items) // 60 for day in itinerary.days]
+    daily_travel = [sum(value or 0 for value in values) // 60 for values in daily_route_values]
     daily_slack = [max(0, window["available_window_minutes"] - duration - travel) for window, duration, travel in zip(day_windows, daily, daily_travel)]
-    known_segments = [item for item in items if item.travel_from_name]
-    completeness = "complete" if known_segments and travel_known else "missing" if not travel_values else "partial"
+    completeness = "complete" if route_values and travel_known else "missing" if not travel_values else "partial"
     return CandidateMetrics(
         fixed_coverage=fixed, must_coverage=must, optional_coverage=optional,
         total_travel_minutes=sum(travel_values) // 60 if travel_known else None,
@@ -278,6 +296,53 @@ def _metrics(itinerary, intent: TravelIntent) -> CandidateMetrics:
         travel_data_completeness=completeness,
         daily_windows=[{**window, "activity_minutes": duration, "travel_minutes": travel, "slack_minutes": slack} for window, duration, travel, slack in zip(day_windows, daily, daily_travel, daily_slack)],
     )
+
+
+def _route_duration_values(day: DayItinerary) -> list[int | None]:
+    items = [item for block in day.blocks for item in block.items]
+    values: list[int | None] = [
+        item.travel_duration_s
+        for item in items
+        if item.travel_from_name
+    ]
+    for item in items:
+        if item.meal_route_evidence is None:
+            continue
+        outbound = item.meal_route_evidence.outbound
+        if not _meal_outbound_is_represented(day, item):
+            values.append(outbound.duration_s)
+    return values
+
+
+def _meal_outbound_is_represented(day: DayItinerary, meal: ScheduledPOI) -> bool:
+    evidence = meal.meal_route_evidence
+    if evidence is None:
+        return False
+    outbound = evidence.outbound
+    for candidate in (
+        item
+        for block in day.blocks
+        for item in block.items
+        if item is not meal and item.travel_from_name
+    ):
+        same_from = (
+            candidate.travel_from_place_id == outbound.from_place_id
+            if candidate.travel_from_place_id and outbound.from_place_id
+            else candidate.travel_from_name == outbound.from_name
+        )
+        same_to = (
+            candidate.travel_to_place_id == outbound.to_place_id
+            if candidate.travel_to_place_id and outbound.to_place_id
+            else candidate.name == outbound.to_name
+        )
+        if (
+            same_from
+            and same_to
+            and candidate.travel_duration_s == outbound.duration_s
+            and candidate.travel_distance_m == outbound.distance_m
+        ):
+            return True
+    return False
 
 
 def _pareto_frontier(candidates: list[PlanCandidate]) -> list[PlanCandidate]:

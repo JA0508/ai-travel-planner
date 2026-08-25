@@ -79,11 +79,12 @@ from app.services.itinerary_completion_recommendation import (
     apply_completion_task_action,
     apply_completion_recommendation_autofill,
     build_itinerary_completion_recommendation,
+    complete_meal_rhythm,
     normalize_city_name as normalize_candidate_city_name,
     preview_completion_task_candidates,
     preview_safe_replace_candidates,
-    repair_missing_meal_slots,
 )
+from app.services.meal_rhythm import assess_meal_rhythm
 from app.services.intent_disambiguation import disambiguate_trip_intent
 from app.services.journey_approach_recommendation import (
     build_journey_approach_recommendation,
@@ -1005,7 +1006,10 @@ def build_itinerary_response(
         city=payload.city,
         preferences=payload.preferences,
         needs_scenic=not scenic_spots,
-        needs_restaurants=not restaurants,
+        # Required meals are completed from verified provider places after the
+        # user's route anchors are placed. The legacy catalog remains available
+        # for previews, but it no longer seeds executable meals by itself.
+        needs_restaurants=False,
         target_trip_days=payload.trip_days or 1,
     )
     scenic_spots.extend(bootstrap_scenic)
@@ -1095,6 +1099,11 @@ def build_itinerary_response(
         bootstrap_scenic=bootstrap_scenic,
         bootstrap_restaurants=bootstrap_restaurants,
     )
+    itinerary = itinerary.model_copy(
+        update={"meal_rhythm": assess_meal_rhythm(itinerary)}
+    )
+    if payload.auto_fill_sparse_days:
+        itinerary = complete_meal_rhythm(itinerary)
     completion_recommendation = build_itinerary_completion_recommendation(
         itinerary=itinerary,
         preference_policy=preference_policy,
@@ -1108,11 +1117,6 @@ def build_itinerary_response(
         itinerary = apply_completion_recommendation_autofill(
             itinerary=itinerary,
             recommendation=completion_recommendation,
-        )
-        itinerary = repair_missing_meal_slots(
-            itinerary,
-            preference_policy=preference_policy,
-            request_style_preferences=request_style_signal,
         )
         annotate_bootstrap_items(
             itinerary=itinerary,

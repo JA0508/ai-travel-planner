@@ -15,6 +15,10 @@ from app.schemas import (
     ItineraryCompletionOption,
     ItineraryCompletionRecommendation,
     ItineraryResponse,
+    MealAdjacentRouteEvidence,
+    MealCoverageStatus,
+    MealRole,
+    MealRouteEvidence,
     PlannerPreferencePolicy,
     POIType,
     ReplacementRouteImpact,
@@ -28,6 +32,16 @@ from app.schemas import (
 from app.services.amap_direction import RoutePlanningError, get_walking_route
 from app.services.amap_client import GEOCODE_CACHE
 from app.services.mock_normalizer import infer_poi_profile
+from app.services.meal_rhythm import (
+    MEAL_RHYTHM_POLICY,
+    MealRhythmDiagnostics,
+    assess_meal_rhythm,
+    is_meal_capable_item,
+    is_meal_capable_category,
+    meal_role_label,
+    meal_window,
+    minutes,
+)
 from app.services.preference_policy import StylePreferenceSignal
 from app.services.poi_discovery_provider import (
     PoiDiscoveryCandidate,
@@ -146,6 +160,7 @@ COMPLETION_PREVIEW_MIN_CANDIDATES_BEFORE_SEARCH = 2
 COMPLETION_PREVIEW_SEARCH_OFFSET = 8
 COMPLETION_PREVIEW_SEARCH_POOL_LIMIT = 16
 COMPLETION_PREVIEW_AROUND_SEARCH_RADIUS_METERS = 3500
+MAX_SAFE_REPLACEMENT_ROUTE_INCREASE_SECONDS = 30 * 60
 THINNEST_DAY_EARLY_AUTOFILL_SLOTS = 2
 BOUNDARY_INSERTION_BUFFER_MINUTES = 15
 MIDDLE_INSERTION_BUFFER_MINUTES = 20
@@ -746,6 +761,29 @@ def apply_completion_recommendation_autofill(
             continue
         if option.name in inserted_names:
             continue
+        if option.type == POIType.RESTAURANT:
+            protected_meal_role = (
+                MealRole.LUNCH
+                if target_block.block_type == TimeBlockType.AFTERNOON
+                else MealRole.DINNER
+                if target_block.block_type == TimeBlockType.EVENING
+                else None
+            )
+            protected_slot = next(
+                (
+                    slot
+                    for day_summary in (updated_itinerary.meal_rhythm.days if updated_itinerary.meal_rhythm else [])
+                    if day_summary.day == target_day.day
+                    for slot in day_summary.slots
+                    if slot.role == protected_meal_role
+                ),
+                None,
+            )
+            if (
+                protected_slot is not None
+                and protected_slot.status != MealCoverageStatus.NOT_APPLICABLE
+            ) or any(is_meal_capable_item(item) for item in target_block.items):
+                continue
 
         autofilled_item = build_autofilled_item(
             itinerary=updated_itinerary,
@@ -1311,6 +1349,20 @@ def preview_safe_replace_candidates(
 
     options: list[ItineraryCompletionOption] = []
     seen_ids: set[str] = set()
+    scheduled_provider_ids = {
+        item.canonical_place_id
+        for itinerary_day in itinerary.days
+        for scheduled_block in itinerary_day.blocks
+        for item in scheduled_block.items
+        if item.stable_id != target.stable_id and item.canonical_place_id
+    }
+    scheduled_names = {
+        item.name.strip()
+        for itinerary_day in itinerary.days
+        for scheduled_block in itinerary_day.blocks
+        for item in scheduled_block.items
+        if item.stable_id != target.stable_id
+    }
     display_limit = max(0, min(limit, 3))
     for place in places[:COMPLETION_PREVIEW_SEARCH_OFFSET]:
         if (
@@ -1320,6 +1372,8 @@ def preview_safe_replace_candidates(
             or place.longitude is None
             or place.provider_place_id == target.canonical_place_id
             or place.name.strip() == target.name.strip()
+            or place.provider_place_id in scheduled_provider_ids
+            or place.name.strip() in scheduled_names
             or place.provider_place_id in seen_ids
             or not replacement_candidate_category_compatible(target.type, place)
         ):
@@ -1409,6 +1463,7 @@ def replacement_route_is_actionable(
         and impact.before_duration_s is not None
         and impact.after_duration_s is not None
         and impact.delta_duration_s is not None
+        and impact.delta_duration_s <= MAX_SAFE_REPLACEMENT_ROUTE_INCREASE_SECONDS
         and impact.inbound is not None
         and (not has_successor or impact.outbound is not None)
     )
@@ -2232,6 +2287,449 @@ def source_label_for_completion_task(task_id: str) -> str:
     if task_id == "repair_evening_close":
         return "补全任务：夜间收口"
     return "补全任务：空档修复"
+
+
+def complete_meal_rhythm(
+    itinerary: ItineraryResponse,
+    *,
+    poi_discovery_provider: PoiDiscoveryProvider | None = None,
+) -> ItineraryResponse:
+    """Complete applicable lunch/dinner slots without moving existing stops."""
+
+    updated = itinerary.model_copy(deep=True)
+    provider = poi_discovery_provider or default_poi_discovery_provider()
+    capability = provider.capability()
+    candidates_evaluated = 0
+    route_calls = 0
+    successful_completions = 0
+
+    if capability.poi_discovery_enabled:
+        for day_number in sorted(day.day for day in updated.days):
+            for role in (MealRole.LUNCH, MealRole.DINNER):
+                current = assess_meal_rhythm(updated)
+                slot = next(
+                    slot
+                    for day_summary in current.days
+                    if day_summary.day == day_number
+                    for slot in day_summary.slots
+                    if slot.role == role
+                )
+                if slot.status != MealCoverageStatus.UNRESOLVED:
+                    continue
+                day = next(item for item in updated.days if item.day == day_number)
+                result = insert_verified_meal(
+                    itinerary=updated,
+                    day=day,
+                    role=role,
+                    provider=provider,
+                )
+                updated = result.itinerary
+                candidates_evaluated += result.candidates_evaluated
+                route_calls += result.route_calls
+                if result.inserted:
+                    successful_completions += 1
+
+    return updated.model_copy(
+        update={
+            "meal_rhythm": assess_meal_rhythm(
+                updated,
+                diagnostics=MealRhythmDiagnostics(
+                    poi_candidates_evaluated=candidates_evaluated,
+                    route_calls=route_calls,
+                    successful_completions=successful_completions,
+                ),
+            )
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class MealInsertionResult:
+    itinerary: ItineraryResponse
+    inserted: bool
+    candidates_evaluated: int
+    route_calls: int
+
+
+@dataclass(frozen=True, slots=True)
+class MealInsertionPlan:
+    candidate: PoiDiscoveryCandidate
+    start_time: time
+    end_time: time
+    previous_anchor: ScheduledPOI | HotelStay
+    next_anchor: ScheduledPOI | HotelStay
+    following_item: ScheduledPOI | None
+    inbound: MealAdjacentRouteEvidence
+    outbound: MealAdjacentRouteEvidence
+
+
+def insert_verified_meal(
+    *,
+    itinerary: ItineraryResponse,
+    day: DayItinerary,
+    role: MealRole,
+    provider: PoiDiscoveryProvider,
+) -> MealInsertionResult:
+    target_block_type = (
+        TimeBlockType.AFTERNOON if role == MealRole.LUNCH else TimeBlockType.EVENING
+    )
+    target_block = next(
+        (block for block in day.blocks if block.block_type == target_block_type),
+        None,
+    )
+    if target_block is None:
+        return MealInsertionResult(itinerary, False, 0, 0)
+    existing_items = sorted(
+        (item for block in day.blocks for item in block.items),
+        key=lambda item: (item.start_time, item.end_time, item.name),
+    )
+    trip_items = [
+        item
+        for itinerary_day in itinerary.days
+        for block in itinerary_day.blocks
+        for item in block.items
+    ]
+    existing_provider_ids = {
+        item.verified_place.provider_place_id
+        for item in trip_items
+        if item.verified_place is not None
+    }
+    existing_names = {item.name.strip() for item in trip_items}
+    temporal_gaps = meal_temporal_gaps(day=day, role=role, items=existing_items)
+    plans: list[MealInsertionPlan] = []
+    candidates_evaluated = 0
+    route_calls = 0
+    seen_candidate_contexts: set[tuple[str, str, str, int, int]] = set()
+
+    for previous_anchor, next_anchor, following_item, gap_start, gap_end in temporal_gaps:
+        try:
+            places = provider.search_around(
+                keyword="午餐" if role == MealRole.LUNCH else "晚餐",
+                city=previous_anchor.city or day.hotel.city or "",
+                latitude=previous_anchor.latitude,
+                longitude=previous_anchor.longitude,
+                radius=COMPLETION_PREVIEW_AROUND_SEARCH_RADIUS_METERS,
+                offset=min(COMPLETION_PREVIEW_SEARCH_OFFSET, 6),
+            )
+        except PoiDiscoveryUnavailable:
+            continue
+        for candidate in places[:6]:
+            candidates_evaluated += 1
+            provider_id = (candidate.provider_place_id or "").strip()
+            candidate_name = (candidate.name or "").strip()
+            if (
+                not provider_id
+                or not candidate_name
+                or candidate.latitude is None
+                or candidate.longitude is None
+                or provider_id in existing_provider_ids
+                or candidate_name in existing_names
+                or not is_meal_capable_category(
+                    candidate.type or "",
+                    candidate.typecode,
+                    name=candidate_name,
+                )
+            ):
+                continue
+            context_key = (
+                provider_id,
+                anchor_place_id(previous_anchor) or previous_anchor.name,
+                anchor_place_id(next_anchor) or next_anchor.name,
+                gap_start,
+                gap_end,
+            )
+            if context_key in seen_candidate_contexts:
+                continue
+            seen_candidate_contexts.add(context_key)
+            inbound = verified_meal_leg(
+                from_anchor=previous_anchor,
+                to_name=candidate_name,
+                to_latitude=float(candidate.latitude),
+                to_longitude=float(candidate.longitude),
+            )
+            route_calls += 1
+            outbound = verified_meal_leg(
+                from_anchor=MealCoordinateAnchor(
+                    name=candidate_name,
+                    city=previous_anchor.city or day.hotel.city,
+                    latitude=float(candidate.latitude),
+                    longitude=float(candidate.longitude),
+                ),
+                to_name=next_anchor.name,
+                to_latitude=next_anchor.latitude,
+                to_longitude=next_anchor.longitude,
+            )
+            route_calls += 1
+            if inbound is None or outbound is None:
+                continue
+            start_minute = max(
+                gap_start,
+                minutes(meal_window(role).start),
+                minutes(target_block.start_time),
+                gap_start + round_up_route_minutes(inbound.duration_s),
+            )
+            end_minute = start_minute + MEAL_RHYTHM_POLICY.preferred_duration_minutes
+            outbound_deadline = (
+                minutes(following_item.start_time)
+                if following_item is not None
+                else minutes(
+                    day.availability_summary.effective_end
+                    or max(
+                        (block.end_time for block in day.blocks),
+                        default=time(21, 0),
+                    )
+                )
+            )
+            if (
+                end_minute > gap_end
+                or end_minute > minutes(target_block.end_time)
+                or end_minute + round_up_route_minutes(outbound.duration_s) > outbound_deadline
+            ):
+                continue
+            plans.append(
+                MealInsertionPlan(
+                    candidate=candidate,
+                    start_time=time_from_minutes(start_minute),
+                    end_time=time_from_minutes(end_minute),
+                    previous_anchor=previous_anchor,
+                    next_anchor=next_anchor,
+                    following_item=following_item,
+                    inbound=inbound,
+                    outbound=outbound,
+                )
+            )
+
+    if not plans:
+        return MealInsertionResult(itinerary, False, candidates_evaluated, route_calls)
+
+    preferred_start = minutes(meal_window(role).start) + 45
+    selected = min(
+        plans,
+        key=lambda plan: (
+            abs(minutes(plan.start_time) - preferred_start),
+            plan.inbound.duration_s + plan.outbound.duration_s,
+            plan.inbound.distance_m + plan.outbound.distance_m,
+            plan.candidate.provider_place_id or "",
+        ),
+    )
+    updated_itinerary = append_meal_item(
+        itinerary=itinerary,
+        day=day,
+        role=role,
+        plan=selected,
+    )
+    return MealInsertionResult(updated_itinerary, True, candidates_evaluated, route_calls)
+
+
+@dataclass(frozen=True, slots=True)
+class MealCoordinateAnchor:
+    name: str
+    city: str | None
+    latitude: float
+    longitude: float
+
+
+def meal_temporal_gaps(
+    *,
+    day: DayItinerary,
+    role: MealRole,
+    items: list[ScheduledPOI],
+) -> list[tuple[ScheduledPOI | HotelStay, ScheduledPOI | HotelStay, ScheduledPOI | None, int, int]]:
+    active_start = day.availability_summary.effective_start or min(
+        (block.start_time for block in day.blocks if block.start_time < block.end_time),
+        default=time(9, 0),
+    )
+    active_end = day.availability_summary.effective_end or max(
+        (block.end_time for block in day.blocks if block.start_time < block.end_time),
+        default=time(21, 0),
+    )
+    window = meal_window(role)
+    gaps = []
+    previous: ScheduledPOI | HotelStay = day.hotel
+    previous_end = minutes(active_start)
+    for item in items:
+        gap_start = max(previous_end, minutes(window.start))
+        gap_end = min(minutes(item.start_time), minutes(window.end), minutes(active_end))
+        if gap_end - gap_start >= MEAL_RHYTHM_POLICY.preferred_duration_minutes:
+            gaps.append((previous, item, item, gap_start, gap_end))
+        previous = item
+        previous_end = minutes(item.end_time)
+    gap_start = max(previous_end, minutes(window.start), minutes(active_start))
+    gap_end = min(minutes(window.end), minutes(active_end))
+    if gap_end - gap_start >= MEAL_RHYTHM_POLICY.preferred_duration_minutes:
+        gaps.append((previous, day.hotel, None, gap_start, gap_end))
+    return gaps
+
+
+def verified_meal_leg(
+    *,
+    from_anchor: ScheduledPOI | HotelStay | MealCoordinateAnchor,
+    to_name: str,
+    to_latitude: float,
+    to_longitude: float,
+) -> MealAdjacentRouteEvidence | None:
+    try:
+        route = get_walking_route(
+            origin_lat=from_anchor.latitude,
+            origin_lng=from_anchor.longitude,
+            dest_lat=to_latitude,
+            dest_lng=to_longitude,
+        )
+    except RoutePlanningError:
+        return None
+    distance_m = int(route.get("distance_m") or 0)
+    duration_s = int(route.get("duration_s") or 0)
+    if distance_m <= 0 or duration_s <= 0:
+        return None
+    return MealAdjacentRouteEvidence(
+        from_name=from_anchor.name,
+        to_name=to_name,
+        from_place_id=(
+            from_anchor.canonical_place_id or from_anchor.stable_id
+            if isinstance(from_anchor, ScheduledPOI)
+            else None
+        ),
+        distance_m=distance_m,
+        duration_s=duration_s,
+    )
+
+
+def append_meal_item(
+    *,
+    itinerary: ItineraryResponse,
+    day: DayItinerary,
+    role: MealRole,
+    plan: MealInsertionPlan,
+) -> ItineraryResponse:
+    candidate = plan.candidate
+    provider_id = candidate.provider_place_id or ""
+    verified_place = VerifiedPlaceRef(
+        stable_id=f"amap:{provider_id}",
+        original_name=candidate.name or "",
+        canonical_name=candidate.name or "",
+        provider="amap",
+        provider_place_id=provider_id,
+        latitude=float(candidate.latitude),
+        longitude=float(candidate.longitude),
+        category=candidate.type,
+    )
+    inbound = plan.inbound.model_copy(update={"to_place_id": provider_id})
+    outbound = plan.outbound.model_copy(
+        update={
+            "from_place_id": provider_id,
+            "to_place_id": anchor_place_id(plan.next_anchor),
+        }
+    )
+    item = ScheduledPOI(
+        stable_id=verified_place.stable_id,
+        name=verified_place.canonical_name,
+        type=POIType.RESTAURANT,
+        city=plan.previous_anchor.city or day.hotel.city,
+        latitude=verified_place.latitude,
+        longitude=verified_place.longitude,
+        duration_minutes=MEAL_RHYTHM_POLICY.preferred_duration_minutes,
+        day=day.day,
+        start_time=plan.start_time,
+        end_time=plan.end_time,
+        is_fixed=False,
+        placement_reason=(
+            f"前后路线都已确认，并为后面的安排留出时间；"
+            f"系统把这里顺路安排为{meal_role_label(role)}。"
+        ),
+        source_type=ScheduledPOISourceType.AUTO_SEEDED_MEAL,
+        source_label="系统补充",
+        source_reason=f"系统为这一天补上的{meal_role_label(role)}。",
+        travel_from_name=plan.previous_anchor.name,
+        travel_distance_m=plan.inbound.distance_m,
+        travel_duration_s=plan.inbound.duration_s,
+        travel_calculation_status="confirmed",
+        candidate_id=verified_place.stable_id,
+        canonical_place_id=provider_id,
+        verified_place=verified_place,
+        travel_from_place_id=anchor_place_id(plan.previous_anchor),
+        travel_to_place_id=provider_id,
+        travel_provider="amap",
+        travel_data_status="confirmed",
+        candidate_provenance={
+            "purpose": "meal_rhythm",
+            "meal_role": role.value,
+            "provider_category": candidate.type,
+            "provider_typecode": candidate.typecode,
+        },
+        meal_role=role,
+        meal_route_evidence=MealRouteEvidence(
+            inbound=inbound,
+            outbound=outbound,
+        ),
+    )
+    target_block_type = (
+        TimeBlockType.AFTERNOON if role == MealRole.LUNCH else TimeBlockType.EVENING
+    )
+    updated_following = (
+        plan.following_item.model_copy(
+            update={
+                "travel_from_name": item.name,
+                "travel_distance_m": outbound.distance_m,
+                "travel_duration_s": outbound.duration_s,
+                "travel_calculation_status": "confirmed",
+                "travel_from_place_id": provider_id,
+                "travel_to_place_id": (
+                    plan.following_item.canonical_place_id
+                    or plan.following_item.stable_id
+                ),
+                "travel_provider": "amap",
+                "travel_data_status": "confirmed",
+            }
+        )
+        if plan.following_item is not None
+        else None
+    )
+    updated_blocks: list[DayTimeBlock] = []
+    for block in day.blocks:
+        block_items = [
+            updated_following if scheduled is plan.following_item and updated_following is not None else scheduled
+            for scheduled in block.items
+        ]
+        if block.block_type == target_block_type:
+            block_items = [*block_items, item]
+        updated_blocks.append(
+            block.model_copy(
+                update={
+                    "items": sorted(
+                        block_items,
+                        key=lambda scheduled: (
+                            scheduled.start_time,
+                            scheduled.end_time,
+                            scheduled.name,
+                        ),
+                    )
+                }
+            )
+        )
+    updated_day = day.model_copy(update={"blocks": updated_blocks})
+    return itinerary.model_copy(
+        update={
+            "days": [
+                updated_day if candidate.day == day.day else candidate
+                for candidate in itinerary.days
+            ]
+        }
+    )
+
+
+def anchor_place_id(anchor: ScheduledPOI | HotelStay | MealCoordinateAnchor) -> str | None:
+    if isinstance(anchor, ScheduledPOI):
+        return anchor.canonical_place_id or anchor.stable_id
+    return None
+
+
+def round_up_route_minutes(duration_s: int) -> int:
+    return max(1, (duration_s + 59) // 60)
+
+
+def time_from_minutes(value: int) -> time:
+    bounded = max(0, min(value, 23 * 60 + 59))
+    return time(bounded // 60, bounded % 60)
 
 
 def repair_missing_meal_slots(
