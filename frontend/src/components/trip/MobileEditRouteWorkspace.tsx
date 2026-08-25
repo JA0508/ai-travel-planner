@@ -69,6 +69,7 @@ export type ScheduledItemLike = {
     itinerary_relation_summary: string;
     original_type: TimelineItemType;
   } | null;
+  meal_role?: "lunch" | "dinner" | null;
 };
 
 type POIResearchSummaryLike = {

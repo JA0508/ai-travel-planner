@@ -2,7 +2,8 @@
 
 ## Current phase
 
-F-001c Draft Trip and Pre-Plan Intent Workspace — in progress.
+Round 29 Real-Life Rhythm / Meal Windows — implemented on
+`codex/meal-rhythm-v1` and awaiting Draft PR review. It is not merged yet.
 
 ## Recently completed and merged
 
@@ -14,6 +15,9 @@ F-001c Draft Trip and Pre-Plan Intent Workspace — in progress.
 - F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure
 - F-004a.3 Completion Integrity Repair
 - F-004b Planner Intent Handoff
+- Round 27 Controlled Local Repair UX
+- Round 28 Safe Replace
+- Round 28.1 Replace Candidate Quality Gate
 
 The completed document extraction path now supports:
 
@@ -58,6 +62,9 @@ The completed document extraction path now supports:
 - F-004a.2 Semantic Intent Contract, Provenance Graph and Atomic Revision Closure
 - F-004a.3 Completion Integrity Repair
 - F-004b Planner Intent Handoff
+- Living Roadbook route-first saved workspace
+- server-authoritative local relaxation preview/apply/undo
+- verified Safe Replace preview/apply/undo with candidate quality gates
 
 ## Known technical debt
 
@@ -93,51 +100,25 @@ The completed document extraction path now supports:
 
 ## Current next product objective
 
-1. F-001c Draft Trip and Pre-Plan Intent Workspace
+1. Complete the Round 29 release gate and review its Draft PR.
 
-The active product step makes the admission sequence explicit: a private Draft
-Trip can persist reviewed sources and an immutable pre-plan intent contract
-without fabricating an empty itinerary revision. The first deterministic planner
-handoff remains a frozen preview and, on confirmation, atomically creates
-`TripRevision` 1.
+Round 29 adds deterministic lunch/dinner applicability, conservative existing
+meal recognition, verified and route-safe meal completion, explicit Meal Gap
+results, frozen Planning Run evidence, TripRevision continuity, and Living
+Roadbook presentation. It does not add a dining recommendation engine or a new
+planning workflow.
 
-Current F-001c work includes:
+After Round 29 is accepted, the next product objective is Opening-Hours Temporal
+Feasibility: verify that a place is operational during its scheduled visit rather
+than claiming more than route and time-window evidence proves.
 
-- private Draft Trip lifecycle distinct from an executable trip
-- immutable draft intent contracts with a null itinerary-revision baseline
-- reviewable source candidate selection before compiler input
-- private source-text recovery after browser reload using the existing capability
-  boundary
-- frozen pre-plan planner runs with stale-intent rejection and idempotent apply
-- both quick-language and structured first-plan entry paths route through the
-  same labelled Draft Trip input and pre-plan contract boundary
-- a pre-plan review surface that makes selected fields, source authority,
-  assumptions, conflicts, clarifications, and frozen-preview state explicit
+Known Round 29 boundaries remain explicit:
 
-F-001c does not yet provide full draft editing/history UX or inline resolution
-for every clarification type. Those remain explicit follow-up work; unresolved
-requirements continue to block a frozen preview rather than being silently
-assumed away.
-
-F-004b remains the post-revision handoff for an already saved itinerary and
-continues to hand the confirmed `TripIntentEnvelope` to planner input preparation
-without weakening the contract boundary:
-
-- hard constraints
-- soft preferences
-- assumptions
-- unresolved questions
-- planner-ready intent preview
-- structured source evidence summaries and provenance graph edges
-- confirmed domain-native fields
-- semantic digest and lineage ownership
-
-F-004b stores a privacy-safe, immutable planner handoff run and frozen proposal
-before an explicit apply creates the next `TripRevision`. Apply compares both
-the base TripRevision and latest IntentRevision in the same SQLite transaction;
-it never reruns the planner. LLM explanations cannot override user edits,
-reviewed evidence, fixed events, availability windows, or deterministic
-readiness policy.
+- V1 supports lunch and dinner only.
+- Default windows are 11:30-14:00 and 17:30-20:30.
+- User-configurable meal windows are not yet part of the Intent Contract.
+- Opening hours, live queues, bookings, ratings, and restaurant ranking are not
+  part of meal feasibility.
 
 ## Supporting follow-up
 

@@ -3,17 +3,26 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 const VISUAL_TRIP = "去杭州玩三天，节奏轻松一点，想去西湖、灵隐寺和龙井村。第二天下午两点到四点预约了中国茶叶博物馆，不能改。";
+const MEAL_GAP_TRIP = "去杭州玩两天，节奏轻松一点，想去西湖、灵隐寺和龙井村。第一天下午一点到三点预约了中国茶叶博物馆，不能改。";
 const SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-ui-01");
 const ROADBOOK_SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-ui-02");
 const REPAIR_SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-27");
 const REPLACE_SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-28");
 const REPLACE_QUALITY_SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-28-1");
+const MEAL_SCREENSHOT_DIRECTORY = join(process.cwd(), "test-results", "round-29");
 
 mkdirSync(SCREENSHOT_DIRECTORY, { recursive: true });
 mkdirSync(ROADBOOK_SCREENSHOT_DIRECTORY, { recursive: true });
 mkdirSync(REPAIR_SCREENSHOT_DIRECTORY, { recursive: true });
 mkdirSync(REPLACE_SCREENSHOT_DIRECTORY, { recursive: true });
 mkdirSync(REPLACE_QUALITY_SCREENSHOT_DIRECTORY, { recursive: true });
+mkdirSync(MEAL_SCREENSHOT_DIRECTORY, { recursive: true });
+
+type SavedRoadbookPayload = {
+  trip: { id: string };
+  current_revision: { id: string; revision_number: number };
+  itinerary: import("../../src/features/executable-route-preview/routePreviewModel").RoutePreviewItinerary;
+};
 
 function installNetworkGate(page: import("@playwright/test").Page) {
   const failures: string[] = [];
@@ -54,14 +63,19 @@ async function verifyMapEvidenceSettled(page: import("@playwright/test").Page) {
   }).toBe(true);
 }
 
-async function previewDayOneRepair(page: import("@playwright/test").Page) {
+async function previewRushedDayRepair(page: import("@playwright/test").Page) {
+  const dayButtons = page.locator(".roadbook__masthead nav button");
+  const trigger = page.getByRole("button", { name: /帮我松一点/ });
+  for (let index = 0; index < await dayButtons.count() && await trigger.count() === 0; index += 1) {
+    await dayButtons.nth(index).click();
+  }
+  await expect(trigger).toHaveCount(1);
   let applyRequests = 0;
   const countApply = (request: import("@playwright/test").Request) => {
     if (request.url().includes("/mutation-proposals/") && request.url().endsWith("/apply")) applyRequests += 1;
   };
   page.on("request", countApply);
   const responsePromise = page.waitForResponse((response) => response.url().includes("/local-repairs/relax-day/preview") && response.request().method() === "POST");
-  const trigger = page.getByRole("button", { name: /帮我松一点/ });
   await trigger.scrollIntoViewIfNeeded();
   await trigger.click();
   const response = await responsePromise;
@@ -95,9 +109,12 @@ async function applyPreviewedRepair(page: import("@playwright/test").Page, propo
   };
 }
 
-async function createSavedRoadbook(page: import("@playwright/test").Page) {
+async function createSavedRoadbook(
+  page: import("@playwright/test").Page,
+  tripText = VISUAL_TRIP,
+) {
   await page.goto("/trip-compiler");
-  await page.getByLabel("这一趟，你已经知道些什么？").fill(VISUAL_TRIP);
+  await page.getByLabel("这一趟，你已经知道些什么？").fill(tripText);
   await page.getByRole("button", { name: "开始编排行程" }).click();
   await expect(page.getByRole("heading", { name: "这些是我理解到的旅行安排。" })).toBeVisible();
   await confirmVisiblePlaces(page);
@@ -108,10 +125,42 @@ async function createSavedRoadbook(page: import("@playwright/test").Page) {
   const response = await selected;
   expect(response.status()).toBe(201);
   await expect(page.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
-  return await response.json() as {
-    trip: { id: string };
-    current_revision: { id: string; revision_number: number };
-  };
+  return await response.json() as SavedRoadbookPayload;
+}
+
+function allRouteItems(itinerary: SavedRoadbookPayload["itinerary"]) {
+  return itinerary.days.flatMap((day) => day.blocks.flatMap((block) => block.items));
+}
+
+function assertVerifiedMealCompletion(saved: SavedRoadbookPayload) {
+  const applicableSlots = saved.itinerary.meal_rhythm?.days
+    .flatMap((day) => day.slots)
+    .filter((slot) => slot.status !== "not_applicable") ?? [];
+  expect(applicableSlots.length).toBeGreaterThan(0);
+
+  const meals = allRouteItems(saved.itinerary).filter((item) => item.meal_role != null);
+  const autoCompletedSlots = applicableSlots.filter((slot) => slot.status === "auto_completed");
+  expect(meals.length).toBeGreaterThan(0);
+  expect(meals).toHaveLength(autoCompletedSlots.length);
+  expect(meals.every((item) => item.source_type === "auto_seeded_meal")).toBe(true);
+  expect(meals.every((item) => item.verified_place?.provider === "amap" && Boolean(item.verified_place.provider_place_id))).toBe(true);
+  expect(meals.every((item) => (
+    (item.meal_route_evidence?.inbound.distance_m ?? 0) > 0
+    && (item.meal_route_evidence?.inbound.duration_s ?? 0) > 0
+    && (item.meal_route_evidence?.outbound.distance_m ?? 0) > 0
+    && (item.meal_route_evidence?.outbound.duration_s ?? 0) > 0
+  ))).toBe(true);
+  const canonicalIds = allRouteItems(saved.itinerary).map((item) => item.canonical_place_id).filter(Boolean);
+  expect(new Set(canonicalIds).size).toBe(canonicalIds.length);
+}
+
+async function showDayWithMealLabel(page: import("@playwright/test").Page) {
+  const dayButtons = page.locator(".roadbook__masthead nav button");
+  const mealLabel = page.getByText(/^(LUNCH \/ 午饭|DINNER \/ 晚饭)$/);
+  for (let index = 0; index < await dayButtons.count() && await mealLabel.count() === 0; index += 1) {
+    await dayButtons.nth(index).click();
+  }
+  await expect(mealLabel.first()).toBeVisible();
 }
 
 async function openSafeReplaceCandidates(
@@ -120,10 +169,13 @@ async function openSafeReplaceCandidates(
   expectedCount?: number,
 ) {
   const dayButtons = page.locator(".roadbook__masthead nav button");
-  let target = page.locator("[data-roadbook-stop]").filter({ hasText: targetName });
+  const findTarget = () => page.locator("[data-roadbook-stop]:visible").filter({
+    has: page.locator(".roadbook-stop__copy > strong").getByText(targetName, { exact: true }),
+  });
+  let target = findTarget();
   for (let index = 0; index < await dayButtons.count() && await target.count() === 0; index += 1) {
     await dayButtons.nth(index).click();
-    target = page.locator("[data-roadbook-stop]").filter({ hasText: targetName });
+    target = findTarget();
   }
   await expect(target).toHaveCount(1);
   await target.click();
@@ -190,14 +242,19 @@ test("Trip Compiler uses a Draft Intent revision before it creates a Planning Ru
 
   const selectedRoute = page.waitForResponse((response) => response.url().includes("/select") && response.request().method() === "POST");
   await page.getByRole("button", { name: "就选这条路线" }).click();
-  expect((await selectedRoute).status()).toBe(201);
+  const selectedRouteResponse = await selectedRoute;
+  expect(selectedRouteResponse.status()).toBe(201);
+  const savedRoadbook = await selectedRouteResponse.json() as SavedRoadbookPayload;
+  assertVerifiedMealCompletion(savedRoadbook);
   await expect(page.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
   await expect(page.locator('[data-roadbook-layout="living"]')).toBeVisible();
   await expect(page.locator('[data-route-map-pane="true"]')).toBeVisible();
-  await expect(page.getByRole("button", { name: /帮我松一点/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /帮我松一点/ })).toHaveCount(0);
   await verifyFixedArrangementProtection(page);
   await verifyMapEvidenceSettled(page);
+  await showDayWithMealLabel(page);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: join(MEAL_SCREENSHOT_DIRECTORY, "desktop-meal-completed.png") });
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: join(ROADBOOK_SCREENSHOT_DIRECTORY, "desktop-roadbook.png") });
   await page.screenshot({ path: join(REPAIR_SCREENSHOT_DIRECTORY, "desktop-repair-before.png") });
@@ -212,7 +269,7 @@ test("Trip Compiler uses a Draft Intent revision before it creates a Planning Ru
   await desktopDetail.getByRole("button", { name: /查看下一站/ }).click();
   await expect(desktopStops.nth(2)).toHaveAttribute("aria-pressed", "true");
 
-  const { payload: repairPreview, proof } = await previewDayOneRepair(page);
+  const { payload: repairPreview, proof } = await previewRushedDayRepair(page);
   await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toBeVisible();
   await proof.evaluate((element) => element.scrollIntoView({ block: "start" }));
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -252,14 +309,19 @@ test("Trip Compiler keeps the Draft Intent to candidate flow usable on mobile", 
 
   const selectedRoute = page.waitForResponse((response) => response.url().includes("/select") && response.request().method() === "POST");
   await page.getByRole("button", { name: "就选这条路线" }).click();
-  expect((await selectedRoute).status()).toBe(201);
+  const selectedRouteResponse = await selectedRoute;
+  expect(selectedRouteResponse.status()).toBe(201);
+  const savedRoadbook = await selectedRouteResponse.json() as SavedRoadbookPayload;
+  assertVerifiedMealCompletion(savedRoadbook);
   await expect(page.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
   await expect(page.locator('[data-roadbook-layout="living"]')).toBeVisible();
   await expect(page.locator('[data-route-map-pane="true"]')).toBeVisible();
-  await expect(page.getByRole("button", { name: /帮我松一点/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /帮我松一点/ })).toHaveCount(0);
   await verifyFixedArrangementProtection(page);
   await verifyMapEvidenceSettled(page);
+  await showDayWithMealLabel(page);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: join(MEAL_SCREENSHOT_DIRECTORY, "mobile-meal-completed.png") });
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: join(ROADBOOK_SCREENSHOT_DIRECTORY, "mobile-roadbook.png") });
   const mobileStops = page.locator("[data-roadbook-stop]");
@@ -274,7 +336,7 @@ test("Trip Compiler keeps the Draft Intent to candidate flow usable on mobile", 
   await mobileDetail.getByRole("button", { name: /查看下一站/ }).click();
   await expect(mobileStops.nth(2)).toHaveAttribute("aria-pressed", "true");
 
-  const { payload: repairPreview, proof } = await previewDayOneRepair(page);
+  const { payload: repairPreview, proof } = await previewRushedDayRepair(page);
   await proof.evaluate((element) => element.scrollIntoView({ block: "start" }));
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: join(REPAIR_SCREENSHOT_DIRECTORY, "mobile-repair-preview.png") });
@@ -295,6 +357,7 @@ test("Trip Compiler keeps the Draft Intent to candidate flow usable on mobile", 
   await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
+  await page.locator(".roadbook__masthead nav button").nth(repairPreview.impact_summary.local_repair.from_day - 1).click();
   await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toBeVisible();
   assertClean();
 });
@@ -303,9 +366,9 @@ test("Saved Roadbook safely replaces one stop and preserves the result on deskto
   const assertClean = installNetworkGate(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   const saved = await createSavedRoadbook(page);
-  const candidates = await openSafeReplaceCandidates(page, "青芝坞餐厅", 2);
+  const candidates = await openSafeReplaceCandidates(page, "湖畔小馆", 2);
   expect(candidates.options.some((option) => option.name === "茶人村" && option.route_impact.safe_to_apply)).toBe(true);
-  expect(candidates.options.some((option) => option.name === "龙井草堂" && option.route_impact.safe_to_apply)).toBe(true);
+  expect(candidates.options.some((option) => option.name === "桂语山房" && option.route_impact.safe_to_apply)).toBe(true);
   expect(candidates.options.some((option) => option.name === "远山宴")).toBe(false);
   await expect(page.getByText("远山宴", { exact: true })).toHaveCount(0);
   await page.locator(".safe-replace--candidates").scrollIntoViewIfNeeded();
@@ -342,7 +405,7 @@ test("Saved Roadbook safely replaces one stop and preserves the result on deskto
   expect((await currentRevision(page, saved.trip.id)).id).toBe(applied.current_revision.id);
 
   const beforeEmpty = await currentRevision(page, saved.trip.id);
-  await openSafeReplaceCandidates(page, "龙井村茶歇", 0);
+  await openSafeReplaceCandidates(page, "青芝坞餐厅", 0);
   await page.locator(".safe-replace--candidates").scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(REPLACE_QUALITY_SCREENSHOT_DIRECTORY, "desktop-replace-quality-empty.png") });
   await page.getByRole("button", { name: "保留原地点" }).click();
@@ -356,7 +419,7 @@ test("Safe replacement shows one useful candidate without padding", async ({ pag
   await page.setViewportSize({ width: 1440, height: 900 });
   const saved = await createSavedRoadbook(page);
   const before = await currentRevision(page, saved.trip.id);
-  const candidates = await openSafeReplaceCandidates(page, "满觉陇茶歇", 1);
+  const candidates = await openSafeReplaceCandidates(page, "龙井草堂", 1);
   expect(candidates.options.map((option) => option.name)).toEqual(["茶人村"]);
   await expect(page.locator(".safe-replace-candidate")).toHaveCount(1);
   await page.getByRole("button", { name: "关闭候选地点" }).click();
@@ -368,7 +431,7 @@ test("Safe replacement remains usable and undoable on mobile", async ({ page }) 
   const assertClean = installNetworkGate(page);
   await page.setViewportSize({ width: 390, height: 844 });
   const saved = await createSavedRoadbook(page);
-  await openSafeReplaceCandidates(page, "青芝坞餐厅", 2);
+  await openSafeReplaceCandidates(page, "湖畔小馆", 2);
   await page.locator(".safe-replace--candidates").scrollIntoViewIfNeeded();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: join(REPLACE_QUALITY_SCREENSHOT_DIRECTORY, "mobile-replace-quality-candidates.png") });
@@ -401,12 +464,12 @@ test("Safe replacement remains usable and undoable on mobile", async ({ page }) 
   expect(undone.current_revision.revision_number).toBe(applied.current_revision.revision_number + 1);
   expect(undone.current_revision.source_type).toBe("mutation_undo");
   expect(undone.current_revision.restored_from_revision_id).toBe(previewPayload.current_revision.id);
-  await expect(page.locator("[data-roadbook-selected-place]").getByText("青芝坞餐厅", { exact: true })).toBeVisible();
+  await expect(page.locator("[data-roadbook-selected-place]").getByText("湖畔小馆", { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
-  await expect(page.getByText("青芝坞餐厅", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("湖畔小馆", { exact: true }).first()).toBeVisible();
   const beforeEmpty = await currentRevision(page, saved.trip.id);
-  await openSafeReplaceCandidates(page, "龙井村茶歇", 0);
+  await openSafeReplaceCandidates(page, "青芝坞餐厅", 0);
   await page.locator(".safe-replace--candidates").scrollIntoViewIfNeeded();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: join(REPLACE_QUALITY_SCREENSHOT_DIRECTORY, "mobile-replace-quality-empty.png") });
@@ -414,5 +477,49 @@ test("Safe replacement remains usable and undoable on mobile", async ({ page }) 
   expect((await currentRevision(page, saved.trip.id)).id).toBe(beforeEmpty.id);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect((await currentRevision(page, saved.trip.id)).revision_number).toBe(undone.current_revision.revision_number);
+  assertClean();
+});
+
+test("Meal Gap preserves a fixed lunch-time arrangement on desktop", async ({ page }) => {
+  const assertClean = installNetworkGate(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const saved = await createSavedRoadbook(page, MEAL_GAP_TRIP);
+  const day = saved.itinerary.days.find((candidate) => candidate.day === 1);
+  const fixed = day?.blocks.flatMap((block) => block.items).find((item) => item.is_fixed);
+  const lunch = saved.itinerary.meal_rhythm?.days
+    .find((candidate) => candidate.day === 1)?.slots
+    .find((slot) => slot.role === "lunch");
+
+  expect(fixed?.name).toContain("中国茶叶博物馆");
+  expect(fixed?.start_time).toMatch(/^13:00/);
+  expect(fixed?.end_time).toMatch(/^15:00/);
+  expect(lunch?.status).toBe("unresolved");
+  expect(day?.blocks.flatMap((block) => block.items).some((item) => item.meal_role === "lunch")).toBe(false);
+  await page.locator(".roadbook__masthead nav button").first().click();
+  const mealGapNote = page.getByRole("heading", { name: "午饭还没找到合适的位置。" });
+  await expect(mealGapNote).toBeVisible();
+  await expect(page.getByText("不会被随意移动")).toBeVisible();
+  await mealGapNote.scrollIntoViewIfNeeded();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: join(MEAL_SCREENSHOT_DIRECTORY, "desktop-meal-gap.png") });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "午饭还没找到合适的位置。" })).toBeVisible();
+  assertClean();
+});
+
+test("Meal Gap remains readable and persistent on mobile", async ({ page }) => {
+  const assertClean = installNetworkGate(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const saved = await createSavedRoadbook(page, MEAL_GAP_TRIP);
+  const daySummary = saved.itinerary.meal_rhythm?.days.find((candidate) => candidate.day === 1);
+  expect(daySummary?.slots.find((slot) => slot.role === "lunch")?.status).toBe("unresolved");
+  await page.locator(".roadbook__masthead nav button").first().click();
+  const note = page.getByRole("heading", { name: "午饭还没找到合适的位置。" });
+  await expect(note).toBeVisible();
+  await note.scrollIntoViewIfNeeded();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: join(MEAL_SCREENSHOT_DIRECTORY, "mobile-meal-gap.png") });
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "午饭还没找到合适的位置。" })).toBeVisible();
   assertClean();
 });

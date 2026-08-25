@@ -123,6 +123,7 @@ export function PlanCandidateComparison({
         <div className="tc-route-proof">
           <span>{selected.metrics.fixed_coverage ? "固定安排已保护" : "没有固定安排"}</span>
           <span>{selected.metrics.travel_data_completeness === "complete" ? "路程已确认" : "部分路程待确认"}</span>
+          <span>{mealRhythmLabel(selected.itinerary)}</span>
         </div>
 
         <div className="tc-route-days">
@@ -178,4 +179,19 @@ function TravelEvidence({ item }: { item: RoutePreviewItinerary["days"][number][
 
 function formatOptionalMinutes(minutes: number | null) {
   return minutes == null ? "待确认" : formatMinutes(minutes);
+}
+
+function mealRhythmLabel(itinerary: RoutePreviewItinerary) {
+  const slots = itinerary.meal_rhythm?.days.flatMap((day) => day.slots) ?? [];
+  const applicable = slots.filter((slot) => slot.status !== "not_applicable");
+  if (!applicable.length) return "餐食按当天时段判断";
+  const covered = applicable.filter((slot) => slot.status === "covered" || slot.status === "auto_completed");
+  if (covered.length === applicable.length) {
+    const coveredRoles = [...new Set(covered.map((slot) => slot.role === "lunch" ? "午饭" : "晚饭"))];
+    return `${coveredRoles.join("和")}已安排`;
+  }
+  const missingRoles = [...new Set(applicable
+    .filter((slot) => slot.status === "unresolved")
+    .map((slot) => slot.role === "lunch" ? "午饭" : "晚饭"))];
+  return `${missingRoles.join("、")}待补`;
 }

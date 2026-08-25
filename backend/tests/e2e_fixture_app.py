@@ -62,8 +62,8 @@ class BrowserFixturePoiDiscoveryProvider:
         "龙井村茶歇": PoiDiscoveryCandidate(
             name="龙井村茶歇",
             address="杭州市西湖区龙井路",
-            type="中餐厅",
-            typecode="050100",
+            type="餐饮服务;茶艺馆",
+            typecode="050600",
             business_area="杭州",
             latitude=30.21829,
             longitude=120.10924,
@@ -112,8 +112,8 @@ class BrowserFixturePoiDiscoveryProvider:
         "满觉陇茶歇": PoiDiscoveryCandidate(
             name="满觉陇茶歇",
             address="杭州市西湖区满觉陇",
-            type="中餐厅",
-            typecode="050100",
+            type="餐饮服务;茶艺馆",
+            typecode="050600",
             business_area="杭州",
             latitude=30.21477,
             longitude=120.11953,
@@ -138,6 +138,46 @@ class BrowserFixturePoiDiscoveryProvider:
             latitude=30.226,
             longitude=120.109,
             provider_place_id="fixture-longjing-cottage",
+        ),
+        "湖畔小馆": PoiDiscoveryCandidate(
+            name="湖畔小馆",
+            address="杭州市西湖区北山路",
+            type="杭帮菜",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.252,
+            longitude=120.137,
+            provider_place_id="fixture-meal-04",
+        ),
+        "山外山": PoiDiscoveryCandidate(
+            name="山外山",
+            address="杭州市西湖区玉泉路",
+            type="杭帮菜",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.263,
+            longitude=120.123,
+            provider_place_id="fixture-meal-05",
+        ),
+        "知味观": PoiDiscoveryCandidate(
+            name="知味观",
+            address="杭州市上城区仁和路",
+            type="杭帮菜",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.257,
+            longitude=120.165,
+            provider_place_id="fixture-meal-06",
+        ),
+        "桂语山房": PoiDiscoveryCandidate(
+            name="桂语山房",
+            address="杭州市西湖区满觉陇路",
+            type="杭帮菜",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.221,
+            longitude=120.123,
+            provider_place_id="fixture-guiyu",
         ),
         "远山宴": PoiDiscoveryCandidate(
             name="远山宴",
@@ -171,6 +211,35 @@ class BrowserFixturePoiDiscoveryProvider:
 
     def search_around(self, **query: object) -> list[PoiDiscoveryCandidate]:
         latitude = float(query.get("latitude") or 0)
+        keyword = str(query.get("keyword") or "")
+        if keyword in {"午餐", "晚餐"}:
+            return [
+                self._CANDIDATES["龙井草堂"],
+                self._CANDIDATES["湖畔小馆"],
+                self._CANDIDATES["山外山"],
+                self._CANDIDATES["知味观"],
+                self._CANDIDATES["青芝坞餐厅"],
+                self._CANDIDATES["茶人村"],
+                self._CANDIDATES["远山宴"],
+            ]
+        if abs(latitude - 30.252) < 0.00001:
+            return [
+                self._CANDIDATES["湖畔小馆"],
+                self._CANDIDATES["茶人村"],
+                self._CANDIDATES["桂语山房"],
+                self._CANDIDATES["远山宴"],
+            ]
+        if abs(latitude - 30.26049) < 0.00001:
+            return [
+                self._CANDIDATES["青芝坞餐厅"],
+                self._CANDIDATES["远山宴"],
+            ]
+        if abs(latitude - 30.226) < 0.00001:
+            return [
+                self._CANDIDATES["龙井草堂"],
+                self._CANDIDATES["茶人村"],
+                self._CANDIDATES["远山宴"],
+            ]
         if abs(latitude - 30.21477) < 0.00001:
             return [
                 self._CANDIDATES["满觉陇茶歇"],

@@ -20,10 +20,46 @@ from app.trips.access import generate_capability, hash_capability, hash_idempote
 from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
 from app.services.constraint_planning import canonical_digest, generate_candidates, intent_digest
 from app.services.planning_run_replay import replay_planning_run
+from app.services.poi_discovery_provider import PoiDiscoveryCandidate, PoiDiscoveryCapability
 from app.tools.verify_planning_run import main as verify_planning_run_main
 
 
 HANGZHOU = "周末去杭州玩两天，想去西湖和灵隐寺。朋友推荐龙井村，但不是必须。周六下午两点预约了中国茶叶博物馆。不想太赶，想吃本地小吃。周日晚上六点前要到杭州东站。"
+
+
+class PlanningMealProvider:
+    def capability(self) -> PoiDiscoveryCapability:
+        return PoiDiscoveryCapability(
+            provider="amap",
+            app_env="test",
+            mode="required",
+            required=True,
+            poi_discovery_enabled=True,
+            text_search_enabled=True,
+            around_search_enabled=True,
+            catalog_fallback_enabled=False,
+            missing_config=(),
+            production_ready=True,
+        )
+
+    def search_text(self, *, keyword: str, city: str, offset: int):
+        del keyword, city, offset
+        return []
+
+    def search_around(self, **query: object):
+        del query
+        return [
+            PoiDiscoveryCandidate(
+                name="茶人村",
+                address="杭州市西湖区龙井路",
+                type="餐饮服务;中餐厅",
+                typecode="050100",
+                business_area="杭州",
+                latitude=30.229,
+                longitude=120.111,
+                provider_place_id="fixture-tea-village",
+            )
+        ]
 
 
 class PlanCandidateApiTests(unittest.TestCase):
@@ -228,6 +264,98 @@ class PlanCandidateApiTests(unittest.TestCase):
         self.assertIn("route_snapshot_digest", metadata)
         self.assertEqual(metadata["planner_policy_version"], "trip-compiler-candidates-v2")
         self.assertEqual(metadata["source"], "candidate_selection")
+
+    def test_meal_identity_and_routes_survive_planning_run_and_revision_selection(self) -> None:
+        with (
+            patch(
+                "app.services.itinerary_completion_recommendation.default_poi_discovery_provider",
+                return_value=PlanningMealProvider(),
+            ),
+            patch(
+                "app.services.itinerary_completion_recommendation.get_walking_route",
+                return_value={
+                    "distance_m": 700,
+                    "duration_s": 600,
+                    "source": "amap_fixture",
+                },
+            ),
+        ):
+            generated_response = self.candidates()
+        self.assertEqual(generated_response.status_code, 200, generated_response.text)
+        generated = generated_response.json()
+        candidate = generated["candidates"][0]
+        preview_meal = next(
+            item
+            for day in candidate["itinerary"]["days"]
+            for block in day["blocks"]
+            for item in block["items"]
+            if item["source_type"] == "auto_seeded_meal"
+        )
+        meal_rhythm = candidate["itinerary"]["meal_rhythm"]
+        self.assertGreater(meal_rhythm["meal_slots_evaluated"], 0)
+        self.assertGreater(meal_rhythm["poi_candidates_evaluated"], 0)
+        self.assertGreater(meal_rhythm["route_calls"], 0)
+        self.assertGreater(meal_rhythm["successful_completions"], 0)
+        self.assertEqual(preview_meal["canonical_place_id"], "fixture-tea-village")
+        self.assertEqual(preview_meal["verified_place"]["provider_place_id"], "fixture-tea-village")
+        self.assertGreater(preview_meal["meal_route_evidence"]["inbound"]["duration_s"], 0)
+        self.assertGreater(preview_meal["meal_route_evidence"]["outbound"]["duration_s"], 0)
+
+        with connect(self.database_path) as connection:
+            poi_snapshot_json, route_snapshot_json = connection.execute(
+                "SELECT poi_snapshot_json, route_snapshot_json FROM planning_runs WHERE id = ?",
+                (generated["planning_run_id"],),
+            ).fetchone()
+        poi_snapshot = json.loads(poi_snapshot_json)
+        route_snapshot = json.loads(route_snapshot_json)
+        self.assertTrue(
+            any(item["provider_place_id"] == "fixture-tea-village" for item in poi_snapshot)
+        )
+        inbound = preview_meal["meal_route_evidence"]["inbound"]
+        outbound = preview_meal["meal_route_evidence"]["outbound"]
+        self.assertTrue(
+            any(
+                segment["from_poi"] == inbound["from_name"]
+                and segment["to_poi"] == inbound["to_name"]
+                and segment["to_place_id"] == "fixture-tea-village"
+                and segment["provider"] == "amap"
+                and segment["calculation_status"] == "confirmed"
+                for segment in route_snapshot
+            )
+        )
+        self.assertTrue(
+            any(
+                segment["from_poi"] == outbound["from_name"]
+                and segment["to_poi"] == outbound["to_name"]
+                and segment["from_place_id"] == "fixture-tea-village"
+                and segment["provider"] == "amap"
+                and segment["calculation_status"] == "confirmed"
+                for segment in route_snapshot
+            )
+        )
+
+        selected = self.client.post(
+            f"/trip-compiler/planning-runs/{generated['planning_run_id']}/candidates/{candidate['id']}/select",
+            json={
+                "candidate_hash": candidate["candidate_hash"],
+                "intent_digest": generated["intent_digest"],
+            },
+            headers={
+                "Origin": "http://testserver",
+                "X-Idempotency-Key": "meal-lineage-selection",
+            },
+        )
+        self.assertEqual(selected.status_code, 201, selected.text)
+        revision_meal = next(
+            item
+            for day in selected.json()["itinerary"]["days"]
+            for block in day["blocks"]
+            for item in block["items"]
+            if item["source_type"] == "auto_seeded_meal"
+        )
+        self.assertEqual(revision_meal["stable_id"], preview_meal["stable_id"])
+        self.assertEqual(revision_meal["canonical_place_id"], preview_meal["canonical_place_id"])
+        self.assertEqual(revision_meal["meal_route_evidence"], preview_meal["meal_route_evidence"])
 
     def test_controlled_edit_preserves_root_planning_run_lineage(self) -> None:
         generated = self.candidates().json()

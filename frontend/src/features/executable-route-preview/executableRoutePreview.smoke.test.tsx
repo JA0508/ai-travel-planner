@@ -48,7 +48,7 @@ test("saved route uses an on-the-road workspace vocabulary", () => {
   assert.match(html, /LOCKED/);
   assert.match(html, /已经留好的时间/);
   assert.match(html, /不会被随意移动/);
-  assert.match(html, /帮我松一点/);
+  assert.doesNotMatch(html, /帮我松一点/);
   assert.match(html, /data-route-map-pane="true"/);
   assert.match(html, /data-roadbook-layout="living"/);
   assert.doesNotMatch(html, /class="erp-risks"/);
@@ -57,6 +57,17 @@ test("saved route uses an on-the-road workspace vocabulary", () => {
   assert.doesNotMatch(html, /canonical|handoff/i);
   assert.doesNotMatch(html, /NEXT_PUBLIC_AMAP_WEB_KEY/);
   assert.doesNotMatch(html, /仍可继续编辑路线/);
+});
+
+test("saved route offers local repair only for a rushed day", () => {
+  const rushed = structuredClone(itinerary);
+  const dailyLoads = rushed.planner_realism?.daily_loads;
+  assert.ok(dailyLoads?.[0]);
+  dailyLoads[0].classification = "rushed";
+  const html = renderToStaticMarkup(<ExecutableRoutePreview itinerary={rushed} variant="saved" tripId="trip-1" baseRevisionId="revision-1" onApplied={() => undefined} />);
+
+  assert.match(html, /今天稍微赶了一点/);
+  assert.match(html, /帮我松一点/);
 });
 
 test("saved route preview sends only a user goal to the server-authoritative repair endpoint", () => {
@@ -107,4 +118,54 @@ test("saved roadbook preserves unavailable route uncertainty", () => {
   assert.match(html, /不会把缺失的路程当作 0 分钟/);
   assert.doesNotMatch(html, /路线已确认/);
   assert.doesNotMatch(html, /VERIFIED PLACE/);
+});
+
+test("saved roadbook presents a system lunch as a route stop and a meal gap as a field note", () => {
+  const mealAware = structuredClone(itinerary);
+  mealAware.days[0].blocks.push({
+    block_type: "afternoon",
+    start_time: "13:00",
+    end_time: "17:00",
+    items: [{
+      stable_id: "amap:fixture-lunch",
+      name: "茶人村",
+      type: "restaurant",
+      city: "杭州",
+      latitude: 30.229,
+      longitude: 120.111,
+      start_time: "12:15",
+      end_time: "13:15",
+      duration_minutes: 60,
+      is_fixed: false,
+      source_type: "auto_seeded_meal",
+      source_label: "系统补充",
+      source_reason: "系统为这一天补上的午饭。",
+      meal_role: "lunch",
+      travel_from_name: "西湖",
+      travel_duration_s: 600,
+      travel_distance_m: 700,
+      travel_data_status: "confirmed",
+      travel_provider: "amap",
+      placement_reason: "前后路线都已确认，并为后面的安排留出时间。",
+    }],
+  });
+  mealAware.meal_rhythm = {
+    policy_version: "meal-rhythm-v1",
+    days: [{
+      day: 1,
+      slots: [
+        { role: "lunch", status: "auto_completed", window_start: "11:30", window_end: "14:00", scheduled_item_name: "茶人村", explanation: "系统已把茶人村安排为午饭。" },
+        { role: "dinner", status: "unresolved", window_start: "17:30", window_end: "20:30", explanation: "晚饭还没找到合适的时间和真实地点。" },
+      ],
+      field_notes: ["晚饭还没找到合适的位置；系统没有硬塞一个未经验证的餐饮点。"],
+    }],
+  };
+
+  const html = renderToStaticMarkup(<ExecutableRoutePreview itinerary={mealAware} variant="saved" />);
+
+  assert.match(html, /LUNCH \/ 午饭/);
+  assert.match(html, /系统为这一天补上的午饭/);
+  assert.match(html, /MEAL NOTE/);
+  assert.match(html, /晚饭还没找到合适的位置/);
+  assert.doesNotMatch(html, /MEAL_CONSTRAINT_UNRESOLVED/);
 });

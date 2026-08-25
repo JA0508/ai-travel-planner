@@ -72,3 +72,35 @@ test("candidate selection keeps missing travel totals visibly unknown", () => {
   assert.doesNotMatch(html, /null 分钟/);
   assert.doesNotMatch(html, /undefined 分钟/);
 });
+
+test("candidate meal rhythm copy only names applicable meal roles", () => {
+  const lunchOnly = structuredClone(response);
+  lunchOnly.candidates[0].itinerary.meal_rhythm = {
+    policy_version: "meal-rhythm-v1",
+    days: [{
+      day: 1,
+      slots: [
+        {
+          role: "lunch",
+          status: "covered",
+          window_start: "11:30",
+          window_end: "14:00",
+          explanation: "现有午饭已覆盖。",
+        },
+        {
+          role: "dinner",
+          status: "not_applicable",
+          window_start: "17:30",
+          window_end: "20:30",
+          explanation: "当天行程已经结束。",
+        },
+      ],
+      field_notes: [],
+    }],
+  };
+
+  const html = renderToStaticMarkup(<PlanCandidateComparison response={lunchOnly} selectedId="route-1" busy={false} error={null} onSelect={() => undefined} onConfirm={() => undefined} onBack={() => undefined} />);
+
+  assert.match(html, /午饭已安排/);
+  assert.doesNotMatch(html, /午饭和晚饭已按适用时段安排/);
+});

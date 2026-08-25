@@ -12,6 +12,15 @@ export type VerifiedPlaceReference = {
   source_fragment_ids?: string[];
 };
 
+export type MealAdjacentRouteEvidence = {
+  from_name: string;
+  to_name: string;
+  from_place_id?: string | null;
+  to_place_id?: string | null;
+  distance_m: number;
+  duration_s: number;
+};
+
 export type RoutePreviewItem = {
   stable_id?: string | null;
   name: string;
@@ -42,6 +51,11 @@ export type RoutePreviewItem = {
     practical_tip: string;
     best_for: string;
     source: string;
+  } | null;
+  meal_role?: "lunch" | "dinner" | null;
+  meal_route_evidence?: {
+    inbound: MealAdjacentRouteEvidence;
+    outbound: MealAdjacentRouteEvidence;
   } | null;
 };
 
@@ -79,6 +93,22 @@ export type RoutePreviewItinerary = {
       reason_codes: string[];
       explanation: string;
     }> | null;
+  } | null;
+  meal_rhythm?: {
+    policy_version: string;
+    days: Array<{
+      day: number;
+      slots: Array<{
+        role: "lunch" | "dinner";
+        status: "covered" | "auto_completed" | "unresolved" | "not_applicable";
+        window_start: string;
+        window_end: string;
+        scheduled_item_stable_id?: string | null;
+        scheduled_item_name?: string | null;
+        explanation: string;
+      }>;
+      field_notes: string[];
+    }>;
   } | null;
 };
 
