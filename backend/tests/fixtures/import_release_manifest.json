@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "batch": "00",
+  "status": "baseline_contract_only",
+  "scope": "Release contract, capability matrix baseline, and import fixture index. No production API, business logic, or UI behavior is changed by this manifest.",
+  "contract_documents": [
+    "docs/product/IMPORT_FULL_FORMAT_RELEASE.md",
+    "docs/architecture/IMPORT_CAPABILITY_PACK_CONTRACT.md",
+    "docs/product/CURRENT_PHASE.md",
+    "docs/decisions/0007-text-import-provenance-and-review-boundary.md",
+    "docs/decisions/0008-secure-url-import-and-fetch-provenance.md",
+    "docs/decisions/0009-quarantine-first-binary-artifact-inspection.md",
+    "docs/decisions/0010-layout-aware-document-text-extraction.md",
+    "docs/decisions/0011-page-level-document-extraction-evidence.md"
+  ],
+  "forms": [
+    {
+      "form": "text",
+      "entrypoint": "POST /trips/{trip_id}/imports/text",
+      "fixture_collections": [
+        "FIXTURES"
+      ],
+      "focused_tests": [
+        "backend/tests/test_text_import_foundation.py"
+      ],
+      "baseline_coverage": [
+        "private SourceArtifact",
+        "mention spans",
+        "review version",
+        "candidate-only commit",
+        "idempotency",
+        "source-as-data"
+      ],
+      "release_gate_status": "baseline_only"
+    },
+    {
+      "form": "url",
+      "entrypoint": "POST /trips/{trip_id}/imports/url",
+      "fixture_collections": [
+        "URL_FIXTURES"
+      ],
+      "focused_tests": [
+        "backend/tests/test_url_import_security.py"
+      ],
+      "baseline_coverage": [
+        "URL policy",
+        "robots fail-closed",
+        "bounded fetch",
+        "derived text",
+        "login wall rejection",
+        "dynamic page rejection",
+        "SSRF/DNS controls"
+      ],
+      "release_gate_status": "baseline_only"
+    },
+    {
+      "form": "image",
+      "entrypoint": "POST /trips/{trip_id}/imports/artifacts",
+      "fixture_collections": [
+        "BINARY_FIXTURES",
+        "DOCUMENT_EXTRACTION_FIXTURES"
+      ],
+      "focused_tests": [
+        "backend/tests/test_binary_artifact_import.py"
+      ],
+      "baseline_coverage": [
+        "quarantine-first upload",
+        "content detection",
+        "metadata stripping",
+        "sanitized image derivative",
+        "OCR unavailable semantics",
+        "private binary boundary"
+      ],
+      "release_gate_status": "baseline_only"
+    },
+    {
+      "form": "pdf",
+      "entrypoint": "POST /trips/{trip_id}/imports/artifacts",
+      "fixture_collections": [
+        "BINARY_FIXTURES",
+        "DOCUMENT_EXTRACTION_FIXTURES"
+      ],
+      "focused_tests": [
+        "backend/tests/test_binary_artifact_import.py"
+      ],
+      "baseline_coverage": [
+        "artifact inspection",
+        "native text first",
+        "page-level evidence",
+        "retry lineage",
+        "partial extraction semantics",
+        "document review commit boundary"
+      ],
+      "release_gate_status": "baseline_only"
+    }
+  ],
+  "summary": {
+    "total_fixture_count": 67,
+    "invariant_count": 121,
+    "document_extraction_invariant_count": 35
+  },
+  "fixture_collections": [
+    {
+      "name": "FIXTURES",
+      "expected_fixture_count": 19,
+      "applies_to_forms": [
+        "text"
+      ]
+    },
+    {
+      "name": "URL_FIXTURES",
+      "expected_fixture_count": 23,
+      "applies_to_forms": [
+        "url"
+      ]
+    },
+    {
+      "name": "BINARY_FIXTURES",
+      "expected_fixture_count": 20,
+      "applies_to_forms": [
+        "image",
+        "pdf"
+      ]
+    },
+    {
+      "name": "DOCUMENT_EXTRACTION_FIXTURES",
+      "expected_fixture_count": 5,
+      "applies_to_forms": [
+        "image",
+        "pdf"
+      ]
+    }
+  ],
+  "release_gate_commands": [
+    {
+      "name": "focused backend import tests",
+      "command": "cd backend && ./.venv/bin/python -m unittest tests.test_import_release_contract tests.test_text_import_foundation tests.test_url_import_security tests.test_binary_artifact_import",
+      "status": "required_baseline"
+    },
+    {
+      "name": "import evaluator",
+      "command": "cd backend && ./.venv/bin/python -m tools.run_import_evaluation --ci",
+      "status": "ci_baseline",
+      "ci_job": "backend / Import evaluation"
+    }
+  ],
+  "future_release_gate_owner": "Batch 04",
+  "must_not_expose": [
+    "raw source content",
+    "uploaded bytes",
+    "storage keys or absolute paths",
+    "cookies",
+    "authorization headers",
+    "API keys or tokens",
+    "internal DNS/IP/host details",
+    "provider credentials"
+  ]
+}

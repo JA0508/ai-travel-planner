@@ -1,0 +1,19 @@
+# Import 全形式 Release 闭环与能力包管理：Batch Checklist
+
+- [x] Batch 00 — Release Contract、能力矩阵与基线（文档/测试边界）
+- [ ] Batch 01 — 服务端 Import Capability Pack 合同
+- [ ] Batch 02 — 前端 Capability-Aware Unified Import Intake
+- [ ] Batch 03 — 全形式 Review → Candidate 闭环一致性
+- [ ] Batch 04 — 四形式 API 与评测 Release Gate
+- [ ] Batch 05 — 浏览器 Release Gate、Runbook 与发布记录
+
+## 调度记录
+
+| Batch | 对话 | 状态 | Commit | 启动/完成时间 | 备注 |
+|---|---|---|---|---|---|
+| 00 | 01a0330d-a0ed-7362-a6e4-1970602a401d | completed | 本地 Batch 00 提交 | 2026-08-30 | 文档、fixture manifest 与 focused test；未改生产 API、业务逻辑或 UI |
+| 01 | — | blocked by 00 | — | — | — |
+| 02 | — | blocked by 01 | — | — | — |
+| 03 | — | blocked by 02 | — | — | — |
+| 04 | — | blocked by 03 | — | — | — |
+| 05 | — | blocked by 04 | — | — | — |
