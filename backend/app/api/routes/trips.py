@@ -7,7 +7,7 @@ from fastapi import APIRouter, File, Form, Header, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.core.runtime_config import parse_cors_allow_origins
-from app.imports.dependencies import get_text_import_service
+from app.imports.dependencies import get_import_capability_pack, get_text_import_service
 from app.schemas.plan_candidates import PlanningRunRecordResponse
 from app.imports.domain import (
     ImportCommitRequest,
@@ -23,6 +23,7 @@ from app.imports.domain import (
     URLImportCreateRequest,
     URLImportCreateResponse,
 )
+from app.imports.capability_pack import ImportCapabilityPackResponse
 from app.trips.access import capability_cookie_name
 from app.trips.dependencies import get_trip_persistence_service, get_trip_repository
 from app.trips.errors import TripError
@@ -609,6 +610,20 @@ async def create_binary_artifact_import(
             upload_file=file,
             declared_kind=declared_kind,
             original_label=original_label,
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get("/{trip_id}/imports/capabilities", response_model=ImportCapabilityPackResponse)
+def get_import_capabilities(
+    trip_id: str,
+    request: Request,
+) -> ImportCapabilityPackResponse | JSONResponse:
+    try:
+        return get_import_capability_pack().get_snapshot(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
         )
     except TripError as exc:
         return trip_error_response(exc)

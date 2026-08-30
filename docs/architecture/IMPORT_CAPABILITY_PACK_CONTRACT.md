@@ -67,16 +67,29 @@ unavailable”），而非诊断主机配置原因。稳定 error/reason code �
 
 ## API 与兼容性边界
 
-Batch 00 不分配 capability endpoint 路径，避免在实现前制造伪稳定 public API。
-Batch 01 必须在本文件中补充已实现的只读 endpoint、response schema 版本、
-trip capability 未授权语义和 contract-test 引用。它必须与既有下列 endpoint
-并存，而不得改变它们的含义：
+Batch 01 实现的只读 endpoint 是：
+
+```text
+GET /trips/{trip_id}/imports/capabilities
+```
+
+它返回 `schema_version: "1.0"` 和完整的四-form snapshot。它只读取当前运行时
+可用性，不创建 artifact、import job、review decision、candidate 或 revision，也不触发
+fetch、upload 或 extraction。它与现有 trip capability cookie 使用同一访问控制：没有
+有效 capability 的请求返回既有 `403 trip_access_denied` error envelope，且不包含
+snapshot fields。response 不返回或重设 capability cookie。
+
+该 endpoint 与既有下列 endpoint 并存，而不得改变它们的含义：
 
 - `POST /trips/{trip_id}/imports/text`
 - `POST /trips/{trip_id}/imports/url`
 - `POST /trips/{trip_id}/imports/artifacts`
 - `POST /trips/{trip_id}/imports/{import_job_id}/extract-document`
 - `POST /trips/{trip_id}/imports/{import_job_id}/commit`
+
+对应 contract tests 位于 `backend/tests/test_import_capability_pack.py`。它们固定 schema
+版本、四 form 顺序、正常/降级状态、trip capability 拒绝语义、redaction canary 与只读
+副作用边界。
 
 客户端在 snapshot 缺失、读取失败或版本不兼容时，必须显示未知/无法确认 runtime
 availability 的状态；不能臆测四种 form 都可用，也不能把未知显示为 `available`。

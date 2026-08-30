@@ -20,6 +20,7 @@ from app.core.runtime_config import (
     get_import_url_user_agent,
 )
 from app.imports.artifacts import ArtifactStore, LocalPrivateArtifactStore, MemoryArtifactStore
+from app.imports.capability_pack import ImportCapabilityPackService
 from app.imports.document_extraction import DeterministicDocumentTextExtractor
 from app.imports.extraction import DeterministicTextImportExtractor
 from app.imports.repository import ImportRepository, MemoryImportRepository, SQLiteImportRepository
@@ -73,6 +74,10 @@ def get_text_import_service() -> TextImportService:
         url_fetcher=get_url_fetcher(),
         document_extractor=DeterministicDocumentTextExtractor(),
     )
+
+
+def get_import_capability_pack() -> ImportCapabilityPackService:
+    return ImportCapabilityPackService(trip_repository=get_trip_repository())
 
 
 def get_url_fetcher() -> SecureURLFetcher:

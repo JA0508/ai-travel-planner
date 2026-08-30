@@ -2,10 +2,9 @@
 
 ## 状态与范围
 
-本文是 Import 全形式 Release 的 Batch 00 基线合同，记录 2026-08-30
-仓库中已存在的导入入口、证据边界和验证资产。它不是发布通过记录，也不
-声明已有 Import Capability Pack endpoint 或四形式 release gate；这些分别是
-后续 Batch 01 和 Batch 04 的工作。
+本文是 Import 全形式 Release 的 Batch 00 基线合同，并记录截至 2026-08-30
+已完成的 Batch 01 capability endpoint。它不是发布通过记录，也不声明四形式
+release gate；该 gate 仍是后续 Batch 04 的工作。
 
 本 release 仍遵守唯一的导入链：
 
@@ -35,6 +34,19 @@ sanitized preview 与 document page preview 使用 `private, no-store`，并带�
 | 文档提取/证据 | `POST …/extract-document`、`GET …/document-extraction`、`GET …/document-extraction/pages/{page_number}/preview` | 提取只从 `artifact_ready` 二进制开始；页面 retry 产生新 generation。 |
 | review decision | `POST …/mentions/{mention_id}/decisions` | 基于 `base_review_version` 的 append-only decision。 |
 | review commit | `POST …/commit` | 仅 confirmed places 创建或复用 `TripCandidate`。 |
+
+### Batch 01：Import Capability Pack
+
+`GET /trips/{trip_id}/imports/capabilities` 是受现有 trip capability cookie 保护的只读
+runtime snapshot。它固定返回 text、URL、image、PDF 四种 form，并对每种 form 返回
+`available`、`degraded` 或 `unavailable`、稳定 reason code、公开 processing stage 与
+safety boundary code。没有有效 capability 时返回既有 `403 trip_access_denied`，且不泄漏
+snapshot 内容。
+
+snapshot 不能代替任何写入路径的输入验证、URL/binary 安全边界、review version 或
+idempotency；它不创建 artifact、job、review decision、candidate 或 revision，也不触发
+fetch、upload 或 extraction。完整字段与 redaction 边界见
+[Import Capability Pack 合同](../architecture/IMPORT_CAPABILITY_PACK_CONTRACT.md)。
 
 上表中的省略号只代表同一个 `/trips/{trip_id}/imports/{import_job_id}`
 前缀，不是新增路由。Batch 00 不改变这些 API contract。
@@ -110,7 +122,8 @@ workflow，也不新增空壳 workflow。后续 Batch 必须在此基础上记�
 
 ## 后续 Batch 的固定边界
 
-- Batch 01 才能以本合同为输入实现服务端权威的 capability snapshot 与只读 endpoint。
+- Batch 01 已实现服务端权威的 capability snapshot 与只读 endpoint；Batch 02 只能消费它，
+  不能复制 capability 检测或将 runtime availability 当作导入成功。
 - Batch 02 只消费该 snapshot，并复用既有 unified Import Review intake。
 - Batch 03 只修复由 release matrix 暴露的真实 Review → Candidate 断点。
 - Batch 04 只扩展现有 evaluation/API fixture 资产为可执行 release gate。
