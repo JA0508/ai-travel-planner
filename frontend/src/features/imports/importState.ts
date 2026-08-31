@@ -1,6 +1,12 @@
-import type { ArtifactDerivation, ImportCommitResult, ImportJob, ImportMention, SourceArtifact, URLFetchSnapshot } from "./importTypes";
+import type { ArtifactDerivation, ImportCapabilityPack, ImportCommitResult, ImportJob, ImportMention, SourceArtifact, URLFetchSnapshot } from "./importTypes";
 
-export type ImportWorkspaceState =
+export type ImportCapabilityState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; snapshot: ImportCapabilityPack }
+  | { status: "error"; code: string; message: string };
+
+type ImportWorkflowState =
   | { status: "idle" }
   | { status: "submitting" }
   | { status: "processing"; jobId: string; stage: string }
@@ -20,6 +26,15 @@ export type ImportWorkspaceState =
   | { status: "conflict"; code: "stale_import_review"; jobId: string }
   | { status: "error"; code: string; message: string; recoverable: boolean };
 
+export type ImportWorkspaceState = ImportWorkflowState & {
+  capability: ImportCapabilityState;
+};
+
+export const initialImportWorkspaceState: ImportWorkspaceState = {
+  status: "idle",
+  capability: { status: "idle" },
+};
+
 export type ImportWorkspaceAction =
   | { type: "submit" }
   | {
@@ -36,6 +51,9 @@ export type ImportWorkspaceAction =
   | { type: "committed"; result: ImportCommitResult }
   | { type: "conflict"; jobId: string }
   | { type: "error"; code: string; message: string; recoverable?: boolean }
+  | { type: "capabilities_loading" }
+  | { type: "capabilities_ready"; snapshot: ImportCapabilityPack }
+  | { type: "capabilities_error"; code: string; message: string }
   | { type: "reset" };
 
 export function importWorkspaceReducer(
@@ -44,9 +62,9 @@ export function importWorkspaceReducer(
 ): ImportWorkspaceState {
   switch (action.type) {
     case "submit":
-      return { status: "submitting" };
+      return withCapabilities({ status: "submitting" }, state);
     case "review":
-      return {
+      return withCapabilities({
         status: "reviewing",
         artifact: action.artifact,
         job: action.job,
@@ -56,30 +74,40 @@ export function importWorkspaceReducer(
         derivation: action.derivation ?? null,
         activeMentionId: action.mentions[0]?.id ?? null,
         reviewVersion: action.job.review_version,
-      };
+      }, state);
     case "select":
       if (state.status !== "reviewing") {
         return state;
       }
       return { ...state, activeMentionId: action.mentionId };
     case "committing":
-      return { status: "committing", jobId: action.jobId, idempotencyKey: action.idempotencyKey };
+      return withCapabilities({ status: "committing", jobId: action.jobId, idempotencyKey: action.idempotencyKey }, state);
     case "committed":
-      return { status: "committed", result: action.result };
+      return withCapabilities({ status: "committed", result: action.result }, state);
     case "conflict":
-      return { status: "conflict", code: "stale_import_review", jobId: action.jobId };
+      return withCapabilities({ status: "conflict", code: "stale_import_review", jobId: action.jobId }, state);
     case "error":
-      return {
+      return withCapabilities({
         status: "error",
         code: action.code,
         message: action.message,
         recoverable: action.recoverable ?? false,
-      };
+      }, state);
+    case "capabilities_loading":
+      return { ...state, capability: { status: "loading" } };
+    case "capabilities_ready":
+      return { ...state, capability: { status: "ready", snapshot: action.snapshot } };
+    case "capabilities_error":
+      return { ...state, capability: { status: "error", code: action.code, message: action.message } };
     case "reset":
-      return { status: "idle" };
+      return withCapabilities({ status: "idle" }, state);
     default:
       return state;
   }
+}
+
+function withCapabilities(state: ImportWorkflowState, previous: ImportWorkspaceState): ImportWorkspaceState {
+  return { ...state, capability: previous.capability };
 }
 
 export function importIdempotencyKey(prefix: string, tripId: string, stablePart: string): string {

@@ -7,6 +7,7 @@ import {
   decideImportMention,
   extractDocumentImport,
   fetchBinaryInspection,
+  fetchImportCapabilities,
   fetchDocumentExtractionEvidence,
   fetchDocumentPagePreviewBlob,
   fetchImportArtifact,
@@ -26,10 +27,11 @@ import {
   binaryImportStorageValue,
   parseBinaryImportStorageValue,
 } from "./binaryImportState";
-import { importIdempotencyKey, importWorkspaceReducer } from "./importState";
+import { importIdempotencyKey, importWorkspaceReducer, initialImportWorkspaceState } from "./importState";
 import type { DocumentExtractionEvidenceResponse, DocumentExtractionGeneration, ImportMention, URLFetchSnapshot } from "./importTypes";
 import { buildDocumentEvidenceSummary, mapNormalizedBoxToOverlay, mentionEvidenceBoxes, toNormalizedDocumentBox } from "./documentEvidenceViewModel";
 import { buildImportSummary, selectedResolutionId, sourceSegments } from "./importViewModel";
+import { buildImportCapabilityViewModel } from "./importCapabilityViewModel";
 
 type ImportReviewWorkspaceProps = {
   tripPersistence: TripPersistenceState;
@@ -50,7 +52,7 @@ export function ImportReviewWorkspace({
   const [text, setText] = useState("");
   const [url, setUrl] = useState("");
   const [mode, setMode] = useState<"text" | "url" | "binary">("text");
-  const [state, dispatch] = useReducer(importWorkspaceReducer, { status: "idle" });
+  const [state, dispatch] = useReducer(importWorkspaceReducer, initialImportWorkspaceState);
   const [binaryState, binaryDispatch] = useReducer(binaryImportReducer, { status: "idle" });
   const [documentExtraction, setDocumentExtraction] = useState<
     | { status: "idle" }
@@ -68,6 +70,31 @@ export function ImportReviewWorkspace({
     tripPersistence.status === "saved" || tripPersistence.status === "draft"
       ? tripPersistence.tripId
       : null;
+  const capabilityView = buildImportCapabilityViewModel(state.capability);
+  const unavailableKinds = (["image", "pdf"] as const).filter((kind) => capabilityView.forms[kind].disabled);
+
+  useEffect(() => {
+    if (!savedTripId) {
+      return;
+    }
+    const controller = new AbortController();
+    dispatch({ type: "capabilities_loading" });
+    void fetchImportCapabilities(savedTripId, controller.signal).then((response) => {
+      if (controller.signal.aborted) {
+        return;
+      }
+      if (response.ok) {
+        dispatch({ type: "capabilities_ready", snapshot: response.data });
+        return;
+      }
+      dispatch({
+        type: "capabilities_error",
+        code: response.code ?? "import_capabilities_fetch_failed",
+        message: response.message,
+      });
+    });
+    return () => controller.abort();
+  }, [savedTripId]);
 
   useEffect(() => {
     return () => {
@@ -154,6 +181,10 @@ export function ImportReviewWorkspace({
   }
 
   async function handleSubmit() {
+    if (capabilityView.forms.text.disabled) {
+      dispatch({ type: "error", code: "import_form_unavailable", message: capabilityView.forms.text.reasonMessages.join(" "), recoverable: true });
+      return;
+    }
     if (!savedTripId) {
       dispatch({
         type: "error",
@@ -189,6 +220,10 @@ export function ImportReviewWorkspace({
   }
 
   async function handleSubmitUrl() {
+    if (capabilityView.forms.url.disabled) {
+      dispatch({ type: "error", code: "import_form_unavailable", message: capabilityView.forms.url.reasonMessages.join(" "), recoverable: true });
+      return;
+    }
     if (!savedTripId) {
       dispatch({
         type: "error",
@@ -239,6 +274,15 @@ export function ImportReviewWorkspace({
       return;
     }
     if (binaryState.status !== "selected") {
+      return;
+    }
+    if (capabilityView.forms[binaryState.declaredKind].disabled) {
+      binaryDispatch({
+        type: "error",
+        code: "import_form_unavailable",
+        message: capabilityView.forms[binaryState.declaredKind].reasonMessages.join(" "),
+        recoverable: true,
+      });
       return;
     }
     binaryDispatch({ type: "uploading" });
@@ -526,13 +570,13 @@ export function ImportReviewWorkspace({
 
       <div style={{ display: "grid", gap: 10 }}>
         <div style={segmentStyle} role="tablist" aria-label="Import source type">
-          <button type="button" onClick={() => setMode("text")} style={mode === "text" ? segmentActiveStyle : segmentButtonStyle}>
+          <button type="button" onClick={() => setMode("text")} disabled={capabilityView.forms.text.disabled} style={mode === "text" ? segmentActiveStyle : segmentButtonStyle}>
             Text
           </button>
-          <button type="button" onClick={() => setMode("url")} style={mode === "url" ? segmentActiveStyle : segmentButtonStyle}>
+          <button type="button" onClick={() => setMode("url")} disabled={capabilityView.forms.url.disabled} style={mode === "url" ? segmentActiveStyle : segmentButtonStyle}>
             URL
           </button>
-          <button type="button" onClick={() => setMode("binary")} style={mode === "binary" ? segmentActiveStyle : segmentButtonStyle}>
+          <button type="button" onClick={() => setMode("binary")} disabled={capabilityView.forms.image.disabled && capabilityView.forms.pdf.disabled} style={mode === "binary" ? segmentActiveStyle : segmentButtonStyle}>
             Image / PDF
           </button>
         </div>
@@ -541,7 +585,7 @@ export function ImportReviewWorkspace({
             value={text}
             onChange={(event) => setText(event.target.value)}
             placeholder="Paste a guide, note, or group-chat excerpt."
-            disabled={!savedTripId || state.status === "submitting"}
+            disabled={!savedTripId || state.status === "submitting" || capabilityView.forms.text.disabled}
             style={textareaStyle}
           />
         ) : mode === "url" ? (
@@ -549,14 +593,16 @@ export function ImportReviewWorkspace({
             value={url}
             onChange={(event) => setUrl(event.target.value)}
             placeholder="https://example.com/travel-guide"
-            disabled={!savedTripId || state.status === "submitting"}
+            disabled={!savedTripId || state.status === "submitting" || capabilityView.forms.url.disabled}
             style={inputStyle}
           />
         ) : (
           <BinaryImportComposer
             state={binaryState}
             inputRef={binaryInputRef}
-            disabled={!savedTripId || binaryState.status === "uploading"}
+            disabled={!savedTripId || binaryState.status === "uploading" || unavailableKinds.length === 2}
+            disabledKinds={unavailableKinds}
+            disabledMessageForKind={(kind) => capabilityView.forms[kind].reasonMessages.join(" ")}
             onFileSelected={(file, declaredKind) => binaryDispatch({ type: "select", file, declaredKind })}
             onUpload={() => void handleBinaryUpload()}
             onReset={() => {
@@ -579,7 +625,7 @@ export function ImportReviewWorkspace({
             <button
               type="button"
               onClick={() => void (mode === "text" ? handleSubmit() : handleSubmitUrl())}
-              disabled={!savedTripId || state.status === "submitting" || (mode === "text" ? !text.trim() : !normalizedUrl || Boolean(urlValidation))}
+              disabled={!savedTripId || state.status === "submitting" || (mode === "text" ? capabilityView.forms.text.disabled || !text.trim() : capabilityView.forms.url.disabled || !normalizedUrl || Boolean(urlValidation))}
               style={primaryButtonStyle}
             >
               {state.status === "submitting" ? "Importing..." : mode === "text" ? "Import text" : "Import URL"}
@@ -587,6 +633,20 @@ export function ImportReviewWorkspace({
           </div>
         </div> : null}
         {mode === "url" && urlValidation ? <p style={errorStyle}>{urlValidation}</p> : null}
+      </div>
+
+      <div style={capabilityListStyle} data-import-capabilities aria-live="polite">
+        {(["text", "url", "image", "pdf"] as const).map((form) => {
+          const capability = capabilityView.forms[form];
+          return (
+            <div key={form} style={capabilityItemStyle} data-import-capability-form={form}>
+              <strong>{form.toUpperCase()}</strong>
+              <span>{capability.availabilityLabel}</span>
+              {capability.reasonMessages.map((message, index) => <span key={`${form}-${capability.reasonCodes[index]}`} style={hintStyle}>{message}</span>)}
+            </div>
+          );
+        })}
+        {capabilityView.statusMessage ? <p style={hintStyle}>{capabilityView.statusMessage}</p> : null}
       </div>
 
       {!savedTripId ? (
@@ -1180,6 +1240,8 @@ const eyebrowStyle = { margin: 0, fontSize: 11, fontWeight: 900, color: "#6c7f5f
 const titleStyle = { margin: "3px 0 0", fontSize: 18, color: "var(--ec-ink)" } satisfies CSSProperties;
 const hintStyle = { fontSize: 12, color: "var(--ec-slate)" } satisfies CSSProperties;
 const statusPillStyle = { ...hintStyle, padding: "5px 8px", borderRadius: 999, background: "rgba(21,21,21,0.05)" } satisfies CSSProperties;
+const capabilityListStyle = { display: "grid", gap: 6, padding: 10, borderRadius: 12, border: "1px solid rgba(21,21,21,0.1)", background: "rgba(255,255,255,0.62)" } satisfies CSSProperties;
+const capabilityItemStyle = { display: "grid", gridTemplateColumns: "54px 88px minmax(0, 1fr)", gap: 8, alignItems: "baseline", fontSize: 12, color: "var(--ec-slate)" } satisfies CSSProperties;
 const textareaStyle = { width: "100%", minHeight: 116, resize: "vertical", borderRadius: 12, border: "1px solid rgba(21,21,21,0.12)", padding: 12, font: "inherit", lineHeight: 1.5, background: "white", color: "var(--ec-ink)" } satisfies CSSProperties;
 const inputStyle = { width: "100%", borderRadius: 12, border: "1px solid rgba(21,21,21,0.12)", padding: 12, font: "inherit", lineHeight: 1.5, background: "white", color: "var(--ec-ink)" } satisfies CSSProperties;
 const segmentStyle = { display: "inline-flex", width: "fit-content", padding: 3, gap: 2, borderRadius: 999, background: "rgba(21,21,21,0.06)" } satisfies CSSProperties;

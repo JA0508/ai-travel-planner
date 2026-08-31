@@ -8,6 +8,8 @@ type BinaryImportComposerProps = {
   state: BinaryImportState;
   inputRef: RefObject<HTMLInputElement | null>;
   disabled: boolean;
+  disabledKinds?: readonly ("image" | "pdf")[];
+  disabledMessageForKind?: (kind: "image" | "pdf") => string;
   onFileSelected: (file: File, declaredKind: "image" | "pdf") => void;
   onUpload: () => void;
   onReset: () => void;
@@ -18,6 +20,8 @@ export function BinaryImportComposer({
   state,
   inputRef,
   disabled,
+  disabledKinds = [],
+  disabledMessageForKind,
   onFileSelected,
   onUpload,
   onReset,
@@ -30,6 +34,10 @@ export function BinaryImportComposer({
     const declaredKind = binaryImportKindForFile(file);
     if (!declaredKind) {
       onError("import_binary_type_unsupported", "Only PDF, JPEG, PNG, and static WebP artifacts are supported.");
+      return;
+    }
+    if (disabled || disabledKinds.includes(declaredKind)) {
+      onError("import_form_unavailable", disabledMessageForKind?.(declaredKind) ?? "This import method is unavailable.");
       return;
     }
     onFileSelected(file, declaredKind);
@@ -45,23 +53,31 @@ export function BinaryImportComposer({
       <input
         ref={inputRef}
         type="file"
-        accept="application/pdf,image/jpeg,image/png,image/webp"
+        accept={acceptedMimeTypes(disabledKinds)}
+        disabled={disabled}
         onChange={(event) => handleFile(event.target.files?.[0])}
         style={{ display: "none" }}
       />
       <div
         role="button"
-        tabIndex={0}
+        tabIndex={disabled ? -1 : 0}
         onDrop={handleDrop}
         onDragOver={(event) => event.preventDefault()}
-        onClick={() => inputRef.current?.click()}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
+        onClick={() => {
+          if (!disabled) {
             inputRef.current?.click();
           }
         }}
-        style={dropZoneStyle}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            if (!disabled) {
+              inputRef.current?.click();
+            }
+          }
+        }}
+        style={{ ...dropZoneStyle, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.58 : 1 }}
         aria-label="Select image or PDF artifact"
+        aria-disabled={disabled}
       >
         <strong style={{ color: "var(--ec-ink)", fontSize: 13 }}>Drop or select an image / PDF artifact</strong>
         <span style={hintStyle}>PDF, JPEG, PNG, static WebP · private quarantine · no OCR in this step</span>
@@ -88,6 +104,17 @@ export function BinaryImportComposer({
       </div>
     </div>
   );
+}
+
+function acceptedMimeTypes(disabledKinds: readonly ("image" | "pdf")[]): string {
+  const accepted: string[] = [];
+  if (!disabledKinds.includes("pdf")) {
+    accepted.push("application/pdf");
+  }
+  if (!disabledKinds.includes("image")) {
+    accepted.push("image/jpeg", "image/png", "image/webp");
+  }
+  return accepted.join(",");
 }
 
 const hintStyle = { fontSize: 12, color: "var(--ec-slate)" } satisfies CSSProperties;

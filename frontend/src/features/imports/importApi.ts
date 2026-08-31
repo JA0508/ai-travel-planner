@@ -1,6 +1,19 @@
 import { getTripJson, postTripJson, type TripApiResult } from "@/components/trip/tripApiClient";
-import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
-import type { BinaryImportCreateResponse, BinaryInspectionView, DocumentExtractionCreateResponse, DocumentExtractionEvidenceResponse, ImportCommitResult, ImportReviewResponse, TextImportCreateResponse, URLImportCreateResponse } from "./importTypes";
+import { getTripApiBaseUrl, TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
+import type { BinaryImportCreateResponse, BinaryInspectionView, DocumentExtractionCreateResponse, DocumentExtractionEvidenceResponse, ImportCapabilityPack, ImportCommitResult, ImportReviewResponse, TextImportCreateResponse, URLImportCreateResponse } from "./importTypes";
+
+export async function fetchImportCapabilities(tripId: string, signal?: AbortSignal) {
+  return getTripJson<ImportCapabilityPack>(
+    importCapabilitiesEndpoint(tripId),
+    "检查导入能力失败",
+    undefined,
+    { signal },
+  );
+}
+
+function importCapabilitiesEndpoint(tripId: string): string {
+  return `${getTripApiBaseUrl()}/trips/${encodeURIComponent(tripId)}/imports/capabilities`;
+}
 
 export async function submitTextImport(tripId: string, text: string, idempotencyKey: string) {
   return postTripJson<TextImportCreateResponse>(

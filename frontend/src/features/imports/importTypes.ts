@@ -29,6 +29,23 @@ export type ImportJob = {
   updated_at: string;
 };
 
+export type ImportForm = "text" | "url" | "image" | "pdf";
+
+export type ImportCapabilityAvailability = "available" | "degraded" | "unavailable";
+
+export type ImportFormCapability = {
+  form: ImportForm;
+  availability: ImportCapabilityAvailability;
+  reason_codes: string[];
+  processing_stages: string[];
+  safety_boundary_codes: string[];
+};
+
+export type ImportCapabilityPack = {
+  schema_version: string;
+  forms: ImportFormCapability[];
+};
+
 export type ResolvedPlaceCandidate = {
   id: string;
   mention_id: string;

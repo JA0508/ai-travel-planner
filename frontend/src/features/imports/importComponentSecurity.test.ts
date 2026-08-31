@@ -7,6 +7,7 @@ const componentPath = fileURLToPath(new URL("./ImportReviewWorkspace.tsx", impor
 const importApiPath = fileURLToPath(new URL("./importApi.ts", import.meta.url));
 const binaryResultPath = fileURLToPath(new URL("./BinaryInspectionResult.tsx", import.meta.url));
 const binaryStatePath = fileURLToPath(new URL("./binaryImportState.ts", import.meta.url));
+const capabilityModelPath = fileURLToPath(new URL("./importCapabilityViewModel.ts", import.meta.url));
 
 test("url import workspace does not add iframe or raw html rendering paths", () => {
   const source = readFileSync(componentPath, "utf-8") + readFileSync(binaryResultPath, "utf-8");
@@ -63,4 +64,19 @@ test("intent evidence focus reuses the private import review workspace", () => {
   assert.match(source, /fetchImportReview\(savedTripId, detail\.importJobId\)/);
   assert.match(source, /fetchDocumentExtractionEvidence\(savedTripId, detail\.importJobId\)/);
   assert.equal(source.includes("dangerouslySetInnerHTML"), false);
+});
+
+test("capability-aware intake uses the private capability endpoint without persisting capability data", () => {
+  const source = readFileSync(componentPath, "utf-8");
+  const apiSource = readFileSync(importApiPath, "utf-8");
+  const modelSource = readFileSync(capabilityModelPath, "utf-8");
+  assert.match(source, /data-import-capabilities/);
+  assert.match(source, /capabilityView\.forms\.text\.disabled/);
+  assert.match(source, /capabilityView\.forms\.url\.disabled/);
+  assert.match(source, /disabledKinds=\{unavailableKinds\}/);
+  assert.match(readFileSync(fileURLToPath(new URL("./BinaryImportComposer.tsx", import.meta.url)), "utf-8"), /tabIndex=\{disabled \? -1 : 0\}/);
+  assert.match(apiSource, /\/imports\/capabilities/);
+  assert.match(modelSource, /"text", "url", "image", "pdf"/);
+  assert.equal(modelSource.includes("localStorage"), false);
+  assert.equal(modelSource.includes("process.env"), false);
 });

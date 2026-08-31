@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { importIdempotencyKey, importWorkspaceReducer } from "./importState";
+import { importIdempotencyKey, importWorkspaceReducer, initialImportWorkspaceState } from "./importState";
 
 test("import workspace reducer keeps a single discriminated state owner", () => {
-  const submitting = importWorkspaceReducer({ status: "idle" }, { type: "submit" });
+  const submitting = importWorkspaceReducer(initialImportWorkspaceState, { type: "submit" });
   assert.equal(submitting.status, "submitting");
 
   const review = importWorkspaceReducer(submitting, {
@@ -80,7 +80,7 @@ test("idempotency key is safe for browser headers and does not leak raw source t
 });
 
 test("url import review state keeps provenance in the same reducer owner", () => {
-  const review = importWorkspaceReducer({ status: "submitting" }, {
+  const review = importWorkspaceReducer({ status: "submitting", capability: { status: "idle" } }, {
     type: "review",
     artifact: {
       id: "src_derived",
@@ -137,6 +137,27 @@ test("url import review state keeps provenance in the same reducer owner", () =>
   assert.equal(review.status, "reviewing");
   assert.equal(review.job.input_type, "url");
   assert.equal(review.sourceFetch?.id, "fetch_1");
+});
+
+test("capability loading, snapshot, and error states stay under the import workspace reducer", () => {
+  const loading = importWorkspaceReducer(initialImportWorkspaceState, { type: "capabilities_loading" });
+  const ready = importWorkspaceReducer(loading, {
+    type: "capabilities_ready",
+    snapshot: {
+      schema_version: "1.0",
+      forms: [{ form: "text", availability: "available", reason_codes: [], processing_stages: [], safety_boundary_codes: [] }],
+    },
+  });
+  const failed = importWorkspaceReducer(ready, {
+    type: "capabilities_error",
+    code: "capability_fetch_failed",
+    message: "Capability check failed.",
+  });
+
+  assert.equal(loading.capability.status, "loading");
+  assert.equal(ready.capability.status, "ready");
+  assert.equal(failed.capability.status, "error");
+  assert.equal(failed.status, "idle");
 });
 
 test("url idempotency key is ascii and does not expose raw url", () => {
