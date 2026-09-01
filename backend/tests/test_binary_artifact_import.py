@@ -18,6 +18,11 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from app.imports.binary_detection import has_conflicting_container
 from app.imports.dependencies import reset_import_dependencies_for_tests
 from app.imports.binary_upload import stream_upload_to_staging
+from app.imports.document_extraction_runner import (
+    WorkerDocumentExtractionResult,
+    WorkerDocumentPage,
+    WorkerDocumentSpan,
+)
 from app.imports.inspection_runner import ArtifactInspectionRunner
 from app.imports.repository import SQLiteImportRepository
 from app.imports.service import safe_document_extraction_metadata
@@ -453,6 +458,76 @@ class BinaryArtifactImportTests(unittest.TestCase):
             [revision["id"] for revision in client.get(f"/trips/{trip_id}/revisions").json()["revisions"]],
         )
 
+    def test_image_review_commit_reuses_document_candidate_and_preserves_trip_revision(self) -> None:
+        client, trip_id = create_saved_trip()
+        uploaded = upload_binary(client, trip_id, valid_image("PNG"), "image", "guide.png", "image/png")
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        uploaded_body = uploaded.json()
+        before_revisions = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+
+        with patch(
+            "app.imports.service.DocumentExtractionRunner.extract",
+            return_value=image_ocr_review_result(),
+        ):
+            extracted = client.post(
+                f"/trips/{trip_id}/imports/{uploaded_body['job']['id']}/extract-document",
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "extract-image-review"},
+            )
+
+        self.assertEqual(extracted.status_code, 201, extracted.text)
+        body = extracted.json()
+        self.assertEqual(body["job"]["input_type"], "document")
+        self.assertIn(body["job"]["status"], {"review_ready", "partial"})
+        self.assertEqual(body["generation"]["strategy"], "image_ocr")
+        self.assertEqual(body["generation"]["source_artifact_id"], uploaded_body["artifact"]["id"])
+        self.assertEqual(body["derivation"]["parent_artifact_id"], uploaded_body["inspection"]["sanitized_artifact_id"])
+        mention = next(item for item in body["mentions"] if item["entity_type"] == "place")
+
+        decision = client.post(
+            f"/trips/{trip_id}/imports/{body['job']['id']}/mentions/{mention['id']}/decisions",
+            json={
+                "base_review_version": body["job"]["review_version"],
+                "action": "confirm",
+                "selected_resolution_candidate_id": mention["selected_resolution_candidate_id"],
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "confirm-image-review"},
+        )
+        self.assertEqual(decision.status_code, 200, decision.text)
+        review_version = decision.json()["job"]["review_version"]
+
+        stale = client.post(
+            f"/trips/{trip_id}/imports/{body['job']['id']}/commit",
+            json={"base_review_version": body["job"]["review_version"]},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "commit-image-stale"},
+        )
+        self.assertEqual(stale.status_code, 409)
+        self.assertEqual(stale.json()["error"]["code"], "stale_import_review")
+
+        committed = client.post(
+            f"/trips/{trip_id}/imports/{body['job']['id']}/commit",
+            json={"base_review_version": review_version},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "commit-image-review"},
+        )
+        self.assertEqual(committed.status_code, 200, committed.text)
+        self.assertEqual(committed.json()["place_candidates_created"], 1)
+        self.assertEqual(
+            [revision["id"] for revision in before_revisions],
+            [revision["id"] for revision in client.get(f"/trips/{trip_id}/revisions").json()["revisions"]],
+        )
+        candidates = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["source_kind"], "document_import")
+        self.assertTrue(candidates[0]["evidence_refs"])
+
+        replay = client.post(
+            f"/trips/{trip_id}/imports/{body['job']['id']}/commit",
+            json={"base_review_version": review_version},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "commit-image-review"},
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/candidates").json()["candidates"]), 1)
+
     def test_tesseract_production_capabilities_are_available_when_ci_requires_ocr(self) -> None:
         if not production_ocr_required():
             self.skipTest("production OCR capability proof is required only in CI")
@@ -555,6 +630,46 @@ def upload_binary(
 
 def production_ocr_required() -> bool:
     return os.getenv("REQUIRE_PRODUCTION_OCR_SMOKE") == "1"
+
+
+def image_ocr_review_result() -> WorkerDocumentExtractionResult:
+    return WorkerDocumentExtractionResult(
+        schema_version="1.0",
+        extractor_version="test-image-ocr",
+        strategy="image_ocr",
+        status="review_ready",
+        normalized_text="景点：豫园",
+        page_count=1,
+        spans=[
+            WorkerDocumentSpan(
+                span_start=3,
+                span_end=5,
+                page_number=1,
+                block_index=0,
+                line_index=0,
+                token_index=0,
+                block_id="block-1",
+                line_id="line-1",
+                token_id="token-1",
+                reading_order=0,
+                bbox={"x": 0.1, "y": 0.2, "width": 0.2, "height": 0.1, "origin": "top-left", "unit": "normalized"},
+                source_kind="ocr_token",
+                confidence=0.99,
+            )
+        ],
+        layout_manifest={"reading_order_algorithm": "layout-reading-order-v2", "coordinate_space": {"unit": "normalized"}},
+        span_map=[],
+        pages=[
+            WorkerDocumentPage(
+                page_number=1,
+                extraction_method="image_ocr",
+                status="extracted",
+                text_chars=5,
+                span_count=1,
+                metadata={"image_width": 24, "image_height": 16},
+            )
+        ],
+    )
 
 
 def valid_image(fmt: str) -> bytes:
