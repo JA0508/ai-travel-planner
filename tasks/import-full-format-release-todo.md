@@ -4,7 +4,7 @@
 - [x] Batch 01 — 服务端 Import Capability Pack 合同
 - [x] Batch 02 — 前端 Capability-Aware Unified Import Intake
 - [x] Batch 03 — 全形式 Review → Candidate 闭环一致性
-- [ ] Batch 04 — 四形式 API 与评测 Release Gate
+- [x] Batch 04 — 四形式 API 与评测 Release Gate
 - [ ] Batch 05 — 浏览器 Release Gate、Runbook 与发布记录
 
 ## 调度记录
@@ -15,5 +15,5 @@
 | 01 | 01a05029-e292-7e32-bd3c-84900bcff739 | completed | 本地 Batch 01 提交 | 2026-08-30 | 服务端 capability pack、Trip capability 只读 endpoint、contract/redaction tests；未改 upload、fetch、extraction、review 或前端 |
 | 02 | 01a05310-3160-7fb1-825d-5d02b22acc3f | completed | 本地 Batch 02 提交 | 2026-08-31 | 前端 capability-aware intake、四形式禁用/降级语义与 focused tests；未改后端、review 闭环或二进制流程 |
 | 03 | 01a05a62-45b3-7852-be4e-a19919ff498f | completed | 本地 Batch 03 提交 | 2026-09-01 | 补齐 image 经检查、OCR 派生、review、candidate commit/replay 的回归闭环；未改生产导入架构或发布门禁 |
-| 04 | — | blocked by 03 | — | — | — |
+| 04 | 01a0330d-a0ed-7362-a6e4-1970602a401d | completed | 本地 Batch 04 提交 | 2026-09-02 | 本地 API/evaluation release gate：四形式正常闭环、URL 安全拒绝、image OCR unavailable、PDF partial/retry、stale 与 idempotency；68 fixtures / 8 gate cases，未改生产导入链路、浏览器或最终发布记录。 |
 | 05 | — | blocked by 04 | — | — | — |

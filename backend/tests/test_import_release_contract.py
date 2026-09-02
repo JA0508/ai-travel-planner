@@ -42,13 +42,24 @@ class ImportReleaseContractManifestTest(unittest.TestCase):
 
         self.assertEqual(
             self.manifest["summary"]["total_fixture_count"],
-            sum(len(collection) for collection in collections.values()),
+            sum(len(collection) for collection in collections.values()) + self.manifest["summary"]["image_review_release_fixture_count"],
         )
         self.assertEqual(self.manifest["summary"]["invariant_count"], len(run_import_evaluation.INVARIANTS))
         self.assertEqual(
             self.manifest["summary"]["document_extraction_invariant_count"],
             len([invariant for invariant in run_import_evaluation.INVARIANTS if invariant.startswith("DOCUMENT_")]),
         )
+        manifest_cases = {case["name"]: case for case in self.manifest["release_gate_cases"]}
+        evaluator_cases = {case.name: case for case in run_import_evaluation.RELEASE_GATE_CASES}
+        self.assertEqual(set(manifest_cases), set(evaluator_cases))
+        for name, evaluator_case in evaluator_cases.items():
+            manifest_case = manifest_cases[name]
+            self.assertEqual(manifest_case["form"], evaluator_case.form)
+            self.assertEqual(manifest_case["stage"], evaluator_case.stage)
+            self.assertEqual(manifest_case["fixture"], evaluator_case.fixture)
+            self.assertEqual(manifest_case["required_invariants"], list(evaluator_case.required_invariants))
+            self.assertEqual(manifest_case.get("expected_reason_code"), evaluator_case.expected_reason_code)
+            self.assertEqual(manifest_case.get("expected_document_status"), evaluator_case.expected_document_status)
 
     def test_manifest_points_to_existing_contracts_tests_and_current_endpoints(self) -> None:
         for relative_path in self.manifest["contract_documents"]:
@@ -65,10 +76,11 @@ class ImportReleaseContractManifestTest(unittest.TestCase):
         self.assertIn("backend/tests/fixtures/import_release_manifest.json", release_doc)
         self.assertIn("Batch 00 没有新增 schema、endpoint、环境探测或前端读取逻辑", capability_doc)
 
-    def test_manifest_preserves_batch_00_scope_and_privacy_boundary(self) -> None:
-        self.assertEqual(self.manifest["status"], "baseline_contract_only")
-        self.assertEqual({gate["status"] for gate in self.manifest["release_gate_commands"]}, {"required_baseline", "ci_baseline"})
-        self.assertEqual(self.manifest["future_release_gate_owner"], "Batch 04")
+    def test_manifest_preserves_release_gate_scope_and_privacy_boundary(self) -> None:
+        self.assertEqual(self.manifest["batch"], "04")
+        self.assertEqual(self.manifest["status"], "api_evaluation_release_gate")
+        self.assertEqual({gate["status"] for gate in self.manifest["release_gate_commands"]}, {"required_release_gate", "ci_release_gate"})
+        self.assertEqual(self.manifest["summary"]["release_gate_case_count"], len(run_import_evaluation.RELEASE_GATE_CASES))
 
         forbidden_terms = " ".join(self.manifest["must_not_expose"])
         self.assertIn("raw source content", forbidden_terms)

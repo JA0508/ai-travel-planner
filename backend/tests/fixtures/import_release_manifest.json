@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "batch": "00",
-  "status": "baseline_contract_only",
-  "scope": "Release contract, capability matrix baseline, and import fixture index. No production API, business logic, or UI behavior is changed by this manifest.",
+  "batch": "04",
+  "status": "api_evaluation_release_gate",
+  "scope": "Local fixture-backed API and evaluation release gate. It verifies the existing import pipelines without external requests, real user files, secrets, production behavior changes, browser coverage, or a final release declaration.",
   "contract_documents": [
     "docs/product/IMPORT_FULL_FORMAT_RELEASE.md",
     "docs/architecture/IMPORT_CAPABILITY_PACK_CONTRACT.md",
@@ -31,7 +31,7 @@
         "idempotency",
         "source-as-data"
       ],
-      "release_gate_status": "baseline_only"
+      "release_gate_status": "api_evaluation_gated"
     },
     {
       "form": "url",
@@ -51,7 +51,7 @@
         "dynamic page rejection",
         "SSRF/DNS controls"
       ],
-      "release_gate_status": "baseline_only"
+      "release_gate_status": "api_evaluation_gated"
     },
     {
       "form": "image",
@@ -71,7 +71,7 @@
         "OCR unavailable semantics",
         "private binary boundary"
       ],
-      "release_gate_status": "baseline_only"
+      "release_gate_status": "api_evaluation_gated"
     },
     {
       "form": "pdf",
@@ -91,13 +91,15 @@
         "partial extraction semantics",
         "document review commit boundary"
       ],
-      "release_gate_status": "baseline_only"
+      "release_gate_status": "api_evaluation_gated"
     }
   ],
   "summary": {
-    "total_fixture_count": 67,
+    "total_fixture_count": 68,
+    "image_review_release_fixture_count": 1,
     "invariant_count": 121,
-    "document_extraction_invariant_count": 35
+    "document_extraction_invariant_count": 35,
+    "release_gate_case_count": 8
   },
   "fixture_collections": [
     {
@@ -134,17 +136,108 @@
   "release_gate_commands": [
     {
       "name": "focused backend import tests",
-      "command": "cd backend && ./.venv/bin/python -m unittest tests.test_import_release_contract tests.test_text_import_foundation tests.test_url_import_security tests.test_binary_artifact_import",
-      "status": "required_baseline"
+      "command": "cd backend && ./.venv/bin/python -m unittest tests.test_import_release_contract tests.test_import_release_gate tests.test_text_import_foundation tests.test_url_import_security tests.test_binary_artifact_import",
+      "status": "required_release_gate"
     },
     {
       "name": "import evaluator",
       "command": "cd backend && ./.venv/bin/python -m tools.run_import_evaluation --ci",
-      "status": "ci_baseline",
+      "status": "ci_release_gate",
       "ci_job": "backend / Import evaluation"
     }
   ],
-  "future_release_gate_owner": "Batch 04",
+  "release_gate_cases": [
+    {
+      "name": "text_review_commit",
+      "form": "text",
+      "stage": "review_commit",
+      "fixture": "commit_confirmed_only",
+      "required_invariants": [
+        "ONLY_CONFIRMED_PLACES_COMMITTED",
+        "IMPORT_COMMIT_CREATES_NO_TRIP_REVISION",
+        "IMPORT_COMMIT_IDEMPOTENT",
+        "TRIP_CANDIDATE_PROVENANCE_TRACEABLE"
+      ]
+    },
+    {
+      "name": "text_stale_review_rejected",
+      "form": "text",
+      "stage": "review_version",
+      "fixture": "stale_review_conflict",
+      "required_invariants": [
+        "STALE_REVIEW_REJECTED",
+        "REVIEW_DECISIONS_APPEND_ONLY"
+      ]
+    },
+    {
+      "name": "url_review_commit",
+      "form": "url",
+      "stage": "review_commit",
+      "fixture": "url_commit_boundary",
+      "required_invariants": [
+        "ONLY_CONFIRMED_PLACES_COMMITTED",
+        "IMPORT_COMMIT_CREATES_NO_TRIP_REVISION",
+        "URL_CANDIDATE_PROVENANCE_TRACEABLE"
+      ]
+    },
+    {
+      "name": "url_private_destination_rejected",
+      "form": "url",
+      "stage": "url_policy",
+      "fixture": "url_loopback_ipv4",
+      "required_invariants": ["PRIVATE_DESTINATION_BLOCKED"],
+      "expected_reason_code": "import_url_destination_blocked"
+    },
+    {
+      "name": "image_review_commit",
+      "form": "image",
+      "stage": "review_commit",
+      "fixture": "image_ocr_review_to_candidate",
+      "required_invariants": [
+        "DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE",
+        "STALE_REVIEW_REJECTED",
+        "IMPORT_COMMIT_CREATES_NO_TRIP_REVISION",
+        "IMPORT_COMMIT_IDEMPOTENT",
+        "DOCUMENT_IMPORT_CANDIDATE_PROVENANCE_TRACEABLE"
+      ]
+    },
+    {
+      "name": "image_ocr_unavailable",
+      "form": "image",
+      "stage": "document_extraction",
+      "fixture": "document_image_ocr_unavailable_explicit",
+      "required_invariants": [
+        "DOCUMENT_EXTRACTION_NO_SILENT_OCR_FALLBACK",
+        "BINARY_IMPORT_CREATES_NO_CANDIDATE",
+        "BINARY_IMPORT_CREATES_NO_TRIP_REVISION"
+      ],
+      "expected_reason_code": "import_document_ocr_unavailable"
+    },
+    {
+      "name": "pdf_review_commit",
+      "form": "pdf",
+      "stage": "review_commit",
+      "fixture": "document_pdf_native_text_to_review",
+      "required_invariants": [
+        "DOCUMENT_EXTRACTION_NATIVE_TEXT_FIRST",
+        "DOCUMENT_REVIEW_COMMIT_EXPLICIT",
+        "IMPORT_COMMIT_CREATES_NO_TRIP_REVISION",
+        "DOCUMENT_IMPORT_CANDIDATE_PROVENANCE_TRACEABLE"
+      ]
+    },
+    {
+      "name": "pdf_partial_page_retry",
+      "form": "pdf",
+      "stage": "document_extraction",
+      "fixture": "document_pdf_partial_page_retry",
+      "required_invariants": [
+        "DOCUMENT_PARTIAL_FAILURE_EXPLICIT",
+        "DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION",
+        "DOCUMENT_PAGE_RETRY_HAS_BASE_GENERATION"
+      ],
+      "expected_document_status": "partial"
+    }
+  ],
   "must_not_expose": [
     "raw source content",
     "uploaded bytes",

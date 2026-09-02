@@ -15,6 +15,11 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.imports.dependencies import reset_import_dependencies_for_tests
+from app.imports.document_extraction_runner import (
+    WorkerDocumentExtractionResult,
+    WorkerDocumentPage,
+    WorkerDocumentSpan,
+)
 from app.main import app
 from app.trips.dependencies import reset_trip_repository_cache_for_tests
 from tests.test_trip_persistence_api import simple_itinerary
@@ -62,6 +67,17 @@ class DocumentExtractionFixture:
     expected_places_min: int
     expected_strategy: str
     commit_confirmed_only: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseGateCase:
+    name: str
+    form: str
+    stage: str
+    fixture: str
+    required_invariants: tuple[str, ...]
+    expected_reason_code: str | None = None
+    expected_document_status: str | None = None
 
 
 FIXTURES = [
@@ -176,6 +192,97 @@ DOCUMENT_EXTRACTION_FIXTURES = [
         expected_strategy="pdf_native_text",
     ),
 ]
+
+
+RELEASE_GATE_CASES = (
+    ReleaseGateCase(
+        name="text_review_commit",
+        form="text",
+        stage="review_commit",
+        fixture="commit_confirmed_only",
+        required_invariants=(
+            "ONLY_CONFIRMED_PLACES_COMMITTED",
+            "IMPORT_COMMIT_CREATES_NO_TRIP_REVISION",
+            "IMPORT_COMMIT_IDEMPOTENT",
+            "TRIP_CANDIDATE_PROVENANCE_TRACEABLE",
+        ),
+    ),
+    ReleaseGateCase(
+        name="text_stale_review_rejected",
+        form="text",
+        stage="review_version",
+        fixture="stale_review_conflict",
+        required_invariants=("STALE_REVIEW_REJECTED", "REVIEW_DECISIONS_APPEND_ONLY"),
+    ),
+    ReleaseGateCase(
+        name="url_review_commit",
+        form="url",
+        stage="review_commit",
+        fixture="url_commit_boundary",
+        required_invariants=(
+            "ONLY_CONFIRMED_PLACES_COMMITTED",
+            "IMPORT_COMMIT_CREATES_NO_TRIP_REVISION",
+            "URL_CANDIDATE_PROVENANCE_TRACEABLE",
+        ),
+    ),
+    ReleaseGateCase(
+        name="url_private_destination_rejected",
+        form="url",
+        stage="url_policy",
+        fixture="url_loopback_ipv4",
+        required_invariants=("PRIVATE_DESTINATION_BLOCKED",),
+        expected_reason_code="import_url_destination_blocked",
+    ),
+    ReleaseGateCase(
+        name="image_review_commit",
+        form="image",
+        stage="review_commit",
+        fixture="image_ocr_review_to_candidate",
+        required_invariants=(
+            "DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE",
+            "STALE_REVIEW_REJECTED",
+            "IMPORT_COMMIT_CREATES_NO_TRIP_REVISION",
+            "IMPORT_COMMIT_IDEMPOTENT",
+            "DOCUMENT_IMPORT_CANDIDATE_PROVENANCE_TRACEABLE",
+        ),
+    ),
+    ReleaseGateCase(
+        name="image_ocr_unavailable",
+        form="image",
+        stage="document_extraction",
+        fixture="document_image_ocr_unavailable_explicit",
+        required_invariants=(
+            "DOCUMENT_EXTRACTION_NO_SILENT_OCR_FALLBACK",
+            "BINARY_IMPORT_CREATES_NO_CANDIDATE",
+            "BINARY_IMPORT_CREATES_NO_TRIP_REVISION",
+        ),
+        expected_reason_code="import_document_ocr_unavailable",
+    ),
+    ReleaseGateCase(
+        name="pdf_review_commit",
+        form="pdf",
+        stage="review_commit",
+        fixture="document_pdf_native_text_to_review",
+        required_invariants=(
+            "DOCUMENT_EXTRACTION_NATIVE_TEXT_FIRST",
+            "DOCUMENT_REVIEW_COMMIT_EXPLICIT",
+            "IMPORT_COMMIT_CREATES_NO_TRIP_REVISION",
+            "DOCUMENT_IMPORT_CANDIDATE_PROVENANCE_TRACEABLE",
+        ),
+    ),
+    ReleaseGateCase(
+        name="pdf_partial_page_retry",
+        form="pdf",
+        stage="document_extraction",
+        fixture="document_pdf_partial_page_retry",
+        required_invariants=(
+            "DOCUMENT_PARTIAL_FAILURE_EXPLICIT",
+            "DOCUMENT_PAGE_RETRY_CREATES_NEW_GENERATION",
+            "DOCUMENT_PAGE_RETRY_HAS_BASE_GENERATION",
+        ),
+        expected_document_status="partial",
+    ),
+)
 
 
 INVARIANTS = [
@@ -357,8 +464,18 @@ def main() -> int:
             if result["failed_invariants"]:
                 failures.append(f"{fixture.name}: {', '.join(result['failed_invariants'])}")
             results.append(result)
+        image_review_result = run_image_review_release_fixture(client, trip_id)
+        if image_review_result["failed_invariants"]:
+            failures.append(f"{image_review_result['fixture']}: {', '.join(image_review_result['failed_invariants'])}")
+        results.append(image_review_result)
 
     document_invariants = [invariant for invariant in INVARIANTS if invariant.startswith("DOCUMENT_")]
+    release_gate = evaluate_release_gate(results)
+    release_gate_failures = [result for result in release_gate if not result["passed"]]
+    failures.extend(
+        f"release_gate form={result['form']} stage={result['stage']} reason={result['reason_code']}"
+        for result in release_gate_failures
+    )
     deterministic_mismatch_count = sum(
         1
         for result in results
@@ -381,10 +498,14 @@ def main() -> int:
         "url_fixture_count": len(URL_FIXTURES),
         "binary_fixture_count": len(BINARY_FIXTURES),
         "document_extraction_fixture_count": len(DOCUMENT_EXTRACTION_FIXTURES),
+        "image_review_release_fixture_count": 1,
         "invariant_count": len(INVARIANTS),
         "document_extraction_invariant_count": len(document_invariants),
         "failure_count": len(failures),
         "deterministic_mismatch_count": deterministic_mismatch_count,
+        "release_gate": release_gate,
+        "release_gate_case_count": len(RELEASE_GATE_CASES),
+        "release_gate_passed": len(release_gate_failures) == 0,
         "runtime_seconds": round(time.perf_counter() - started_at, 3),
     }
     if args.ci:
@@ -394,6 +515,10 @@ def main() -> int:
             failures.append("document extraction invariant count below CI contract")
         if payload["document_extraction_fixture_count"] < 5:
             failures.append("document extraction fixture count below CI contract")
+        if payload["release_gate_case_count"] < 8:
+            failures.append("import release gate case count below CI contract")
+        if not payload["release_gate_passed"]:
+            failures.append("import release gate did not pass")
         payload["passed"] = len(failures) == 0
         payload["failure_count"] = len(failures)
     if args.json:
@@ -409,6 +534,9 @@ def main() -> int:
         print(f"URL import fixtures: {url_count}/{url_count}")
         print(f"Binary import fixtures: {len(BINARY_FIXTURES)}/{len(BINARY_FIXTURES)}")
         print(f"Document extraction fixtures: {len(DOCUMENT_EXTRACTION_FIXTURES)}/{len(DOCUMENT_EXTRACTION_FIXTURES)}")
+        print(f"Import release gate: {len(release_gate) - len(release_gate_failures)}/{len(release_gate)} cases passed")
+        for result in release_gate_failures:
+            print(f"  FAIL form={result['form']} stage={result['stage']} reason={result['reason_code']}")
         print(f"Invariants: {payload['invariant_count']} total · {payload['document_extraction_invariant_count']} document extraction")
     return 0 if not failures else 1
 
@@ -911,6 +1039,8 @@ def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtr
         passed.append("DOCUMENT_OCR_CAPABILITY_REPORTED")
     else:
         failed.append("DOCUMENT_OCR_CAPABILITY_REPORTED")
+    if body["generation"]["status"] == "partial":
+        passed.append("DOCUMENT_PARTIAL_FAILURE_EXPLICIT")
     retryable_pages = [page for page in body.get("pages", []) if page.get("retryable")]
     if retryable_pages:
         retry = client.post(
@@ -984,7 +1114,173 @@ def run_document_fixture(client: TestClient, trip_id: str, fixture: DocumentExtr
         failed=sorted(set(failed)),
         artifact_id=body["artifact"]["id"],
         import_job_id=body["job"]["id"],
+        document_status=body["generation"]["status"],
     )
+
+
+def run_image_review_release_fixture(client: TestClient, trip_id: str) -> dict:
+    fixture_name = "image_ocr_review_to_candidate"
+    passed: list[str] = []
+    failed: list[str] = []
+    uploaded = client.post(
+        f"/trips/{trip_id}/imports/artifacts",
+        data={"declared_kind": "image", "original_label": "release-image.png"},
+        files={"file": ("release-image.png", binary_content("png_alpha"), "image/png")},
+        headers={"Origin": "http://testserver", "X-Idempotency-Key": "eval-release-image-upload"},
+    )
+    if uploaded.status_code != 201:
+        return fixture_result(fixture_name, passed=passed, failed=["DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE"], error_code="import_release_image_upload_failed")
+
+    uploaded_body = uploaded.json()
+    revisions_before = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+    candidates_before = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
+    with patch("app.imports.service.DocumentExtractionRunner.extract", return_value=image_ocr_review_result()):
+        extracted = client.post(
+            f"/trips/{trip_id}/imports/{uploaded_body['job']['id']}/extract-document",
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "eval-release-image-extract"},
+        )
+    if extracted.status_code != 201:
+        return fixture_result(fixture_name, passed=passed, failed=["DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE"], error_code="import_release_image_extraction_failed")
+
+    body = extracted.json()
+    places = [mention for mention in body["mentions"] if mention["entity_type"] == "place"]
+    if body["job"]["input_type"] == "document" and places:
+        passed.append("DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE")
+    else:
+        failed.append("DOCUMENT_IMPORT_REUSES_REVIEW_PIPELINE")
+        return fixture_result(fixture_name, passed=passed, failed=failed, error_code="import_release_image_not_reviewable")
+
+    mention = places[0]
+    decision = decide(
+        client,
+        trip_id,
+        body,
+        mention,
+        mention["selected_resolution_candidate_id"],
+        body["job"]["review_version"],
+        "eval-release-image-confirm",
+    )
+    if decision.status_code != 200:
+        return fixture_result(fixture_name, passed=passed, failed=["ONLY_CONFIRMED_PLACES_COMMITTED"], error_code="import_release_image_decision_failed")
+    review_version = decision.json()["job"]["review_version"]
+
+    stale = client.post(
+        f"/trips/{trip_id}/imports/{body['job']['id']}/commit",
+        json={"base_review_version": body["job"]["review_version"]},
+        headers={"Origin": "http://testserver", "X-Idempotency-Key": "eval-release-image-stale"},
+    )
+    if stale.status_code == 409 and stale.json().get("error", {}).get("code") == "stale_import_review":
+        passed.append("STALE_REVIEW_REJECTED")
+    else:
+        failed.append("STALE_REVIEW_REJECTED")
+
+    committed = client.post(
+        f"/trips/{trip_id}/imports/{body['job']['id']}/commit",
+        json={"base_review_version": review_version},
+        headers={"Origin": "http://testserver", "X-Idempotency-Key": "eval-release-image-commit"},
+    )
+    revisions_after = client.get(f"/trips/{trip_id}/revisions").json()["revisions"]
+    candidates_after = client.get(f"/trips/{trip_id}/candidates").json()["candidates"]
+    if committed.status_code == 200 and [item["id"] for item in revisions_before] == [item["id"] for item in revisions_after]:
+        passed.extend(["ONLY_CONFIRMED_PLACES_COMMITTED", "IMPORT_COMMIT_CREATES_NO_TRIP_REVISION"])
+    else:
+        failed.append("IMPORT_COMMIT_CREATES_NO_TRIP_REVISION")
+    committed_candidate_ids = set(committed.json().get("candidate_ids", [])) if committed.status_code == 200 else set()
+    if any(
+        candidate["id"] in committed_candidate_ids and candidate["source_kind"] == "document_import"
+        for candidate in candidates_after
+    ):
+        passed.append("DOCUMENT_IMPORT_CANDIDATE_PROVENANCE_TRACEABLE")
+    else:
+        failed.append("DOCUMENT_IMPORT_CANDIDATE_PROVENANCE_TRACEABLE")
+
+    replay = client.post(
+        f"/trips/{trip_id}/imports/{body['job']['id']}/commit",
+        json={"base_review_version": review_version},
+        headers={"Origin": "http://testserver", "X-Idempotency-Key": "eval-release-image-commit"},
+    )
+    if replay.status_code == 200 and replay.json().get("idempotent_replay"):
+        passed.append("IMPORT_COMMIT_IDEMPOTENT")
+    else:
+        failed.append("IMPORT_COMMIT_IDEMPOTENT")
+    return fixture_result(fixture_name, passed=sorted(set(passed)), failed=sorted(set(failed)))
+
+
+def image_ocr_review_result() -> WorkerDocumentExtractionResult:
+    return WorkerDocumentExtractionResult(
+        schema_version="1.0",
+        extractor_version="release-gate-image-ocr",
+        strategy="image_ocr",
+        status="review_ready",
+        normalized_text="景点：豫园",
+        page_count=1,
+        spans=[
+            WorkerDocumentSpan(
+                span_start=3,
+                span_end=5,
+                page_number=1,
+                block_index=0,
+                line_index=0,
+                token_index=0,
+                block_id="release-block-1",
+                line_id="release-line-1",
+                token_id="release-token-1",
+                reading_order=0,
+                bbox={"x": 0.1, "y": 0.2, "width": 0.2, "height": 0.1, "origin": "top-left", "unit": "normalized"},
+                source_kind="ocr_token",
+                confidence=0.99,
+            )
+        ],
+        layout_manifest={"reading_order_algorithm": "layout-reading-order-v2", "coordinate_space": {"unit": "normalized"}},
+        span_map=[],
+        pages=[
+            WorkerDocumentPage(
+                page_number=1,
+                extraction_method="image_ocr",
+                status="extracted",
+                text_chars=5,
+                span_count=1,
+                metadata={"image_width": 32, "image_height": 20},
+            )
+        ],
+    )
+
+
+def evaluate_release_gate(fixture_results: list[dict]) -> list[dict]:
+    by_fixture = {result["fixture"]: result for result in fixture_results}
+    gate: list[dict] = []
+    for case in RELEASE_GATE_CASES:
+        result = by_fixture.get(case.fixture)
+        outcome = {
+            "case": case.name,
+            "form": case.form,
+            "stage": case.stage,
+            "fixture": case.fixture,
+            "passed": False,
+            "reason_code": None,
+            "missing_invariants": [],
+        }
+        if result is None:
+            outcome["reason_code"] = "release_gate_fixture_missing"
+            gate.append(outcome)
+            continue
+        missing_invariants = sorted(set(case.required_invariants) - set(result["passed_invariants"]))
+        if result["failed_invariants"] or missing_invariants:
+            outcome["reason_code"] = "release_gate_invariant_failed"
+            outcome["missing_invariants"] = missing_invariants or list(result["failed_invariants"])
+            gate.append(outcome)
+            continue
+        if case.expected_reason_code and result.get("error_code") != case.expected_reason_code:
+            outcome["reason_code"] = "release_gate_reason_code_mismatch"
+            gate.append(outcome)
+            continue
+        if case.expected_document_status and result.get("document_status") != case.expected_document_status:
+            outcome["reason_code"] = "release_gate_status_mismatch"
+            gate.append(outcome)
+            continue
+        outcome["passed"] = True
+        gate.append(outcome)
+    return gate
 
 
 def binary_error_invariants(code: str) -> list[str]:

@@ -71,27 +71,29 @@ fetch、upload 或 extraction。完整字段与 redaction 边界见
 - capability/runtime 信息不能提升 source、route 或 operating fact 的真实性等级。
 - raw source、原始 image/PDF、storage path、cookie、authorization、API key 与内部网络信息不得出现在 UI、公开 API、fixture 输出或日志中。
 
-## 当前验证资产：测试与 fixture 清单
+## Batch 04 API / evaluation release gate
 
-下列是 Batch 00 锁定的真实基线，不是新增的 release gate。fixture 定义位于
-`backend/tools/run_import_evaluation.py`，全都由本地 deterministic factories 或
-stub transport 生成；不读取外网、真实用户文件、cookie 或 secret。
-机器可检查的索引位于
-`backend/tests/fixtures/import_release_manifest.json`，由
-`backend/tests/test_import_release_contract.py` 校验其与 evaluator、文档和 focused
-tests 保持同步。
+Batch 04 将既有 API fixture 收敛为一个 CI 可执行的 release gate。fixture 定义位于
+`backend/tools/run_import_evaluation.py`，全都由本地 deterministic factories、stub
+transport 或受控 extraction stub 生成；不读取外网、真实用户文件、cookie 或 secret。
+机器可检查的索引位于 `backend/tests/fixtures/import_release_manifest.json`，由
+`backend/tests/test_import_release_contract.py` 和 `backend/tests/test_import_release_gate.py`
+校验其与 evaluator、focused tests 和 gate case 保持同步。
 
-| 表单 | focused tests | evaluator fixture 组 | 当前数量 | 基线覆盖 |
-| --- | --- | --- | ---: | --- |
-| Text | `backend/tests/test_text_import_foundation.py` | `FIXTURES` | 19 | spans、review version、candidate-only commit、idempotency、source-as-data。 |
-| URL | `backend/tests/test_url_import_security.py` | `URL_FIXTURES` | 23 | redirect/robots/TLS/DNS/SSRF、derived text、login/dynamic/size 拒绝。 |
-| Image/PDF intake | `backend/tests/test_binary_artifact_import.py` | `BINARY_FIXTURES` | 20 | quarantine、content detection、sanitization、PDF findings、private binary boundary。 |
-| Document extraction | `backend/tests/test_binary_artifact_import.py` | `DOCUMENT_EXTRACTION_FIXTURES` | 5 | native text、OCR unavailable、page retry、reading order、page evidence。 |
+| 表单 | 正常闭环 gate | 降级/拒绝 gate | 共同不变量 |
+| --- | --- | --- | --- |
+| Text | `commit_confirmed_only` | `stale_review_conflict` | explicit review、stale rejection、idempotent commit、candidate-only mutation。 |
+| URL | `url_commit_boundary` | `url_loopback_ipv4` | local fixture fetch、private destination rejection、candidate provenance、no TripRevision。 |
+| Image | `image_ocr_review_to_candidate`（受控 OCR result） | `document_image_ocr_unavailable_explicit` | quarantine-first、OCR unavailable 不伪装成功、stale rejection、idempotent candidate commit。 |
+| PDF | `document_pdf_native_text_to_review` | `document_pdf_partial_page_retry` | native-text-first、page retry lineage、partial 明确、candidate-only commit。 |
 
-在本基线环境中，既有 evaluator 报告 67 fixtures、121 total invariants，
-其中 35 项以 `DOCUMENT_` 开头。这些数字是当前资产盘点；Batch 04 才负责把
-release 所需的“四形式正常闭环 + 明确降级/安全拒绝”收敛为独立的 CI gate，
-不得在此之前将数字当作 release approval。
+每一个 gate failure 都报告 `form`、`stage` 和稳定的 `reason_code`；输出不包含源文本、
+文件字节、cookie、storage key、主机细节或 secret。当前 gate 使用 68 个 local fixtures、
+121 项不变量（其中 35 项 `DOCUMENT_`）及 8 个 case；此为 API/evaluation 验证记录，
+不是 Batch 05 的浏览器验证或最终 release 声明。
+
+2026-09-02 在干净临时 SQLite / memory artifact 环境重跑的结果为：68/68 fixtures、
+8/8 release-gate cases；运行使用 121 项定义不变量，`failure_count=0`。
 
 ## 验证命令
 
@@ -101,15 +103,16 @@ release 所需的“四形式正常闭环 + 明确降级/安全拒绝”收敛�
 cd backend
 ./.venv/bin/python -m unittest \
   tests.test_import_release_contract \
+  tests.test_import_release_gate \
   tests.test_text_import_foundation \
   tests.test_url_import_security \
   tests.test_binary_artifact_import
 ./.venv/bin/python -m tools.run_import_evaluation --ci
 ```
 
-CI 已执行 `python -m tools.run_import_evaluation --ci`，但 Batch 00 不修改
-workflow，也不新增空壳 workflow。后续 Batch 必须在此基础上记录新增命令与
-实际覆盖，不能仅引用本文便宣称发布已验证。
+`python -m tools.run_import_evaluation --ci` 是当前 CI 可调用的 API/evaluation release gate。
+该命令现在包含 8 个 API/evaluation release-gate cases；workflow 没有新增空壳调用。后续 Batch
+不得仅引用本文宣称浏览器或最终发布已验证。
 
 ## 关联决策与阶段
 
@@ -126,5 +129,5 @@ workflow，也不新增空壳 workflow。后续 Batch 必须在此基础上记�
   不能复制 capability 检测或将 runtime availability 当作导入成功。
 - Batch 02 只消费该 snapshot，并复用既有 unified Import Review intake。
 - Batch 03 只修复由 release matrix 暴露的真实 Review → Candidate 断点。
-- Batch 04 只扩展现有 evaluation/API fixture 资产为可执行 release gate。
+- Batch 04 已扩展现有 evaluation/API fixture 资产为可执行 release gate，未修改生产导入链路。
 - Batch 05 才进行浏览器 release gate、runbook 与 release record；在实际验证前不得更新 `CURRENT_PHASE.md` 宣称该 release 完成。
