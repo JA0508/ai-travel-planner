@@ -33,6 +33,10 @@ The completed document extraction path now supports:
 - existing Import Review Inbox reuse
 - import evaluation gates for text, URL, binary, and document extraction
 
+## Recently recorded locally (not merged)
+
+- Import Full-Format Release Batch 05 runbook/release-record closure (browser gate rerun is environment-limited; not an external deployment)
+
 ## Current stable capabilities
 
 - Deterministic scheduler
@@ -73,6 +77,11 @@ The completed document extraction path now supports:
 - Five-viewport layout-aware browser visual smoke coverage is incomplete.
 - Local OCR behavior is intentionally capability-reported and may vary by
   installed language packs and rendering dependencies.
+- Import Full-Format Release 的 API/evaluation gate 已通过 68/68 local fixtures 与 8/8
+  gate cases；Batch 05 已新增浏览器 gate/runbook/release record，但 2026-09-03 当前
+  Codex 沙箱重跑在 fixture backend 绑定 `127.0.0.1:8030` 时被环境拒绝。因此本文不把
+  Text/URL browser closure、binary upload/OCR 或 PDF extraction 声称为已验证；详见
+  `docs/architecture/IMPORT_FULL_FORMAT_RELEASE_RECORD_2026-09-03.md`。
 - F-004a.3 Completion Integrity Repair is merged. It persists verified
   candidate-to-import lineage, fails closed for legacy-unverified candidates,
   exercises real immutable revision and SQLite race scenarios, and hands

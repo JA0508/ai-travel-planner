@@ -2,9 +2,11 @@
 
 ## 状态与范围
 
-本文是 Import 全形式 Release 的 Batch 00 基线合同，并记录截至 2026-08-30
-已完成的 Batch 01 capability endpoint。它不是发布通过记录，也不声明四形式
-release gate；该 gate 仍是后续 Batch 04 的工作。
+本文是 Import 全形式 Release 的合同、验证矩阵与操作 runbook。当前本地
+release-gate evidence 已覆盖 API/evaluation；Batch 05 新增浏览器 fixture gate
+与重跑步骤，但本次 Codex 沙箱重跑未取得浏览器通过结果。它不是外部发布、
+部署或生产环境可用性的声明。2026-09-03 的 evidence、已知限制与重跑步骤见
+[Release Record（2026-09-03）](../architecture/IMPORT_FULL_FORMAT_RELEASE_RECORD_2026-09-03.md)。
 
 本 release 仍遵守唯一的导入链：
 
@@ -89,11 +91,69 @@ transport 或受控 extraction stub 生成；不读取外网、真实用户文�
 
 每一个 gate failure 都报告 `form`、`stage` 和稳定的 `reason_code`；输出不包含源文本、
 文件字节、cookie、storage key、主机细节或 secret。当前 gate 使用 68 个 local fixtures、
-121 项不变量（其中 35 项 `DOCUMENT_`）及 8 个 case；此为 API/evaluation 验证记录，
-不是 Batch 05 的浏览器验证或最终 release 声明。
+121 项不变量（其中 35 项 `DOCUMENT_`）及 8 个 case；此记录只说明 API/evaluation
+验证，浏览器实际 capability 的结果单列于下方。
 
 2026-09-02 在干净临时 SQLite / memory artifact 环境重跑的结果为：68/68 fixtures、
 8/8 release-gate cases；运行使用 121 项定义不变量，`failure_count=0`。
+
+## 浏览器 Release Gate
+
+`frontend/playwright.import-release.config.ts` 复用现有 `tests.e2e_fixture_app`
+与临时 SQLite/artifact 根目录；没有真实网络、用户文件、cookie、密钥或外部 provider。
+该 gate 设计用于在浏览器中验证 Text 与 fixture URL 的创建 → private artifact → review decision →
+candidate commit、derived URL text 不渲染 raw HTML、private headers，以及 import commit
+不创建 `TripRevision`。
+
+2026-09-03 在当前 Codex 沙箱中，`npm run test:e2e:import-release` 的 Next build
+通过，但 Playwright fixture backend 绑定 `127.0.0.1:8030` 时被运行环境拒绝（`[Errno 1]
+operation not permitted`），升级权限重跑又被中断。因此本记录**不**宣称浏览器 gate
+已经通过；不宣称 Text/URL 浏览器闭环已验证；也不宣称 image/PDF 上传、OCR 或 PDF
+extraction 在该 runtime 跑通。API/evaluation gate 仍覆盖其受控正常与降级路径。完整限制
+和可重跑条件见 release record。
+
+## 发布 Runbook
+
+### 前提
+
+- backend 的 `.venv` 已安装测试依赖；frontend 已安装 `node_modules` 和 Playwright Chromium。
+- 仅使用本地 fixture：不设置真实 API key，不把真实导入文件、cookie 或 private source 放入 fixture。
+- browser gate 需要空闲的 `127.0.0.1:8030`/`:3030`；配置会自行创建临时 SQLite 和
+  artifact 目录，并使用 `IMPORT_URL_FETCHER_MODE=fixture`。
+
+### 验证顺序
+
+从仓库根目录运行：
+
+```bash
+cd backend
+./.venv/bin/python -m unittest \
+  tests.test_import_release_contract \
+  tests.test_import_release_gate \
+  tests.test_text_import_foundation \
+  tests.test_url_import_security \
+  tests.test_binary_artifact_import
+./.venv/bin/python -m tools.run_import_evaluation --ci
+
+cd ../frontend
+npm run test:workspace
+npm run test:e2e:import-release
+```
+
+`test:e2e:import-release` 在 build 时固定 API proxy 到 `127.0.0.1:8030`；不要仅运行
+裸 `playwright test` 后声称该 release gate 已验证。
+
+### 失败排查与回滚/禁用
+
+- 若 browser gate 无法启动，先检查上述两个本地端口和 Playwright Chromium；重跑前不要
+  复用旧的 SQLite/artifact 目录或 capability snapshot。
+- 若 snapshot 报 `binary_inspection_unavailable`、`ocr_unavailable` 或
+  `pdf_renderer_unavailable`，保留该状态和 reason code；不得启用 binary submit，改用
+  Text/URL 或在满足服务端前提的 fixture 环境重跑。
+- 若 URL fixture 失败，确认 `IMPORT_URL_ENABLED=true` 和
+  `IMPORT_URL_FETCHER_MODE=fixture`；不得改为 live network 以求通过。
+- 若需停止某 form，服务端设置相应 capability 为 unavailable，并验证 UI 禁用该 form。
+  这不删除既有 artifact、job、candidate 或 revision；恢复前需重跑完整 gate。
 
 ## 验证命令
 
@@ -111,8 +171,7 @@ cd backend
 ```
 
 `python -m tools.run_import_evaluation --ci` 是当前 CI 可调用的 API/evaluation release gate。
-该命令现在包含 8 个 API/evaluation release-gate cases；workflow 没有新增空壳调用。后续 Batch
-不得仅引用本文宣称浏览器或最终发布已验证。
+该命令包含 8 个 API/evaluation release-gate cases；browser gate 使用上方的独立命令。
 
 ## 关联决策与阶段
 
@@ -130,4 +189,5 @@ cd backend
 - Batch 02 只消费该 snapshot，并复用既有 unified Import Review intake。
 - Batch 03 只修复由 release matrix 暴露的真实 Review → Candidate 断点。
 - Batch 04 已扩展现有 evaluation/API fixture 资产为可执行 release gate，未修改生产导入链路。
-- Batch 05 才进行浏览器 release gate、runbook 与 release record；在实际验证前不得更新 `CURRENT_PHASE.md` 宣称该 release 完成。
+- Batch 05 已落地浏览器 release gate、runbook 与 release record。当前 Codex 沙箱未能完成
+  browser gate 重跑；后续必须按 release record 重跑并只记录真实 fixture capability。
