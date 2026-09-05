@@ -82,5 +82,80 @@ test("an old inconsistent Draft cannot preview while its fixed place is unconfir
   }));
   assert.equal(view.canGeneratePreview, false);
   assert.equal(view.heading, "还需要补充信息");
-  assert.equal(view.blockers[0]?.title, "请确认固定安排的地点");
+  assert.deepEqual(view.confirmationItems, [{
+    id: "fixed-place:museum",
+    kind: "fixed_place",
+    title: "博物馆预约",
+    detail: "这段时间会被保留；请确认具体地点后再安排路线。",
+    eventId: "museum",
+    identityId: "museum",
+    tone: "todo",
+  }]);
+  assert.equal(view.remainingConfirmationCount, 1);
+  assert.deepEqual(view.blockers, []);
+});
+
+test("must-place identity appears once in the shared confirmation queue", () => {
+  const base = envelope();
+  const view = buildPrePlanConfirmationViewModel(envelope({
+    planner_ready_status: "needs_clarification",
+    formal_contract: {
+      ...base.formal_contract,
+      readiness: { ...base.formal_contract.readiness, status: "needs_clarification", planner_contract_complete: false, blocking_issue_codes: ["must_place_identity_not_verified"] },
+      place_identities: [{
+        stable_id: "hongyadong", original_name: "洪崖洞", canonical_name: null, city: "重庆", ownership: "must",
+        fixed_event_id: null, resolution_status: "ambiguous", provider: "amap", provider_place_id: null,
+        latitude: null, longitude: null, category: null, source_fragment_ids: ["source"], confirmation_options: [], resolution_confidence: null,
+      }],
+    },
+  }));
+
+  assert.deepEqual(view.confirmationItems, [{
+    id: "must-place:hongyadong",
+    kind: "must_place",
+    title: "确认「洪崖洞」具体是哪一处",
+    detail: "确认后才会使用真实的位置和路线数据。",
+    identityId: "hongyadong",
+    tone: "todo",
+  }]);
+  assert.equal(view.remainingConfirmationCount, 1);
+  assert.deepEqual(view.blockers, []);
+});
+
+test("fixed events retain their own identity state in the queue", () => {
+  const base = envelope();
+  const fixedEvent = (event_id: string, title: string) => ({
+    event_id, title, start_at: null, end_at: null, timezone: "Asia/Shanghai",
+    fixed_day: 2, place_candidate_id: null, location_text: null, flexibility: "fixed" as const, metadata: {} as never,
+  });
+  const fixedIdentity = (stable_id: string, resolution_status: "verified" | "ambiguous") => ({
+    stable_id, original_name: stable_id, canonical_name: resolution_status === "verified" ? `${stable_id} 已确认地点` : null,
+    city: "上海", ownership: "fixed" as const, fixed_event_id: stable_id, resolution_status,
+    provider: null, provider_place_id: null, latitude: null, longitude: null, category: null,
+    source_fragment_ids: ["source"], confirmation_options: [], resolution_confidence: null,
+  });
+  const view = buildPrePlanConfirmationViewModel(envelope({
+    planner_ready_status: "needs_clarification",
+    formal_contract: {
+      ...base.formal_contract,
+      readiness: { ...base.formal_contract.readiness, status: "needs_clarification", planner_contract_complete: false, blocking_issue_codes: ["fixed_event_identity_not_verified"] },
+      fixed_events: [fixedEvent("museum", "博物馆预约"), fixedEvent("show", "演出票")],
+      place_identities: [fixedIdentity("museum", "verified"), fixedIdentity("show", "ambiguous")],
+    },
+  }));
+
+  assert.deepEqual(view.confirmationItems, [{
+    id: "fixed-place:show",
+    kind: "fixed_place",
+    title: "演出票",
+    detail: "这段时间会被保留；请确认具体地点后再安排路线。",
+    eventId: "show",
+    identityId: "show",
+    tone: "todo",
+  }]);
+  assert.deepEqual(view.confirmedItems, [{
+    id: "confirmed-fixed:museum",
+    title: "博物馆预约",
+    detail: "museum 已确认地点 · 时间已保留",
+  }]);
 });

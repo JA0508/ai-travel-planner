@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PrePlanIntentWorkspace } from "./PrePlanIntentWorkspace";
 
 const componentPath = fileURLToPath(new URL("./PrePlanIntentWorkspace.tsx", import.meta.url));
+const queuePath = fileURLToPath(new URL("./PrePlanConfirmationQueue.tsx", import.meta.url));
 
 test("pre-plan workspace starts with a plain-language confirmation surface", () => {
   const html = renderToStaticMarkup(
@@ -38,9 +39,8 @@ test("pre-plan bootstrap restores an existing intent before compiling a new Draf
   assert.doesNotMatch(source, /semantic_digest/);
   assert.doesNotMatch(source, /provenance_graph/);
   assert.match(source, /确认行程信息/);
-  assert.match(source, /一定想去/);
-  assert.match(source, /确认想去的地方/);
-  assert.match(source, /must_place_identity_not_verified/);
+  assert.match(source, /PrePlanConfirmationQueue/);
+  assert.match(source, /我先按你的描述整理好了/);
   assert.match(source, /查看依据/);
   assert.match(source, /重新识别/);
   assert.match(source, /onClick=\{onRefresh\} disabled=\{busy\}>重新整理旅行信息<\/button>/);
@@ -62,4 +62,20 @@ test("pre-plan workspace connects critical edits and clarification answers to se
   assert.match(source, /preplan-primary-action/);
   assert.match(source, /getLatestPrePlanIntent/);
   assert.doesNotMatch(source, /localStorage/);
+});
+
+test("pre-plan workspace uses one editorial confirmation queue instead of repeated blocker cards", () => {
+  const source = readFileSync(componentPath, "utf8");
+  const queueSource = readFileSync(queuePath, "utf8");
+
+  assert.match(source, /PrePlanConfirmationQueue/);
+  assert.match(source, /已理解/);
+  assert.match(source, /修改原始需求/);
+  assert.match(queueSource, /还需确认/);
+  assert.match(queueSource, /已确认/);
+  assert.match(queueSource, /confirmation_options/);
+  assert.match(queueSource, /onConfirmPlace/);
+  assert.doesNotMatch(source, /function FixedPlaceConfirmation/);
+  assert.doesNotMatch(source, /function MustPlaceConfirmation/);
+  assert.doesNotMatch(source, /function FixedArrangementSummary/);
 });

@@ -1,4 +1,4 @@
-import type { FixedEventIntent, IntentAssumption, IntentClarification, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
+import type { FixedEventIntent, IntentAssumption, IntentClarification, PlaceIdentity, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 
 type SummaryItem = {
   label: string;
@@ -11,11 +11,47 @@ type ConfirmationBlocker = {
   source: "clarification" | "readiness" | "fixed_place";
 };
 
+export type ConfirmationItem =
+  | {
+      id: string;
+      kind: "must_place";
+      title: string;
+      detail: string;
+      identityId: string;
+      tone: "todo";
+    }
+  | {
+      id: string;
+      kind: "fixed_place";
+      title: string;
+      detail: string;
+      eventId: string;
+      identityId: string | null;
+      tone: "todo";
+    }
+  | {
+      id: string;
+      kind: "clarification" | "conflict";
+      title: string;
+      detail: string;
+      questionId: string | null;
+      tone: "todo" | "conflict";
+    };
+
+export type ConfirmedItem = {
+  id: string;
+  title: string;
+  detail: string;
+};
+
 export type PrePlanConfirmationViewModel = {
   heading: string;
   summary: SummaryItem[];
   mustPlaces: Array<{ id: string; name: string; source: "candidate" | "direct" }>;
   blockers: ConfirmationBlocker[];
+  confirmationItems: ConfirmationItem[];
+  confirmedItems: ConfirmedItem[];
+  remainingConfirmationCount: number;
   assumptions: Array<{ title: string; detail: string }>;
   fixedArrangements: Array<{ title: string; detail: string }>;
   sourceLines: Array<{ label: string; source: string }>;
@@ -28,27 +64,47 @@ export function buildPrePlanConfirmationViewModel(
   envelope: SourceLinkedTripIntentEnvelope,
 ): PrePlanConfirmationViewModel {
   const formal = envelope.formal_contract;
+  const identities = formal.place_identities ?? [];
   const mustPlaces = displayedMustPlaces(envelope);
   const clarificationBlockers = envelope.clarification_queue
     .filter((question) => question.blocking)
+    .filter((question) => !isPlaceIdentityClarification(question.reason_code))
     .map((question) => ({ ...clarificationCopy(question), source: "clarification" as const }));
-  const fallbackBlockers = formal.readiness.blocking_issue_codes.map((code) => ({ ...issueCopy(code), source: "readiness" as const }));
+  const fallbackBlockers = formal.readiness.blocking_issue_codes
+    .filter((code) => !isPlaceIdentityClarification(code))
+    .map((code) => ({ ...issueCopy(code), source: "readiness" as const }));
   const assumptions = envelope.typed_assumptions
     .filter((assumption) => assumption.has_assumed_value && !assumption.blocks_planner_ready)
     .map((assumption) => assumptionCopy(assumption));
   const unresolvedFixedEventIds = formal.fixed_events
-    .filter((event) => !hasVerifiedFixedPlace(event.event_id, formal.place_identities ?? []))
+    .filter((event) => !hasVerifiedFixedPlace(event.event_id, identities))
     .map((event) => event.event_id);
-  const fixedPlaceBlockers = unresolvedFixedEventIds.map((eventId) => {
+  const requiredBlockers = clarificationBlockers.length ? clarificationBlockers : fallbackBlockers;
+  const blockers = uniqueBlockers(requiredBlockers);
+  const genericItems = requiredConfirmationItems(envelope, requiredBlockers);
+  const fixedPlaceItems = unresolvedFixedEventIds.map((eventId): ConfirmationItem => {
     const event = formal.fixed_events.find((item) => item.event_id === eventId);
     return {
-      title: "请确认固定安排的地点",
-      detail: `“${event?.title ?? "这个固定安排"}”需要明确地点，才能安全排进路线。`,
-      source: "fixed_place" as const,
+      id: `fixed-place:${eventId}`,
+      kind: "fixed_place",
+      title: event?.title ?? "固定安排",
+      detail: "这段时间会被保留；请确认具体地点后再安排路线。",
+      eventId,
+      identityId: fixedIdentityForEvent(eventId, identities)?.stable_id ?? null,
+      tone: "todo",
     };
   });
-  const requiredBlockers = clarificationBlockers.length ? clarificationBlockers : fallbackBlockers;
-  const combinedBlockers = uniqueBlockers([...requiredBlockers, ...fixedPlaceBlockers]);
+  const unresolvedMustItems = identities
+    .filter((identity) => identity.ownership === "must" && identity.resolution_status !== "verified")
+    .map((identity): ConfirmationItem => ({
+      id: `must-place:${identity.stable_id}`,
+      kind: "must_place",
+      title: `确认「${identity.original_name}」具体是哪一处`,
+      detail: "确认后才会使用真实的位置和路线数据。",
+      identityId: identity.stable_id,
+      tone: "todo",
+    }));
+  const confirmationItems = [...genericItems, ...fixedPlaceItems, ...unresolvedMustItems];
   // Old Draft revisions may predate fixed-place readiness enforcement. Keep the
   // browser from issuing a request that the server must reject, while the server
   // remains the authority for every new immutable revision.
@@ -64,7 +120,10 @@ export function buildPrePlanConfirmationViewModel(
       { label: "想去的地方", value: mustPlaces.length ? `${mustPlaces.length} 个一定想去` : "暂未指定" },
     ],
     mustPlaces,
-    blockers: combinedBlockers,
+    blockers,
+    confirmationItems,
+    confirmedItems: confirmedItems(formal.fixed_events, identities),
+    remainingConfirmationCount: confirmationItems.length,
     assumptions,
     fixedArrangements: formal.fixed_events.map(fixedArrangementCopy),
     sourceLines: envelope.fields
@@ -77,10 +136,67 @@ export function buildPrePlanConfirmationViewModel(
       ? assumptions.length
         ? `将按 ${assumptions.length} 项暂定设置生成，之后仍可修改。`
         : "关键信息已确认，可以先查看第一版路线。"
-      : combinedBlockers.length
-        ? `还需要补充 ${combinedBlockers.length} 个关键信息。`
+      : confirmationItems.length
+        ? `还差 ${confirmationItems.length} 项即可生成首版路线。`
         : "请先补充会影响路线安排的关键信息。",
   };
+}
+
+function requiredConfirmationItems(
+  envelope: SourceLinkedTripIntentEnvelope,
+  blockers: ConfirmationBlocker[],
+): ConfirmationItem[] {
+  const questions = envelope.clarification_queue
+    .filter((question) => question.blocking && !isPlaceIdentityClarification(question.reason_code));
+  if (questions.length) {
+    return questions.map((question) => confirmationItemFromQuestion(question));
+  }
+  return blockers.map((blocker, index) => ({
+    id: `readiness:${index}:${blocker.title}`,
+    kind: isConflictTitle(blocker.title) ? "conflict" : "clarification",
+    title: blocker.title,
+    detail: blocker.detail,
+    questionId: null,
+    tone: isConflictTitle(blocker.title) ? "conflict" : "todo",
+  }));
+}
+
+function confirmationItemFromQuestion(question: IntentClarification): ConfirmationItem {
+  const copy = clarificationCopy(question);
+  const conflict = isConflictCode(question.reason_code);
+  return {
+    id: `clarification:${question.question_id}`,
+    kind: conflict ? "conflict" : "clarification",
+    title: copy.title,
+    detail: copy.detail,
+    questionId: question.question_id,
+    tone: conflict ? "conflict" : "todo",
+  };
+}
+
+function confirmedItems(events: FixedEventIntent[], identities: PlaceIdentity[]): ConfirmedItem[] {
+  const fixed = events.flatMap((event) => {
+    const identity = fixedIdentityForEvent(event.event_id, identities);
+    return identity?.resolution_status === "verified"
+      ? [{ id: `confirmed-fixed:${event.event_id}`, title: event.title, detail: `${identity.canonical_name ?? identity.original_name} · 时间已保留` }]
+      : [];
+  });
+  const must = identities
+    .filter((identity) => identity.ownership === "must" && identity.resolution_status === "verified")
+    .map((identity) => ({ id: `confirmed-must:${identity.stable_id}`, title: identity.canonical_name ?? identity.original_name, detail: "已确认地点" }));
+  return [...fixed, ...must];
+}
+
+function isPlaceIdentityClarification(code: string): boolean {
+  return code === "fixed_place_identity_not_verified" || code === "fixed_event_identity_not_verified" || code === "must_place_identity_not_verified";
+}
+
+function isConflictCode(code: string): boolean {
+  return code === "arrival_after_departure" || code === "fixed_event_overlap" || code === "fixed_event_outside_trip_dates";
+}
+
+function isConflictTitle(title: string): boolean {
+  return title.includes("不能") || title.includes("重叠") || title.includes("不在旅行日期");
 }
 
 function displayedMustPlaces(envelope: SourceLinkedTripIntentEnvelope): Array<{ id: string; name: string; source: "candidate" | "direct" }> {
@@ -109,10 +225,16 @@ function hasVerifiedFixedPlace(
   eventId: string,
   identities: NonNullable<SourceLinkedTripIntentEnvelope["formal_contract"]["place_identities"]>,
 ): boolean {
+  return fixedIdentityForEvent(eventId, identities)?.resolution_status === "verified";
+}
+
+function fixedIdentityForEvent(
+  eventId: string,
+  identities: NonNullable<SourceLinkedTripIntentEnvelope["formal_contract"]["place_identities"]>,
+): PlaceIdentity | null {
   const fixed = identities.filter((identity) => identity.ownership === "fixed");
   const matches = fixed.filter((identity) => identity.fixed_event_id === eventId || identity.stable_id === eventId);
-  const candidates = matches.length ? matches : fixed.length === 1 ? fixed : [];
-  return candidates.some((identity) => identity.resolution_status === "verified");
+  return matches[0] ?? (fixed.length === 1 ? fixed[0] : null);
 }
 
 function uniqueBlockers(items: ConfirmationBlocker[]): ConfirmationBlocker[] {
