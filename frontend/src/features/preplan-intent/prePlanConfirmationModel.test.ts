@@ -47,6 +47,23 @@ test("fixed arrangements stay visible in the plain-language confirmation summary
   assert.deepEqual(view.fixedArrangements, [{ title: "博物馆预约", detail: "第 2 天 · 上海博物馆" }]);
 });
 
+test("direct must-visit place identities are shown in the confirmation summary", () => {
+  const base = envelope();
+  const view = buildPrePlanConfirmationViewModel(envelope({
+    formal_contract: {
+      ...base.formal_contract,
+      place_identities: [{
+        stable_id: "hongyadong", original_name: "洪崖洞", canonical_name: null, city: "重庆", ownership: "must",
+        fixed_event_id: null, resolution_status: "ambiguous", provider: null, provider_place_id: null,
+        latitude: null, longitude: null, category: null, source_fragment_ids: ["source"], confirmation_options: [], resolution_confidence: null,
+      }],
+    },
+  }));
+
+  assert.equal(view.summary.find((item) => item.label === "想去的地方")?.value, "1 个一定想去");
+  assert.deepEqual(view.mustPlaces, [{ id: "hongyadong", name: "洪崖洞", source: "direct" }]);
+});
+
 test("an old inconsistent Draft cannot preview while its fixed place is unconfirmed", () => {
   const base = envelope();
   const view = buildPrePlanConfirmationViewModel(envelope({

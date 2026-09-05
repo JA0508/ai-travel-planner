@@ -131,11 +131,13 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         )
 
         self.assertEqual(compiled.status_code, 201, compiled.text)
-        identities = compiled.json()["envelope"]["formal_contract"]["place_identities"]
+        formal = compiled.json()["envelope"]["formal_contract"]
+        identities = formal["place_identities"]
         self.assertEqual(
             [identity["original_name"] for identity in identities if identity["ownership"] == "must"],
             ["洪崖洞", "解放碑", "李子坝轻轨站", "鹅岭二厂", "山城步道", "南山一棵树观景台"],
         )
+        self.assertEqual(formal["fixed_events"], [])
 
     def test_newer_draft_intent_invalidates_older_preview(self) -> None:
         created = self.client.post("/trips/drafts", json={"direct_user_text": "我想去西安玩两天。"}, headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-xian-two"})

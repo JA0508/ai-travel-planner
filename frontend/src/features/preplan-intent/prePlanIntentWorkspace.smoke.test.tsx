@@ -39,8 +39,11 @@ test("pre-plan bootstrap restores an existing intent before compiling a new Draf
   assert.doesNotMatch(source, /provenance_graph/);
   assert.match(source, /确认行程信息/);
   assert.match(source, /一定想去/);
+  assert.match(source, /确认想去的地方/);
+  assert.match(source, /must_place_identity_not_verified/);
   assert.match(source, /查看依据/);
   assert.match(source, /重新识别/);
+  assert.match(source, /onClick=\{onRefresh\} disabled=\{busy\}>重新整理旅行信息<\/button>/);
 });
 
 test("pre-plan workspace connects critical edits and clarification answers to server state", () => {

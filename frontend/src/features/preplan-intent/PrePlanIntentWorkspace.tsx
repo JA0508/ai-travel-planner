@@ -6,6 +6,7 @@ import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
+import type { PrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 import type {
@@ -453,7 +454,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
           {activeEditor && formDraft ? <CriticalEditorForm editor={activeEditor} draft={formDraft} pending={Boolean(pendingEdit)} error={editorError} onChange={setFormDraft} onSave={saveEditor} onCancel={closeEditor} /> : null}
         </section>
 
-        {view.blockers.some((blocker) => blocker.source === "readiness" || (blocker.source === "clarification" && blocker.title !== "请确认固定安排的地点")) ? <section className="uc-intent-card uc-intent-card--attention" aria-label="还需要你补充"><div className="uc-intent-section-heading"><div><p>还需要你补充</p><h2>确认后才能生成路线</h2></div></div><div className="uc-intent-list">{intent.envelope.clarification_queue.filter((question) => question.blocking && !isFixedPlaceClarification(question.reason_code)).map((question) => <ClarificationCard key={question.question_id} question={question} pending={Boolean(pendingEdit)} onResolve={resolveClarification} />)}{view.blockers.filter((blocker) => blocker.source === "readiness").map((blocker, index) => <article key={`${blocker.title}-${index}`}><strong>{blocker.title}</strong><span>{blocker.detail}</span></article>)}</div></section> : null}
+        {view.blockers.some((blocker) => blocker.source === "readiness" || (blocker.source === "clarification" && blocker.title !== "请确认固定安排的地点" && blocker.title !== "请确认想去的地方")) ? <section className="uc-intent-card uc-intent-card--attention" aria-label="还需要你补充"><div className="uc-intent-section-heading"><div><p>还需要你补充</p><h2>确认后才能生成路线</h2></div></div><div className="uc-intent-list">{intent.envelope.clarification_queue.filter((question) => question.blocking && !isFixedPlaceClarification(question.reason_code) && !isMustPlaceClarification(question.reason_code)).map((question) => <ClarificationCard key={question.question_id} question={question} pending={Boolean(pendingEdit)} onResolve={resolveClarification} />)}{view.blockers.filter((blocker) => blocker.source === "readiness").map((blocker, index) => <article key={`${blocker.title}-${index}`}><strong>{blocker.title}</strong><span>{blocker.detail}</span></article>)}</div></section> : null}
 
         <FixedArrangementSummary arrangements={view.fixedArrangements} />
         <FixedPlaceConfirmation
@@ -463,7 +464,12 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
           onConfirm={confirmPlaceIdentity}
           onUpdateLocation={updateFixedEventLocation}
         />
-        <PlacePreferenceSummary envelope={intent.envelope} sourceLines={view.sourceLines} />
+        <MustPlaceConfirmation
+          identities={intent.envelope.formal_contract.place_identities ?? []}
+          busy={busy || draftVersion === null}
+          onConfirm={confirmPlaceIdentity}
+        />
+        <PlacePreferenceSummary places={view.mustPlaces} sourceLines={view.sourceLines} />
 
         {view.assumptions.length ? <details className="uc-intent-card uc-intent-details"><summary><span><strong>系统暂时这样理解</strong><small>{view.assumptions.length} 项暂定设置</small></span><span aria-hidden="true">展开</span></summary><div className="uc-intent-list">{view.assumptions.map((item) => <article key={item.title}><strong>{item.title}</strong><span>{item.detail}</span></article>)}</div></details> : null}
 
@@ -515,6 +521,20 @@ function isFixedPlaceClarification(code: string): boolean {
   return code === "fixed_place_identity_not_verified" || code === "fixed_event_identity_not_verified";
 }
 
+function isMustPlaceClarification(code: string): boolean {
+  return code === "must_place_identity_not_verified";
+}
+
+function MustPlaceConfirmation({ identities, busy, onConfirm }: {
+  identities: PlaceIdentity[];
+  busy: boolean;
+  onConfirm: (identity: PlaceIdentity, option: PlaceResolutionOption) => void;
+}) {
+  const unresolved = identities.filter((identity) => identity.ownership === "must" && identity.resolution_status !== "verified");
+  if (!unresolved.length) return null;
+  return <section className="uc-intent-card uc-intent-card--attention" aria-label="确认想去的地方"><div className="uc-intent-section-heading"><div><p>想去的地方</p><h2>确认具体地点后才能生成路线</h2></div></div><div className="uc-intent-list">{unresolved.map((identity) => <article className="uc-intent-clarification" key={identity.stable_id}><strong>{identity.original_name}</strong><span>请选择具体地点；确认后才会使用真实的位置和路线数据。</span>{identity.confirmation_options.length ? <div className="uc-intent-choice">{identity.confirmation_options.map((option) => <button key={option.provider_place_id} type="button" className="uc-intent-secondary" disabled={busy} onClick={() => onConfirm(identity, option)}><strong>{option.canonical_name}</strong><small>{option.address_summary ?? option.category ?? "地点信息"}</small></button>)}</div> : <span>暂时没有可供确认的地点候选。请稍后重新整理，或从导入资料中补充可核验地点。</span>}</article>)}</div></section>;
+}
+
 function FixedPlaceCard({ event, identity, pending, onConfirm, onUpdateLocation }: {
   event: FixedEventIntent;
   identity: PlaceIdentity | null;
@@ -531,13 +551,12 @@ function FixedPlaceCard({ event, identity, pending, onConfirm, onUpdateLocation 
   </article>;
 }
 
-function PlacePreferenceSummary({ envelope, sourceLines }: { envelope: SourceLinkedTripIntentEnvelope; sourceLines: Array<{ label: string; source: string }> }) {
-  const places = envelope.formal_contract.must_visit_places;
-  return <section className="uc-intent-card"><div className="uc-intent-section-heading"><div><p>想去的地方</p><h2>{places.length ? "一定想去" : "暂未指定"}</h2></div></div>{places.length ? <div className="uc-intent-place-list">{places.map((place) => <div key={place.trip_candidate_id}><strong>{place.display_name ?? "已确认地点"}</strong><span>来自：{sourceForField(sourceLines, "想去的地方")}</span></div>)}</div> : <p className="uc-intent-muted">还没有确定必须到达的地点，路线会先围绕你的时间和旅行节奏安排。</p>}</section>;
+function PlacePreferenceSummary({ places, sourceLines }: { places: PrePlanConfirmationViewModel["mustPlaces"]; sourceLines: Array<{ label: string; source: string }> }) {
+  return <section className="uc-intent-card"><div className="uc-intent-section-heading"><div><p>想去的地方</p><h2>{places.length ? "一定想去" : "暂未指定"}</h2></div></div>{places.length ? <div className="uc-intent-place-list">{places.map((place) => <div key={place.id}><strong>{place.name}</strong><span>来自：{place.source === "direct" ? "你的输入（待确认具体地点）" : sourceForField(sourceLines, "想去的地方")}</span></div>)}</div> : <p className="uc-intent-muted">还没有确定必须到达的地点，路线会先围绕你的时间和旅行节奏安排。</p>}</section>;
 }
 
 function SourceDetails({ directUserText, sourceLines, candidates, selectedCandidateIds, onSelectCandidate, onRefresh, onImportChanged, busy, tripId }: { directUserText: string; sourceLines: Array<{ label: string; source: string }>; candidates: CandidateListResponse["candidates"]; selectedCandidateIds: string[]; onSelectCandidate: (id: string, checked: boolean) => void; onRefresh: () => void; onImportChanged: () => void; busy: boolean; tripId: string }) {
-  return <div className="uc-intent-details-body"><div><strong>这份行程信息来自</strong>{sourceLines.length ? <div className="uc-intent-source-list">{sourceLines.map((item) => <p key={item.label}>{item.label}<span>{item.source}</span></p>)}</div> : <p className="uc-intent-muted">目前主要依据你的输入整理。</p>}</div><details><summary>查看原始需求</summary><p className="uc-intent-raw-text">{directUserText}</p></details>{candidates.length ? <div><strong>从导入资料补充地点</strong><div className="uc-intent-candidate-list">{candidates.map((candidate) => <label key={candidate.id}><input type="checkbox" checked={selectedCandidateIds.includes(candidate.id)} onChange={(event) => onSelectCandidate(candidate.id, event.target.checked)} />{candidate.display_name}</label>)}</div><button type="button" className="uc-intent-secondary" onClick={onRefresh} disabled={busy}>重新整理旅行信息</button></div> : null}<details><summary>添加或审核导入资料</summary><ImportReviewWorkspace tripPersistence={{ status: "draft", tripId }} onCandidatesChanged={onImportChanged} /></details></div>;
+  return <div className="uc-intent-details-body"><div><strong>这份行程信息来自</strong>{sourceLines.length ? <div className="uc-intent-source-list">{sourceLines.map((item) => <p key={item.label}>{item.label}<span>{item.source}</span></p>)}</div> : <p className="uc-intent-muted">目前主要依据你的输入整理。</p>}</div><details><summary>查看原始需求</summary><p className="uc-intent-raw-text">{directUserText}</p></details>{candidates.length ? <div><strong>从导入资料补充地点</strong><div className="uc-intent-candidate-list">{candidates.map((candidate) => <label key={candidate.id}><input type="checkbox" checked={selectedCandidateIds.includes(candidate.id)} onChange={(event) => onSelectCandidate(candidate.id, event.target.checked)} />{candidate.display_name}</label>)}</div></div> : null}<button type="button" className="uc-intent-secondary" onClick={onRefresh} disabled={busy}>重新整理旅行信息</button><details><summary>添加或审核导入资料</summary><ImportReviewWorkspace tripPersistence={{ status: "draft", tripId }} onCandidatesChanged={onImportChanged} /></details></div>;
 }
 
 function sourceForField(lines: Array<{ label: string; source: string }>, label: string): string {

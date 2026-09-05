@@ -913,6 +913,14 @@ class NLParserFreeTextFallbackTests(unittest.TestCase):
         self.assertEqual(parsed.fixed_events, [])
         self.assertTrue({"吃饭", "夜游"}.issubset(set(parsed.preferences)))
 
+    def test_parse_trip_text_fallback_ignores_output_requirements_as_fixed_events(self) -> None:
+        parsed = parse_trip_text_fallback(
+            "我想去重庆玩三天。第一天只安排入住后的夜间活动。"
+            "如果某个地点需要预约、天气影响较大或可能人流拥挤，请标注为待确认项。"
+        )
+
+        self.assertEqual(parsed.fixed_events, [])
+
     def test_parse_trip_text_fallback_keeps_broad_interests_out_of_seed_pois(self) -> None:
         parsed = parse_trip_text_fallback(
             "我想去西安玩三天，主要想看历史文化，也想晚上去热闹一点的地方吃东西。"

@@ -14,6 +14,7 @@ type ConfirmationBlocker = {
 export type PrePlanConfirmationViewModel = {
   heading: string;
   summary: SummaryItem[];
+  mustPlaces: Array<{ id: string; name: string; source: "candidate" | "direct" }>;
   blockers: ConfirmationBlocker[];
   assumptions: Array<{ title: string; detail: string }>;
   fixedArrangements: Array<{ title: string; detail: string }>;
@@ -27,6 +28,7 @@ export function buildPrePlanConfirmationViewModel(
   envelope: SourceLinkedTripIntentEnvelope,
 ): PrePlanConfirmationViewModel {
   const formal = envelope.formal_contract;
+  const mustPlaces = displayedMustPlaces(envelope);
   const clarificationBlockers = envelope.clarification_queue
     .filter((question) => question.blocking)
     .map((question) => ({ ...clarificationCopy(question), source: "clarification" as const }));
@@ -59,8 +61,9 @@ export function buildPrePlanConfirmationViewModel(
       { label: "旅行时间", value: describeTripTime(envelope) },
       { label: "旅行节奏", value: paceLabel(formal.pace?.value) },
       { label: "固定安排", value: formal.fixed_events.length ? `${formal.fixed_events.length} 个已安排` : "暂无" },
-      { label: "想去的地方", value: formal.must_visit_places.length ? `${formal.must_visit_places.length} 个一定想去` : "暂未指定" },
+      { label: "想去的地方", value: mustPlaces.length ? `${mustPlaces.length} 个一定想去` : "暂未指定" },
     ],
+    mustPlaces,
     blockers: combinedBlockers,
     assumptions,
     fixedArrangements: formal.fixed_events.map(fixedArrangementCopy),
@@ -78,6 +81,28 @@ export function buildPrePlanConfirmationViewModel(
         ? `还需要补充 ${combinedBlockers.length} 个关键信息。`
         : "请先补充会影响路线安排的关键信息。",
   };
+}
+
+function displayedMustPlaces(envelope: SourceLinkedTripIntentEnvelope): Array<{ id: string; name: string; source: "candidate" | "direct" }> {
+  const candidates = envelope.formal_contract.must_visit_places.map((place) => ({
+    id: `candidate:${place.trip_candidate_id}`,
+    name: place.display_name ?? "已确认地点",
+    source: "candidate" as const,
+  }));
+  const direct = (envelope.formal_contract.place_identities ?? [])
+    .filter((identity) => identity.ownership === "must")
+    .map((identity) => ({
+      id: identity.stable_id,
+      name: identity.canonical_name ?? identity.original_name,
+      source: "direct" as const,
+    }));
+  const seen = new Set<string>();
+  return [...candidates, ...direct].filter((place) => {
+    const key = place.name.replace(/\s/g, "").toLocaleLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function hasVerifiedFixedPlace(

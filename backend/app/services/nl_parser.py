@@ -1215,12 +1215,45 @@ def build_weekday_day_map(text: str) -> dict[str, int]:
 
 
 def looks_like_fixed_event_clause(clause: str) -> bool:
-    if "安排" in clause and not any(
-        token in clause
-        for token in ("固定安排", "固定行程", "有安排", "别的安排", "其他安排", "没空", "不方便")
-    ):
-        return any(keyword in clause for keyword in FIXED_EVENT_NAME_KEYWORDS if keyword != "安排")
-    return any(keyword in clause for keyword in FIXED_EVENT_NAME_KEYWORDS)
+    if is_output_requirement_clause(clause):
+        return False
+    return any(
+        keyword in clause
+        for keyword in (
+            "预约",
+            "固定安排",
+            "固定行程",
+            "有安排",
+            "别的安排",
+            "其他安排",
+            "没空",
+            "不方便",
+            "见朋友",
+            "见面",
+            "会朋友",
+            "演出",
+            "音乐剧",
+            "话剧",
+            "表演",
+            "会议",
+            "有约",
+        )
+    )
+
+
+def is_output_requirement_clause(clause: str) -> bool:
+    """Keep requested itinerary output from becoming a user commitment."""
+
+    normalized = clause.strip()
+    return (
+        "需要预约" in normalized
+        or "可能预约" in normalized
+        or "如需预约" in normalized
+        or (
+            normalized.startswith(("如果", "若"))
+            and any(token in normalized for token in ("预约", "待确认", "人流", "天气影响"))
+        )
+    )
 
 
 def is_non_actionable_generic_fixed_event(event: ParsedFixedEvent) -> bool:
