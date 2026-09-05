@@ -55,6 +55,33 @@ class PlaceIdentityResolutionTests(unittest.TestCase):
         self.assertEqual([item.provider_place_id for item in west_lake.confirmation_options], ["amap-west-lake", "amap-fountain"])
         self.assertIsNone(west_lake.latitude)
 
+    def test_discovery_preserves_explicit_places_when_legacy_compiler_limit_is_exceeded(self) -> None:
+        identities = discover_place_identities(
+            direct_user_text=(
+                "我想去重庆玩 3 天。已经确定想去洪崖洞、解放碑、李子坝轻轨站、鹅岭二厂、"
+                "山城步道、南山一棵树观景台、磁器口、长江索道、罗汉寺。"
+                "请按 Day 1 / Day 2 / Day 3 输出，每个地点说明推荐原因、预计停留时长、与下一站的交通方式。"
+            ),
+            city="重庆",
+            provider=StaticPoiProvider(),
+        )
+
+        self.assertEqual(
+            [identity.original_name for identity in identities],
+            [
+                "洪崖洞",
+                "解放碑",
+                "李子坝轻轨站",
+                "鹅岭二厂",
+                "山城步道",
+                "南山一棵树观景台",
+                "磁器口",
+                "长江索道",
+                "罗汉寺",
+            ],
+        )
+        self.assertTrue(all(identity.ownership == "must" for identity in identities))
+
     def test_confirm_rehydrates_provider_identity_not_client_geometry(self) -> None:
         identity = discover_place_identities(
             direct_user_text="我想去杭州玩两天，已经想去西湖。",

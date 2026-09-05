@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from hashlib import sha256
 import re
 from typing import Iterable
+
+from pydantic import ValidationError
 
 from app.services.poi_discovery_provider import (
     PoiDiscoveryCandidate,
@@ -9,6 +12,7 @@ from app.services.poi_discovery_provider import (
     PoiDiscoveryUnavailable,
     default_poi_discovery_provider,
 )
+from app.services.nl_parser import parse_trip_text_fallback
 from app.services.trip_compiler import compile_travel_intent
 from app.trips.intent_contracts import PlaceIdentity, PlaceResolutionOption
 
@@ -33,8 +37,18 @@ def discover_place_identities(
     selection is required and is recorded by a new immutable Draft Intent revision.
     """
 
-    compiled = compile_travel_intent(direct_user_text).intent
     active_provider = provider or default_poi_discovery_provider()
+    try:
+        compiled = compile_travel_intent(direct_user_text).intent
+    except ValidationError as exc:
+        if not _is_legacy_place_limit_error(exc):
+            raise
+        return _discover_explicit_direct_places(
+            direct_user_text=direct_user_text,
+            city=city,
+            provider=active_provider,
+        )
+
     identities: list[PlaceIdentity] = []
     for place in compiled.must_visit_places:
         if _is_destination_phrase(place.name, city or compiled.destination):
@@ -79,6 +93,92 @@ def discover_place_identities(
             )
         )
     return _deduplicate_identities(identities)
+
+
+def _discover_explicit_direct_places(
+    *,
+    direct_user_text: str,
+    city: str | None,
+    provider: PoiDiscoveryProvider,
+) -> list[PlaceIdentity]:
+    """Recover source-place confirmation without the legacy itinerary limit.
+
+    The pre-plan workspace only needs provider choices for clearly named places.
+    It must not make its availability depend on the legacy V1 itinerary contract,
+    which has a separate eight-place scheduling limit and can over-extract prose
+    from a user's requested output format.
+    """
+
+    discovery_city = city or parse_trip_text_fallback(direct_user_text).city
+    identities = [
+        _identity_from_discovery(
+            stable_id=_direct_place_stable_id(name, index),
+            original_name=name,
+            ownership="must",
+            source_fragment_ids=[_direct_place_source_id(name, index)],
+            city=discovery_city,
+            provider=provider,
+        )
+        for index, name in enumerate(_explicit_must_visit_names(direct_user_text))
+    ]
+    return _deduplicate_identities(identities)
+
+
+def _is_legacy_place_limit_error(error: ValidationError) -> bool:
+    return any(
+        "at most eight user places" in str(item.get("msg", ""))
+        for item in error.errors()
+    )
+
+
+def _explicit_must_visit_names(text: str) -> list[str]:
+    """Extract only deliberate destination lists, never requested output fields."""
+
+    names: list[str] = []
+    for match in re.finditer(r"(?:已经\s*(?:确定\s*)?|确定\s*)?(?:想去|必去)([^。；;\n]+)", text):
+        for item in re.split(r"[、，,]|(?:和|及|与)", match.group(1)):
+            name = item.strip(" ：:，,。")
+            if _is_explicit_place_name(name):
+                names.append(name)
+    return _unique_names(names)
+
+
+def _is_explicit_place_name(value: str) -> bool:
+    if not 2 <= len(value) <= 80:
+        return False
+    return not any(
+        token in value
+        for token in (
+            "玩",
+            "旅行",
+            "旅游",
+            "朋友",
+            "原因",
+            "停留",
+            "交通",
+            "每个地点",
+            "输出",
+        )
+    )
+
+
+def _unique_names(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    names: list[str] = []
+    for value in values:
+        key = _normalise_name(value)
+        if key and key not in seen:
+            seen.add(key)
+            names.append(value)
+    return names
+
+
+def _direct_place_stable_id(name: str, index: int) -> str:
+    return f"direct_place_{sha256(f'{index}:{name}'.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _direct_place_source_id(name: str, index: int) -> str:
+    return f"direct_source_{sha256(f'{index}:{name}'.encode('utf-8')).hexdigest()[:16]}"
 
 
 def discover_fixed_event_identity(

@@ -13,6 +13,17 @@ from app.trips.dependencies import reset_trip_repository_cache_for_tests
 from tests.test_trip_persistence_api import simple_itinerary
 
 
+CHONGQING_THREE_DAY_REQUEST = """
+我想去重庆玩 3 天，和朋友两个人。第一天晚上 20:30 到江北机场，住在解放碑附近；第三天下午 16:30 从江北机场飞走，希望至少提前 2 小时到机场。
+
+我想吃重庆火锅、重庆小面和本地小吃，也想看夜景、体验山城的立体交通和老街文化。已经确定想去洪崖洞、解放碑、李子坝轻轨站、鹅岭二厂、山城步道和南山一棵树观景台。
+
+安排不要太极限：每天 10 点左右开始，单段步行尽量不要超过 25 分钟，下午安排一次可以坐下来休息或回酒店的空档。第一天只安排入住后的夜间活动；第三天上午轻松一些，并明确给出从最后一个地点去机场的建议出发时间。
+
+请按 Day 1 / Day 2 / Day 3 输出，每个地点说明推荐原因、预计停留时长、与下一站的交通方式；如果某个地点需要预约、天气影响较大或可能人流拥挤，请标注为待确认项。不要把不确定的营业时间或交通时间写成已确认事实。
+""".strip()
+
+
 class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -99,6 +110,32 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(replay.status_code, 200, replay.text)
         self.assertTrue(replay.json()["persistence"]["idempotent_replay"])
+
+    def test_compile_accepts_a_detailed_request_with_six_explicit_places(self) -> None:
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": CHONGQING_THREE_DAY_REQUEST},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-chongqing-detailed"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        compiled = self.client.post(
+            f"/trips/{created.json()['trip']['id']}/preplan-intent/compile",
+            json={
+                "base_trip_revision_id": None,
+                "base_intent_revision_id": None,
+                "direct_user_text": CHONGQING_THREE_DAY_REQUEST,
+                "use_llm_proposal_adapter": True,
+            },
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-chongqing-detailed-compile"},
+        )
+
+        self.assertEqual(compiled.status_code, 201, compiled.text)
+        identities = compiled.json()["envelope"]["formal_contract"]["place_identities"]
+        self.assertEqual(
+            [identity["original_name"] for identity in identities if identity["ownership"] == "must"],
+            ["洪崖洞", "解放碑", "李子坝轻轨站", "鹅岭二厂", "山城步道", "南山一棵树观景台"],
+        )
 
     def test_newer_draft_intent_invalidates_older_preview(self) -> None:
         created = self.client.post("/trips/drafts", json={"direct_user_text": "我想去西安玩两天。"}, headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-xian-two"})
