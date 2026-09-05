@@ -117,9 +117,15 @@ results, frozen Planning Run evidence, TripRevision continuity, and Living
 Roadbook presentation. It does not add a dining recommendation engine or a new
 planning workflow.
 
-After Round 29 is accepted, the next product objective is Opening-Hours Temporal
-Feasibility: verify that a place is operational during its scheduled visit rather
-than claiming more than route and time-window evidence proves.
+After Round 29 is accepted, the next product objective is Confirmation UX P0.
+It replaces the Draft Intent confirmation page's repeated blocker forms with a
+single, source-aware confirmation queue while preserving verified-place,
+fixed-event and revision boundaries. The implementation plan is
+`tasks/confirmation-ux-p0-plan.md`.
+
+Opening-Hours Temporal Feasibility follows Confirmation UX P0: verify that a
+place is operational during its scheduled visit rather than claiming more than
+route and time-window evidence proves.
 
 Known Round 29 boundaries remain explicit:
 
