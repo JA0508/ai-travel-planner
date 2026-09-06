@@ -172,6 +172,31 @@ class DraftIntentEditingApiTests(unittest.TestCase):
         self.assertTrue(unavailable.json()["error"]["recoverable"])
         self.assertEqual(get_trip_repository().get_latest_draft_intent_revision(trip_id=trip_id).id, revision_id)
 
+        draft = self.client.get(f"/trips/{trip_id}/draft")
+        self.assertEqual(draft.status_code, 200, draft.text)
+        with patch(
+            "app.trips.service.confirm_place_identity",
+            side_effect=PlaceIdentityResolutionError("place_identity_provider_unavailable"),
+        ):
+            unavailable_confirmation = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/edits",
+                json={
+                    "base_intent_revision_id": revision_id,
+                    "base_draft_version": draft.json()["trip"]["draft_version"],
+                    "operations": [{
+                        "operation": "confirm_place_identity",
+                        "place_stable_id": "shancheng",
+                        "provider_place_id": "amap-shibati",
+                        "search_query": "十八梯",
+                    }],
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "confirm-place-provider-unavailable"},
+            )
+        self.assertEqual(unavailable_confirmation.status_code, 503, unavailable_confirmation.text)
+        self.assertEqual(unavailable_confirmation.json()["error"]["code"], "place_identity_provider_unavailable")
+        self.assertTrue(unavailable_confirmation.json()["error"]["recoverable"])
+        self.assertEqual(get_trip_repository().get_latest_draft_intent_revision(trip_id=trip_id).id, revision_id)
+
         verified = identity.model_copy(
             update={
                 "resolution_status": "verified",

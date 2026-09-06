@@ -81,6 +81,9 @@ test("pre-plan workspace uses one editorial confirmation queue instead of repeat
   assert.match(queueSource, /换一个\s*\/\s*搜索地点/);
   assert.match(source, /getPrePlanPlaceIdentitySuggestions/);
   assert.match(source, /place_identity_provider_unavailable/);
+  assert.match(source, /当前地点尚未确认/);
+  assert.match(source, /result\.recoverable \|\| !result\.code/);
+  assert.match(source, /setFeedback\(\{ tone: "error", message \}\)/);
   assert.match(queueSource, /role="alert"/);
   assert.match(source, /地点服务暂时不可用/);
   assert.match(queueSource, /setSuggestions\(null\);[\s\S]*const result = await onSearch/);

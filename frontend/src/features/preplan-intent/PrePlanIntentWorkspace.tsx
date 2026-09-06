@@ -284,8 +284,10 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       return;
     }
     setPendingEdit(null);
-    setRetryableRequest(result.code ? null : request);
-    setEditorError(result.code ? userFacingEditError(result.code) : "网络连接失败，你的修改还在这里。");
+    const message = result.code ? userFacingEditError(result.code) : "网络连接失败，你的修改还在这里。";
+    setRetryableRequest(result.recoverable || !result.code ? request : null);
+    setEditorError(message);
+    setFeedback({ tone: "error", message });
   }
 
   function saveEditor() {
@@ -615,5 +617,5 @@ function withLatestBase(payload: DraftIntentEditRequest | DraftClarificationReso
 function operationAlreadyApplied(envelope: SourceLinkedTripIntentEnvelope, operation: DraftIntentEditOperation): boolean { const date = envelope.formal_contract.date_policy; if (operation.operation === "update_destination") return envelope.formal_contract.destinations[0]?.city_name === operation.city; if (operation.operation === "update_trip_days") return date?.trip_days === operation.trip_days; if (operation.operation === "update_date_policy") return date?.start_date === operation.start_date && date?.end_date === operation.end_date; if (operation.operation === "update_pace") return envelope.formal_contract.pace?.value === operation.pace; return false; }
 function semanticSummary(envelope: SourceLinkedTripIntentEnvelope): string { const date = envelope.formal_contract.date_policy; return [envelope.formal_contract.destinations[0]?.city_name, date?.start_date && date.end_date ? `${date.start_date} 至 ${date.end_date}` : date?.trip_days ? `${date.trip_days} 天` : null, envelope.formal_contract.pace?.value === "relaxed" ? "轻松" : envelope.formal_contract.pace?.value === "balanced" ? "适中" : envelope.formal_contract.pace?.value === "intensive" ? "紧凑" : null].filter(Boolean).join("，") || "尚未补全"; }
 function attemptedSummary(request: PendingDraftIntentRequest): string { const operation = request.operation; if (operation.operation === "update_destination") return `目的地：${operation.city}`; if (operation.operation === "update_trip_days") return `旅行天数：${operation.trip_days} 天`; if (operation.operation === "update_date_policy") return `旅行日期：${operation.start_date ?? ""} 至 ${operation.end_date ?? ""}`; if (operation.operation === "update_pace") return `旅行节奏：${operation.pace === "relaxed" ? "轻松" : operation.pace === "balanced" ? "适中" : "紧凑"}`; return "你刚才的修改"; }
-function userFacingEditError(code: string): string { if (code === "invalid_intent_edit") return "日期和天数不一致，请检查后再保存。"; if (code === "clarification_already_resolved") return "这项信息已经在其他页面完成确认。"; return "暂时无法保存这项修改，请检查输入后再试。"; }
+function userFacingEditError(code: string): string { if (code === "invalid_intent_edit") return "日期和天数不一致，请检查后再保存。"; if (code === "clarification_already_resolved") return "这项信息已经在其他页面完成确认。"; if (code === "place_identity_provider_unavailable") return "地点服务暂时不可用，当前地点尚未确认。"; return "暂时无法保存这项修改，请检查输入后再试。"; }
 function createIdempotencyKey(prefix: string): string { return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? `${prefix}:${crypto.randomUUID()}` : `${prefix}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`; }

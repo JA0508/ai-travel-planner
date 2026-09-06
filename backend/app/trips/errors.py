@@ -116,13 +116,13 @@ class DraftIntentEditError(TripError):
         super().__init__(code=code, message="The draft intent edit is not valid for the current draft.", status_code=422)
 
 
-class PlaceIdentitySuggestionUnavailableError(TripError):
-    """The read-only provider lookup can be safely retried without changing a draft."""
+class PlaceIdentityProviderUnavailableError(TripError):
+    """A provider-backed identity operation can be retried without changing a draft."""
 
     def __init__(self) -> None:
         super().__init__(
             code="place_identity_provider_unavailable",
-            message="Place suggestion provider is temporarily unavailable.",
+            message="Place identity provider is temporarily unavailable.",
             status_code=503,
         )
 

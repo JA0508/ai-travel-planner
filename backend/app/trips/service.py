@@ -107,7 +107,7 @@ from .errors import (
     StaleBaseRevisionError,
     ClarificationAlreadyResolvedError,
     DraftIntentEditError,
-    PlaceIdentitySuggestionUnavailableError,
+    PlaceIdentityProviderUnavailableError,
     StaleDraftRevisionError,
     StaleIntentRevisionError,
     StaleMutationProposalError,
@@ -467,6 +467,8 @@ class TripPersistenceService:
                             )
                         )
         except PlaceIdentityResolutionError as exc:
+            if exc.code == "place_identity_provider_unavailable":
+                raise PlaceIdentityProviderUnavailableError() from exc
             raise DraftIntentEditError(exc.code) from exc
         candidate_ids = sorted({
             *overrides.must_candidate_ids,
@@ -616,7 +618,7 @@ class TripPersistenceService:
             suggestions = search_place_identity_suggestions(identity=identity, query=query)
         except PlaceIdentityResolutionError as exc:
             if exc.code == "place_identity_provider_unavailable":
-                raise PlaceIdentitySuggestionUnavailableError() from exc
+                raise PlaceIdentityProviderUnavailableError() from exc
             raise DraftIntentEditError(exc.code) from exc
         return PrePlanPlaceIdentitySuggestionsResponse(
             place_stable_id=identity.stable_id,
