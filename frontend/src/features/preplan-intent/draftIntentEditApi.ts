@@ -67,6 +67,10 @@ export type PrePlanPlaceIdentitySuggestionsResponse = {
   recommendation_reason: string | null;
 };
 
+export type PlaceIdentitySuggestionSearchResult =
+  | { kind: "success"; suggestions: PrePlanPlaceIdentitySuggestionsResponse }
+  | { kind: "failed"; message: string; retryable: boolean };
+
 export type DraftClarificationAnswer =
   | { answer_type: "destination"; city: string; timezone?: string | null }
   | { answer_type: "trip_days"; trip_days: number }

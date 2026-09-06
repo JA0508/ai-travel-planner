@@ -17,7 +17,7 @@ from app.trips.dependencies import get_trip_repository, reset_trip_repository_ca
 from app.trips.errors import StaleDraftRevisionError, StaleIntentRevisionError
 from app.trips.service import TripPersistenceService
 from app.trips.intent_contracts import CompileTripIntentRequest, PlaceIdentity, PlaceResolutionOption
-from app.services.place_identity_resolution import PlaceIdentitySuggestions
+from app.services.place_identity_resolution import PlaceIdentityResolutionError, PlaceIdentitySuggestions
 
 
 class DraftIntentEditingApiTests(unittest.TestCase):
@@ -157,6 +157,19 @@ class DraftIntentEditingApiTests(unittest.TestCase):
         self.assertEqual(response.json()["query"], "十八梯")
         self.assertEqual(response.json()["recommended_provider_place_id"], "amap-shibati")
         self.assertEqual(response.json()["options"][0]["provider_place_id"], "amap-shibati")
+        self.assertEqual(get_trip_repository().get_latest_draft_intent_revision(trip_id=trip_id).id, revision_id)
+
+        with patch(
+            "app.trips.service.search_place_identity_suggestions",
+            side_effect=PlaceIdentityResolutionError("place_identity_provider_unavailable"),
+        ):
+            unavailable = self.client.get(
+                f"/trips/{trip_id}/preplan-intent/place-identities/shancheng/suggestions",
+                params={"query": "十八梯"},
+            )
+        self.assertEqual(unavailable.status_code, 503, unavailable.text)
+        self.assertEqual(unavailable.json()["error"]["code"], "place_identity_provider_unavailable")
+        self.assertTrue(unavailable.json()["error"]["recoverable"])
         self.assertEqual(get_trip_repository().get_latest_draft_intent_revision(trip_id=trip_id).id, revision_id)
 
         verified = identity.model_copy(

@@ -302,6 +302,17 @@ body {
   line-height: 1.45;
 }
 
+.uc-place-search-error {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(177, 138, 88, 0.38);
+  border-radius: 5px;
+  background: var(--ec-ochre-soft);
+  color: var(--ec-ink-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .uc-place-recommendation p {
   color: var(--ec-clay);
   font-weight: 800;

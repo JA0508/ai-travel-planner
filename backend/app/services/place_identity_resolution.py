@@ -274,6 +274,7 @@ def search_place_identity_suggestions(
         keyword=keyword,
         city=identity.city or "",
         original_name=identity.original_name,
+        raise_when_unavailable=True,
     )
     return PlaceIdentitySuggestions(
         query=keyword,
@@ -317,10 +318,13 @@ def _search_options(
     keyword: str,
     city: str,
     original_name: str,
+    raise_when_unavailable: bool = False,
 ) -> list[PlaceResolutionOption]:
     try:
         candidates = provider.search_text(keyword=keyword, city=city, offset=8)
-    except PoiDiscoveryUnavailable:
+    except PoiDiscoveryUnavailable as exc:
+        if raise_when_unavailable:
+            raise PlaceIdentityResolutionError("place_identity_provider_unavailable") from exc
         return []
     ranked = [
         (candidate, option)

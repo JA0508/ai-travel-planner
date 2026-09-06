@@ -8,7 +8,7 @@ from app.services.place_identity_resolution import (
     discover_place_identities,
     search_place_identity_suggestions,
 )
-from app.services.poi_discovery_provider import PoiDiscoveryCandidate, PoiDiscoveryCapability
+from app.services.poi_discovery_provider import PoiDiscoveryCandidate, PoiDiscoveryCapability, PoiDiscoveryUnavailable
 
 
 class StaticPoiProvider:
@@ -154,3 +154,21 @@ class PlaceIdentityResolutionTests(unittest.TestCase):
         )
         self.assertEqual(confirmed.canonical_name, "十八梯传统风貌区")
         self.assertEqual(confirmed.provider_place_id, "amap-shibati")
+
+    def test_manual_search_does_not_misrepresent_provider_outage_as_no_candidates(self) -> None:
+        identity = discover_place_identities(
+            direct_user_text="我想去杭州玩两天，已经想去西湖。",
+            city="杭州",
+            provider=StaticPoiProvider(),
+        )[0]
+
+        class UnavailableProvider(StaticPoiProvider):
+            def search_text(self, *, keyword: str, city: str, offset: int) -> list[PoiDiscoveryCandidate]:
+                raise PoiDiscoveryUnavailable("provider timeout")
+
+        with self.assertRaisesRegex(PlaceIdentityResolutionError, "place_identity_provider_unavailable"):
+            search_place_identity_suggestions(
+                identity=identity,
+                query="西湖",
+                provider=UnavailableProvider(),
+            )

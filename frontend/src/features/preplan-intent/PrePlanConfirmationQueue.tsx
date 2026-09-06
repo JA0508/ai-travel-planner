@@ -1,7 +1,7 @@
 import React, { useState, type FormEvent, type ReactNode } from "react";
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption } from "@/features/intent-confirmation/intentTypes";
 import type { ConfirmationItem, ConfirmedItem } from "./prePlanConfirmationModel";
-import type { PrePlanPlaceIdentitySuggestionsResponse } from "./draftIntentEditApi";
+import type { PlaceIdentitySuggestionSearchResult, PrePlanPlaceIdentitySuggestionsResponse } from "./draftIntentEditApi";
 
 type Props = {
   items: ConfirmationItem[];
@@ -11,7 +11,7 @@ type Props = {
   questions: IntentClarification[];
   busy: boolean;
   onConfirmPlace: (identity: PlaceIdentity, option: PlaceResolutionOption, searchQuery?: string) => void;
-  onSearchPlace: (identity: PlaceIdentity, query: string) => Promise<PrePlanPlaceIdentitySuggestionsResponse | null>;
+  onSearchPlace: (identity: PlaceIdentity, query: string) => Promise<PlaceIdentitySuggestionSearchResult>;
   onUpdateFixedLocation: (event: FixedEventIntent, location: string) => void;
   renderClarification: (question: IntentClarification) => ReactNode;
 };
@@ -128,6 +128,7 @@ function PlaceIdentityRecommendation({
   const [suggestions, setSuggestions] = useState<PrePlanPlaceIdentitySuggestionsResponse | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchMessage, setSearchMessage] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<{ message: string; retryable: boolean } | null>(null);
   const options = suggestions?.options ?? identity.confirmation_options;
   const recommendedId = suggestions?.recommended_provider_place_id ?? options[0]?.provider_place_id ?? null;
   const recommended = options.find((option) => option.provider_place_id === recommendedId) ?? null;
@@ -140,12 +141,16 @@ function PlaceIdentityRecommendation({
     if (!trimmed || searching || busy) return;
     setSearching(true);
     setSearchMessage(null);
+    setSearchError(null);
+    setSuggestions(null);
     const result = await onSearch(identity, trimmed);
     setSearching(false);
-    if (result) {
-      setSuggestions(result);
-      setSearchMessage(result.options.length ? `已找到 ${result.options.length} 个地点候选。` : "没有找到可确认的地点。请尝试更具体的地标或街区名称。");
+    if (result.kind === "success") {
+      setSuggestions(result.suggestions);
+      setSearchMessage(result.suggestions.options.length ? `已找到 ${result.suggestions.options.length} 个地点候选。` : "没有找到可确认的地点。请尝试更具体的地标或街区名称。");
+      return;
     }
+    setSearchError({ message: result.message, retryable: result.retryable });
   }
 
   return <div className="uc-place-identity-editor" aria-label={`${title}的地点确认`}>
@@ -163,6 +168,7 @@ function PlaceIdentityRecommendation({
         <label htmlFor={`place-search-${identity.stable_id}`}>搜索更具体的地点</label>
         <div><input id={`place-search-${identity.stable_id}`} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如：十八梯、解放碑附近" maxLength={160} disabled={busy || searching} /><button type="submit" className="uc-intent-secondary" disabled={busy || searching || !query.trim()}>{searching ? "搜索中…" : "搜索"}</button></div>
       </form>
+      {searchError ? <p className="uc-place-search-error" role="alert">{searchError.message}{searchError.retryable ? " 你可以稍后直接重新搜索，当前行程没有变化。" : " 请换一个更具体的地点名称后再试。"}</p> : null}
       {searchMessage ? <p className="uc-place-search-status" role="status">{searchMessage}</p> : null}
       {alternatives.length ? <div className="uc-confirmation-choice" aria-label={`${title}的其他地点候选`}>
         {alternatives.map((option) => <button key={option.provider_place_id} type="button" disabled={busy || searching} onClick={() => onConfirm(identity, option, suggestions?.query)}><strong>{option.canonical_name}</strong><small>{option.address_summary ?? option.category ?? "提供商地点候选"}</small></button>)}

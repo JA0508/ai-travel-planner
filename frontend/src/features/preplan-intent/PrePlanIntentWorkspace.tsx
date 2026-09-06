@@ -16,6 +16,7 @@ import type {
   DraftIntentEditRequest,
   DraftIntentEditResponse,
   LatestPrePlanIntentResponse,
+  PlaceIdentitySuggestionSearchResult,
   PrePlanPlaceIdentitySuggestionsResponse,
 } from "./draftIntentEditApi";
 
@@ -336,15 +337,18 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     });
   }
 
-  async function searchPlaceSuggestions(identity: PlaceIdentity, query: string): Promise<PrePlanPlaceIdentitySuggestionsResponse | null> {
+  async function searchPlaceSuggestions(identity: PlaceIdentity, query: string): Promise<PlaceIdentitySuggestionSearchResult> {
     const result = await getTripJson<PrePlanPlaceIdentitySuggestionsResponse>(
       TRIP_API_ENDPOINTS.getPrePlanPlaceIdentitySuggestions(tripId, identity.stable_id, query),
       "暂时无法搜索地点候选。",
       "服务暂时不可用，未更改你的行程信息。",
     );
-    if (result.ok) return result.data;
-    setFeedback({ tone: "error", message: result.message || "暂时无法搜索地点候选。" });
-    return null;
+    if (result.ok) return { kind: "success", suggestions: result.data };
+    return {
+      kind: "failed",
+      message: userFacingPlaceSuggestionError(result.code),
+      retryable: Boolean(result.recoverable),
+    };
   }
 
   function updateFixedEventLocation(event: FixedEventIntent, locationText: string) {
@@ -515,6 +519,12 @@ function userFacingRequestError(code?: string, fallback = "暂时无法整理旅
   if (code === "intent_parser_unavailable" || code === "intent_parser_timeout" || code === "intent_parser_invalid_output") return "部分内容未能自动识别，请检查关键信息。";
   if (code === "planner_handoff_blocked" && context?.reason_code === "fixed_event_identity_not_verified") return "固定安排的地点还没有确认，暂时不能把它排进可执行路线。请返回修改需求，补充预约地点或从导入资料中确认该地点。";
   return fallback;
+}
+
+function userFacingPlaceSuggestionError(code?: string): string {
+  if (code === "place_identity_provider_unavailable") return "地点服务暂时不可用。";
+  if (code === "place_identity_search_query_invalid") return "请使用更短、更明确的地点名称。";
+  return "暂时无法搜索地点候选。";
 }
 
 function summaryEditor(label: string): CriticalEditor | null {
