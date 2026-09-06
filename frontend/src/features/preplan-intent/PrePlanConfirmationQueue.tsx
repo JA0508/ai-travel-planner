@@ -147,7 +147,11 @@ function PlaceIdentityRecommendation({
     setSearching(false);
     if (result.kind === "success") {
       setSuggestions(result.suggestions);
-      setSearchMessage(result.suggestions.options.length ? `已找到 ${result.suggestions.options.length} 个地点候选。` : "没有找到可确认的地点。请尝试更具体的地标或街区名称。");
+      setSearchMessage(
+        result.suggestions.options.length
+          ? `已找到 ${result.suggestions.options.length} 个地点候选。`
+          : `没有找到「${trimmed}」对应的地点。试试补充城市、街区、附近地标或准确地址。`,
+      );
       return;
     }
     setSearchError({ message: result.message, retryable: result.retryable });

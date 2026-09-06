@@ -84,6 +84,8 @@ test("pre-plan workspace uses one editorial confirmation queue instead of repeat
   assert.match(queueSource, /role="alert"/);
   assert.match(source, /地点服务暂时不可用/);
   assert.match(queueSource, /setSuggestions\(null\);[\s\S]*const result = await onSearch/);
+  assert.match(queueSource, /没有找到「\$\{trimmed\}」对应的地点/);
+  assert.match(queueSource, /补充城市、街区、附近地标或准确地址/);
   assert.doesNotMatch(source, /function FixedPlaceConfirmation/);
   assert.doesNotMatch(source, /function MustPlaceConfirmation/);
   assert.doesNotMatch(source, /function FixedArrangementSummary/);
