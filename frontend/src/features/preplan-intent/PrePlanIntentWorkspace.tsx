@@ -16,6 +16,7 @@ import type {
   DraftIntentEditRequest,
   DraftIntentEditResponse,
   LatestPrePlanIntentResponse,
+  PrePlanPlaceIdentitySuggestionsResponse,
 } from "./draftIntentEditApi";
 
 type ItineraryResponse = any;
@@ -317,13 +318,14 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     });
   }
 
-  function confirmPlaceIdentity(identity: PlaceIdentity, option: PlaceResolutionOption) {
+  function confirmPlaceIdentity(identity: PlaceIdentity, option: PlaceResolutionOption, searchQuery?: string) {
     const base = currentBase();
     if (!base) return;
     const operation: DraftIntentEditOperation = {
       operation: "confirm_place_identity",
       place_stable_id: identity.stable_id,
       provider_place_id: option.provider_place_id,
+      ...(searchQuery?.trim() ? { search_query: searchQuery.trim() } : {}),
     };
     void submitPending({
       endpoint: TRIP_API_ENDPOINTS.editPrePlanIntent(tripId),
@@ -332,6 +334,17 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       operation,
       formDraft: {},
     });
+  }
+
+  async function searchPlaceSuggestions(identity: PlaceIdentity, query: string): Promise<PrePlanPlaceIdentitySuggestionsResponse | null> {
+    const result = await getTripJson<PrePlanPlaceIdentitySuggestionsResponse>(
+      TRIP_API_ENDPOINTS.getPrePlanPlaceIdentitySuggestions(tripId, identity.stable_id, query),
+      "暂时无法搜索地点候选。",
+      "服务暂时不可用，未更改你的行程信息。",
+    );
+    if (result.ok) return result.data;
+    setFeedback({ tone: "error", message: result.message || "暂时无法搜索地点候选。" });
+    return null;
   }
 
   function updateFixedEventLocation(event: FixedEventIntent, locationText: string) {
@@ -463,6 +476,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
           questions={intent.envelope.clarification_queue}
           busy={busy || draftVersion === null}
           onConfirmPlace={confirmPlaceIdentity}
+          onSearchPlace={searchPlaceSuggestions}
           onUpdateFixedLocation={updateFixedEventLocation}
           renderClarification={(question) => <ClarificationCard question={question} pending={Boolean(pendingEdit)} onResolve={resolveClarification} />}
         />

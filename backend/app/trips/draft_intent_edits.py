@@ -119,6 +119,10 @@ class ConfirmPlaceIdentityOperation(_Operation):
     operation: Literal["confirm_place_identity"]
     place_stable_id: str = Field(..., min_length=1, max_length=160)
     provider_place_id: str = Field(..., min_length=1, max_length=160)
+    # A user may search with a more specific landmark before explicitly choosing
+    # an option.  The server replays this query against the provider rather than
+    # trusting a browser-supplied place record.
+    search_query: str | None = Field(default=None, min_length=1, max_length=160)
 
 
 DraftIntentEditOperation = Annotated[

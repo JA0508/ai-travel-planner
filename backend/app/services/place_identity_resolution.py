@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from hashlib import sha256
 import re
 from typing import Iterable
@@ -23,6 +24,15 @@ class PlaceIdentityResolutionError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class PlaceIdentitySuggestions:
+    """Read-only provider candidates for an explicit user place search."""
+
+    query: str
+    options: list[PlaceResolutionOption]
+    recommended_provider_place_id: str | None
 
 
 def discover_place_identities(
@@ -207,6 +217,7 @@ def confirm_place_identity(
     *,
     identity: PlaceIdentity,
     provider_place_id: str,
+    search_query: str | None = None,
     provider: PoiDiscoveryProvider | None = None,
 ) -> PlaceIdentity:
     """Re-read the chosen provider candidate; never trust client-side geometry."""
@@ -214,9 +225,10 @@ def confirm_place_identity(
     if not provider_place_id.strip():
         raise PlaceIdentityResolutionError("place_identity_selection_required")
     active_provider = provider or default_poi_discovery_provider()
+    keyword = _normalise_search_query(search_query) or identity.original_name
     try:
         candidates = active_provider.search_text(
-            keyword=identity.original_name,
+            keyword=keyword,
             city=identity.city or "",
             offset=20,
         )
@@ -247,6 +259,29 @@ def confirm_place_identity(
     )
 
 
+def search_place_identity_suggestions(
+    *,
+    identity: PlaceIdentity,
+    query: str | None = None,
+    provider: PoiDiscoveryProvider | None = None,
+) -> PlaceIdentitySuggestions:
+    """Find ordered, provider-backed choices without modifying a Draft Intent."""
+
+    active_provider = provider or default_poi_discovery_provider()
+    keyword = _normalise_search_query(query) or identity.original_name
+    options = _search_options(
+        provider=active_provider,
+        keyword=keyword,
+        city=identity.city or "",
+        original_name=identity.original_name,
+    )
+    return PlaceIdentitySuggestions(
+        query=keyword,
+        options=options,
+        recommended_provider_place_id=options[0].provider_place_id if options else None,
+    )
+
+
 def _identity_from_discovery(
     *,
     stable_id: str,
@@ -257,7 +292,12 @@ def _identity_from_discovery(
     provider: PoiDiscoveryProvider,
     fixed_event_id: str | None = None,
 ) -> PlaceIdentity:
-    options = _search_options(provider=provider, keyword=original_name, city=city or "")
+    options = _search_options(
+        provider=provider,
+        keyword=original_name,
+        city=city or "",
+        original_name=original_name,
+    )
     return PlaceIdentity(
         stable_id=stable_id,
         original_name=original_name,
@@ -271,12 +311,64 @@ def _identity_from_discovery(
     )
 
 
-def _search_options(*, provider: PoiDiscoveryProvider, keyword: str, city: str) -> list[PlaceResolutionOption]:
+def _search_options(
+    *,
+    provider: PoiDiscoveryProvider,
+    keyword: str,
+    city: str,
+    original_name: str,
+) -> list[PlaceResolutionOption]:
     try:
-        candidates = provider.search_text(keyword=keyword, city=city, offset=4)
+        candidates = provider.search_text(keyword=keyword, city=city, offset=8)
     except PoiDiscoveryUnavailable:
         return []
-    return [option for candidate in candidates if (option := _option_from_candidate(candidate)) is not None][:4]
+    ranked = [
+        (candidate, option)
+        for candidate in candidates
+        if (option := _option_from_candidate(candidate)) is not None
+    ]
+    ranked.sort(
+        key=lambda item: _candidate_rank(
+            candidate_name=item[0].name,
+            query=keyword,
+            original_name=original_name,
+        ),
+        reverse=True,
+    )
+    return [option for _, option in ranked[:4]]
+
+
+def _normalise_search_query(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = " ".join(value.split())
+    if not normalized:
+        return None
+    if len(normalized) > 160:
+        raise PlaceIdentityResolutionError("place_identity_search_query_invalid")
+    return normalized
+
+
+def _candidate_rank(*, candidate_name: str | None, query: str, original_name: str) -> int:
+    """Rank only by the user query and the original mention; provider order breaks ties."""
+
+    name = _normalise_name(candidate_name or "")
+    query_key = _normalise_name(query)
+    original_key = _normalise_name(original_name)
+    score = 0
+    if query_key and name == query_key:
+        score += 400
+    elif query_key and query_key in name:
+        score += 260
+    elif query_key and name in query_key:
+        score += 180
+    if original_key and name == original_key:
+        score += 220
+    elif original_key and original_key in name:
+        score += 120
+    elif original_key and name in original_key:
+        score += 80
+    return score
 
 
 def _option_from_candidate(candidate: PoiDiscoveryCandidate) -> PlaceResolutionOption | None:

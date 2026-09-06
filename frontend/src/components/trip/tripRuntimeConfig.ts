@@ -19,6 +19,12 @@ export const TRIP_API_ENDPOINTS = {
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent/edits`),
   getLatestPrePlanIntent: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent`),
+  getPrePlanPlaceIdentitySuggestions: (tripId: string, placeStableId: string, query: string) => {
+    const endpoint = buildApiUrl(
+      `/trips/${encodeURIComponent(tripId)}/preplan-intent/place-identities/${encodeURIComponent(placeStableId)}/suggestions`,
+    );
+    return `${endpoint}?query=${encodeURIComponent(query.trim())}`;
+  },
   resolvePrePlanIntentClarification: (tripId: string, clarificationId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent/clarifications/${encodeURIComponent(clarificationId)}/resolve`),
   previewPrePlanHandoff: (tripId: string) =>

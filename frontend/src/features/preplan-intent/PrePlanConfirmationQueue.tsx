@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from "react";
+import React, { useState, type FormEvent, type ReactNode } from "react";
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption } from "@/features/intent-confirmation/intentTypes";
 import type { ConfirmationItem, ConfirmedItem } from "./prePlanConfirmationModel";
+import type { PrePlanPlaceIdentitySuggestionsResponse } from "./draftIntentEditApi";
 
 type Props = {
   items: ConfirmationItem[];
@@ -9,7 +10,8 @@ type Props = {
   events: FixedEventIntent[];
   questions: IntentClarification[];
   busy: boolean;
-  onConfirmPlace: (identity: PlaceIdentity, option: PlaceResolutionOption) => void;
+  onConfirmPlace: (identity: PlaceIdentity, option: PlaceResolutionOption, searchQuery?: string) => void;
+  onSearchPlace: (identity: PlaceIdentity, query: string) => Promise<PrePlanPlaceIdentitySuggestionsResponse | null>;
   onUpdateFixedLocation: (event: FixedEventIntent, location: string) => void;
   renderClarification: (question: IntentClarification) => ReactNode;
 };
@@ -22,6 +24,7 @@ export function PrePlanConfirmationQueue({
   questions,
   busy,
   onConfirmPlace,
+  onSearchPlace,
   onUpdateFixedLocation,
   renderClarification,
 }: Props) {
@@ -49,6 +52,7 @@ export function PrePlanConfirmationQueue({
             question={item.kind === "clarification" || item.kind === "conflict" ? item.questionId ? questionById.get(item.questionId) ?? null : null : null}
             busy={busy}
             onConfirmPlace={onConfirmPlace}
+            onSearchPlace={onSearchPlace}
             onUpdateFixedLocation={onUpdateFixedLocation}
             renderClarification={renderClarification}
           />)}
@@ -76,6 +80,7 @@ function ConfirmationItemCard({
   question,
   busy,
   onConfirmPlace,
+  onSearchPlace,
   onUpdateFixedLocation,
   renderClarification,
 }: {
@@ -85,6 +90,7 @@ function ConfirmationItemCard({
   question: IntentClarification | null;
   busy: boolean;
   onConfirmPlace: Props["onConfirmPlace"];
+  onSearchPlace: Props["onSearchPlace"];
   onUpdateFixedLocation: Props["onUpdateFixedLocation"];
   renderClarification: Props["renderClarification"];
 }) {
@@ -93,12 +99,76 @@ function ConfirmationItemCard({
 
   return <article className="uc-confirmation-item">
     <div className="uc-confirmation-item-copy"><h4>{item.title}</h4><p>{item.detail}</p></div>
-    {identity?.confirmation_options.length ? <div className="uc-confirmation-choice" aria-label={`${item.title}的地点候选`}>
-      {identity.confirmation_options.map((option) => <button key={option.provider_place_id} type="button" disabled={busy} onClick={() => onConfirmPlace(identity, option)}><strong>{option.canonical_name}</strong><small>{option.address_summary ?? option.category ?? "地点信息"}</small></button>)}
-    </div> : null}
+    {identity ? <PlaceIdentityRecommendation
+      identity={identity}
+      title={item.title}
+      busy={busy}
+      onConfirm={onConfirmPlace}
+      onSearch={onSearchPlace}
+    /> : null}
     {item.kind === "fixed_place" && event ? <FixedLocationPrompt event={event} busy={busy} onSave={onUpdateFixedLocation} /> : null}
-    {item.kind === "must_place" && !identity?.confirmation_options.length ? <p className="uc-confirmation-muted">暂时没有可供确认的地点候选。请重新整理旅行信息，或补充更具体的地标。</p> : null}
   </article>;
+}
+
+function PlaceIdentityRecommendation({
+  identity,
+  title,
+  busy,
+  onConfirm,
+  onSearch,
+}: {
+  identity: PlaceIdentity;
+  title: string;
+  busy: boolean;
+  onConfirm: Props["onConfirmPlace"];
+  onSearch: Props["onSearchPlace"];
+}) {
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState(identity.original_name);
+  const [suggestions, setSuggestions] = useState<PrePlanPlaceIdentitySuggestionsResponse | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchMessage, setSearchMessage] = useState<string | null>(null);
+  const options = suggestions?.options ?? identity.confirmation_options;
+  const recommendedId = suggestions?.recommended_provider_place_id ?? options[0]?.provider_place_id ?? null;
+  const recommended = options.find((option) => option.provider_place_id === recommendedId) ?? null;
+  const alternatives = searchOpen ? options.filter((option) => option.provider_place_id !== recommended?.provider_place_id) : [];
+  const reason = suggestions?.recommendation_reason ?? (recommended ? "基于地点名称和本次目的地的提供商检索排序。" : null);
+
+  async function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = query.trim();
+    if (!trimmed || searching || busy) return;
+    setSearching(true);
+    setSearchMessage(null);
+    const result = await onSearch(identity, trimmed);
+    setSearching(false);
+    if (result) {
+      setSuggestions(result);
+      setSearchMessage(result.options.length ? `已找到 ${result.options.length} 个地点候选。` : "没有找到可确认的地点。请尝试更具体的地标或街区名称。");
+    }
+  }
+
+  return <div className="uc-place-identity-editor" aria-label={`${title}的地点确认`}>
+    {recommended ? <section className="uc-place-recommendation" aria-label="系统推荐地点">
+      <p>系统推荐</p>
+      <strong>{recommended.canonical_name}</strong>
+      <span>{recommended.address_summary ?? recommended.category ?? "提供商地点候选"}</span>
+      {reason ? <small>推荐依据：{reason}</small> : null}
+      <button type="button" className="uc-place-accept" disabled={busy || searching} onClick={() => onConfirm(identity, recommended, suggestions?.query)}>采用这个地点</button>
+    </section> : <p className="uc-confirmation-muted">暂时没有可确认的地点候选。你可以搜索更具体的地标或街区名称。</p>}
+
+    <button type="button" className="uc-place-search-toggle" disabled={busy} aria-expanded={searchOpen} onClick={() => setSearchOpen((open) => !open)}>换一个 / 搜索地点</button>
+    {searchOpen ? <div className="uc-place-search-panel">
+      <form className="uc-place-search-form" onSubmit={submitSearch}>
+        <label htmlFor={`place-search-${identity.stable_id}`}>搜索更具体的地点</label>
+        <div><input id={`place-search-${identity.stable_id}`} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如：十八梯、解放碑附近" maxLength={160} disabled={busy || searching} /><button type="submit" className="uc-intent-secondary" disabled={busy || searching || !query.trim()}>{searching ? "搜索中…" : "搜索"}</button></div>
+      </form>
+      {searchMessage ? <p className="uc-place-search-status" role="status">{searchMessage}</p> : null}
+      {alternatives.length ? <div className="uc-confirmation-choice" aria-label={`${title}的其他地点候选`}>
+        {alternatives.map((option) => <button key={option.provider_place_id} type="button" disabled={busy || searching} onClick={() => onConfirm(identity, option, suggestions?.query)}><strong>{option.canonical_name}</strong><small>{option.address_summary ?? option.category ?? "提供商地点候选"}</small></button>)}
+      </div> : null}
+    </div> : null}
+  </div>;
 }
 
 function FixedLocationPrompt({ event, busy, onSave }: { event: FixedEventIntent; busy: boolean; onSave: (event: FixedEventIntent, location: string) => void }) {

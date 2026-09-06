@@ -57,6 +57,7 @@ from app.services.place_identity_resolution import (
     confirm_place_identity,
     discover_fixed_event_identity,
     discover_place_identities,
+    search_place_identity_suggestions,
 )
 from app.services.poi_discovery_provider import (
     PoiDiscoveryUnavailable,
@@ -186,6 +187,7 @@ from .schemas import (
     DraftTripDetailResponse,
     DraftIntentRevisionMetadata,
     DraftIntentEditResponse,
+    PrePlanPlaceIdentitySuggestionsResponse,
     PrePlanIntentLatestResponse,
     PrePlanHandoffApplyRequest,
     PrePlanHandoffApplyResponse,
@@ -410,6 +412,7 @@ class TripPersistenceService:
                     place_identities[index] = confirm_place_identity(
                         identity=place_identities[index],
                         provider_place_id=operation.provider_place_id,
+                        search_query=operation.search_query,
                     )
                 elif isinstance(operation, UpdateDestinationOperation):
                     # Destination changes invalidate old provider scope. Re-read
@@ -583,6 +586,45 @@ class TripPersistenceService:
             trip=TripMetadata.from_record(trip),
             envelope=revision.envelope,
             revision=DraftIntentRevisionMetadata.from_record(revision),
+        )
+
+    def get_draft_place_identity_suggestions(
+        self,
+        *,
+        trip_id: str,
+        capability: str | None,
+        place_stable_id: str,
+        query: str | None,
+    ) -> PrePlanPlaceIdentitySuggestionsResponse:
+        """Return provider-backed choices without changing the current Draft revision."""
+
+        trip = self._require_trip_access(trip_id, capability)
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+            raise InvalidRevisionOperationError("Place suggestions are only available while the trip is a draft.")
+        revision = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+        if revision is None:
+            raise DraftIntentEditError("intent_edit_no_longer_applicable")
+        envelope = SourceLinkedTripIntentEnvelope.model_validate(revision.envelope)
+        identity = next(
+            (item for item in envelope.formal_contract.place_identities if item.stable_id == place_stable_id),
+            None,
+        )
+        if identity is None:
+            raise DraftIntentEditError("place_identity_not_found")
+        try:
+            suggestions = search_place_identity_suggestions(identity=identity, query=query)
+        except PlaceIdentityResolutionError as exc:
+            raise DraftIntentEditError(exc.code) from exc
+        return PrePlanPlaceIdentitySuggestionsResponse(
+            place_stable_id=identity.stable_id,
+            query=suggestions.query,
+            options=suggestions.options,
+            recommended_provider_place_id=suggestions.recommended_provider_place_id,
+            recommendation_reason=(
+                "基于地点名称和本次目的地的提供商检索排序。"
+                if suggestions.recommended_provider_place_id
+                else None
+            ),
         )
 
     def create_draft_intent_planning_run(

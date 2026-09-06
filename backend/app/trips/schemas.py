@@ -27,6 +27,7 @@ from .models import (
     TripRecord,
     TripRevisionRecord,
 )
+from .intent_contracts import PlaceResolutionOption
 from .mutation_commands import TripMutationCommandEnvelope
 
 
@@ -184,6 +185,16 @@ class PrePlanIntentLatestResponse(BaseModel):
     trip: TripMetadata
     envelope: dict
     revision: DraftIntentRevisionMetadata
+
+
+class PrePlanPlaceIdentitySuggestionsResponse(BaseModel):
+    """Read-only provider choices; a later explicit edit confirms one choice."""
+
+    place_stable_id: str
+    query: str
+    options: list[PlaceResolutionOption] = Field(default_factory=list)
+    recommended_provider_place_id: str | None = None
+    recommendation_reason: str | None = None
 
 
 class DraftIntentPlanningRunRequest(BaseModel):

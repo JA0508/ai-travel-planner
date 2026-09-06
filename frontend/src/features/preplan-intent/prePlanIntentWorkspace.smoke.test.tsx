@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PrePlanIntentWorkspace } from "./PrePlanIntentWorkspace";
+import { PrePlanConfirmationQueue } from "./PrePlanConfirmationQueue";
 
 const componentPath = fileURLToPath(new URL("./PrePlanIntentWorkspace.tsx", import.meta.url));
 const queuePath = fileURLToPath(new URL("./PrePlanConfirmationQueue.tsx", import.meta.url));
@@ -75,7 +76,64 @@ test("pre-plan workspace uses one editorial confirmation queue instead of repeat
   assert.match(queueSource, /已确认/);
   assert.match(queueSource, /confirmation_options/);
   assert.match(queueSource, /onConfirmPlace/);
+  assert.match(queueSource, /系统推荐/);
+  assert.match(queueSource, /采用这个地点/);
+  assert.match(queueSource, /换一个\s*\/\s*搜索地点/);
+  assert.match(source, /getPrePlanPlaceIdentitySuggestions/);
   assert.doesNotMatch(source, /function FixedPlaceConfirmation/);
   assert.doesNotMatch(source, /function MustPlaceConfirmation/);
   assert.doesNotMatch(source, /function FixedArrangementSummary/);
+});
+
+test("place confirmation presents a recommendation without silently confirming it", () => {
+  const html = renderToStaticMarkup(
+    <PrePlanConfirmationQueue
+      items={[{
+        id: "must-place:shancheng",
+        kind: "must_place",
+        title: "确认「山城步道」具体是哪一处",
+        detail: "确认后才会使用真实的位置和路线数据。",
+        identityId: "shancheng",
+        tone: "todo",
+      }]}
+      confirmedItems={[]}
+      identities={[{
+        stable_id: "shancheng",
+        original_name: "山城步道",
+        canonical_name: null,
+        city: "重庆",
+        ownership: "must",
+        fixed_event_id: null,
+        resolution_status: "ambiguous",
+        provider: null,
+        provider_place_id: null,
+        latitude: null,
+        longitude: null,
+        category: null,
+        source_fragment_ids: ["direct"],
+        confirmation_options: [{
+          provider_place_id: "amap-shancheng",
+          canonical_name: "山城步道（中兴路段）",
+          address_summary: "重庆市渝中区中兴路",
+          category: null,
+          city: "重庆",
+        }],
+        resolution_confidence: null,
+      }]}
+      events={[]}
+      questions={[]}
+      busy={false}
+      onConfirmPlace={() => undefined}
+      onSearchPlace={async () => null}
+      onUpdateFixedLocation={() => undefined}
+      renderClarification={() => null}
+    />,
+  );
+
+  assert.match(html, /系统推荐/);
+  assert.match(html, /山城步道（中兴路段）/);
+  assert.match(html, /推荐依据：基于地点名称和本次目的地的提供商检索排序/);
+  assert.match(html, /采用这个地点/);
+  assert.match(html, /换一个 \/ 搜索地点/);
+  assert.doesNotMatch(html, /已确认地点/);
 });

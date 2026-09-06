@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, Header, Request, Response, UploadFile, status
+from fastapi import APIRouter, File, Form, Header, Query, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.core.runtime_config import parse_cors_allow_origins
@@ -54,6 +54,7 @@ from app.trips.schemas import (
     DraftTripDetailResponse,
     DraftIntentPlanningRunRequest,
     DraftIntentEditResponse,
+    PrePlanPlaceIdentitySuggestionsResponse,
     PrePlanIntentLatestResponse,
     PrePlanHandoffApplyRequest,
     PrePlanHandoffApplyResponse,
@@ -207,6 +208,27 @@ def get_latest_preplan_intent(trip_id: str, request: Request) -> PrePlanIntentLa
         return get_trip_persistence_service().get_latest_preplan_intent(
             trip_id=trip_id,
             capability=get_trip_capability_from_request(request, trip_id),
+        )
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
+@router.get(
+    "/{trip_id}/preplan-intent/place-identities/{place_stable_id}/suggestions",
+    response_model=PrePlanPlaceIdentitySuggestionsResponse,
+)
+def get_preplan_place_identity_suggestions(
+    trip_id: str,
+    place_stable_id: str,
+    request: Request,
+    query: Annotated[str | None, Query(min_length=1, max_length=160)] = None,
+) -> PrePlanPlaceIdentitySuggestionsResponse | JSONResponse:
+    try:
+        return get_trip_persistence_service().get_draft_place_identity_suggestions(
+            trip_id=trip_id,
+            capability=get_trip_capability_from_request(request, trip_id),
+            place_stable_id=place_stable_id,
+            query=query,
         )
     except TripError as exc:
         return trip_error_response(exc)

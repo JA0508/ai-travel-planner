@@ -1,4 +1,4 @@
-import type { SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
+import type { PlaceResolutionOption, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import type { TripMetadata } from "@/features/trip-workspace/tripPersistence";
 
 type PlacePolicy = "must" | "optional" | "avoid";
@@ -23,7 +23,7 @@ export type DraftIntentEditOperation =
   | { operation: "add_fixed_event"; event: FixedEventInput }
   | { operation: "update_fixed_event"; fixed_event_id: string; event: FixedEventInput }
   | { operation: "remove_fixed_event"; fixed_event_id: string }
-  | { operation: "confirm_place_identity"; place_stable_id: string; provider_place_id: string }
+  | { operation: "confirm_place_identity"; place_stable_id: string; provider_place_id: string; search_query?: string | null }
   | { operation: "add_must_place" | "add_optional_place" | "add_avoid_place"; candidate_id: string }
   | { operation: "move_place_policy"; candidate_id: string; from_policy: PlacePolicy; to_policy: PlacePolicy }
   | { operation: "remove_place"; candidate_id: string; policy: PlacePolicy };
@@ -57,6 +57,14 @@ export type LatestPrePlanIntentResponse = {
   trip: TripMetadata & { draft_version: number };
   envelope: SourceLinkedTripIntentEnvelope;
   revision: DraftIntentEditResponse["revision"];
+};
+
+export type PrePlanPlaceIdentitySuggestionsResponse = {
+  place_stable_id: string;
+  query: string;
+  options: PlaceResolutionOption[];
+  recommended_provider_place_id: string | null;
+  recommendation_reason: string | null;
 };
 
 export type DraftClarificationAnswer =

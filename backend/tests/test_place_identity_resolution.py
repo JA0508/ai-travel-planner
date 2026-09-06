@@ -6,6 +6,7 @@ from app.services.place_identity_resolution import (
     PlaceIdentityResolutionError,
     confirm_place_identity,
     discover_place_identities,
+    search_place_identity_suggestions,
 )
 from app.services.poi_discovery_provider import PoiDiscoveryCandidate, PoiDiscoveryCapability
 
@@ -111,3 +112,45 @@ class PlaceIdentityResolutionTests(unittest.TestCase):
                 provider_place_id="tampered-browser-id",
                 provider=StaticPoiProvider(),
             )
+
+    def test_manual_search_ranks_a_provider_suggestion_without_confirming_it(self) -> None:
+        class QueryAwareProvider(StaticPoiProvider):
+            def search_text(self, *, keyword: str, city: str, offset: int) -> list[PoiDiscoveryCandidate]:
+                if keyword == "十八梯":
+                    return [
+                        PoiDiscoveryCandidate(
+                            name="十八梯传统风貌区", address="重庆市渝中区十八梯", type="风景名胜", typecode="110000",
+                            business_area="重庆", latitude=29.553, longitude=106.574, provider_place_id="amap-shibati",
+                        ),
+                        PoiDiscoveryCandidate(
+                            name="重庆十八梯", address="重庆市渝中区", type="商圈", typecode="060000",
+                            business_area="重庆", latitude=29.554, longitude=106.575, provider_place_id="amap-shibati-nearby",
+                        ),
+                    ]
+                return super().search_text(keyword=keyword, city=city, offset=offset)
+
+        identity = discover_place_identities(
+            direct_user_text="我想去重庆玩三天，已经想去山城步道。",
+            city="重庆",
+            provider=QueryAwareProvider(),
+        )[0]
+
+        suggestions = search_place_identity_suggestions(
+            identity=identity,
+            query="十八梯",
+            provider=QueryAwareProvider(),
+        )
+
+        self.assertEqual(suggestions.query, "十八梯")
+        self.assertEqual(suggestions.recommended_provider_place_id, "amap-shibati")
+        self.assertEqual([item.provider_place_id for item in suggestions.options], ["amap-shibati", "amap-shibati-nearby"])
+        self.assertEqual(identity.resolution_status, "ambiguous")
+
+        confirmed = confirm_place_identity(
+            identity=identity,
+            provider_place_id="amap-shibati",
+            search_query="十八梯",
+            provider=QueryAwareProvider(),
+        )
+        self.assertEqual(confirmed.canonical_name, "十八梯传统风貌区")
+        self.assertEqual(confirmed.provider_place_id, "amap-shibati")

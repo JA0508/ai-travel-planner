@@ -23,7 +23,7 @@ Round 29 收口后，本 P0 置于 Opening-Hours Temporal Feasibility 之前；�
 
 不做：
 
-- 不引入新的后端 endpoint、schema 或地点自动确认。
+- 不自动确认地点；候选永远只是建议，必须由用户明确采用。
 - 不在确认页伪造地图、照片、评分、路线时间或地点候选。
 - 不在本 P0 实现 Chat × Live Map；该能力在确认链路稳定后作为 Compose Workspace 独立计划。
 - 不把普通输出要求或泛化“活动”重新解释为固定安排。
@@ -83,22 +83,36 @@ Round 29 收口后，本 P0 置于 Opening-Hours Temporal Feasibility 之前；�
 - `frontend/src/features/preplan-intent/prePlanConfirmationModel.ts`
 - `frontend/src/features/preplan-intent/prePlanConfirmationModel.test.ts`
 
-### P0.1 — 可看的确认工作台 v0
+### P0.1 — 可看的确认工作台、地点推荐与快捷编辑
 
-**范围**：拆出展示型 Confirm Queue / Confirmed Items / Trip Summary 组件，接回现有 edit、identity confirmation 和 preview 操作。
+**范围**：拆出展示型 Confirm Queue / Confirmed Items / Trip Summary 组件，接回现有 edit、identity confirmation 和 preview 操作；为未核验地点补充只读 provider 候选建议与就地搜索。
+
+**地点建议边界**：
+
+- 初始 provider 候选按原始地点名称和目的地确定性排序，第一项仅标记为“系统推荐”。
+- 用户点击“采用这个地点”才提交 `confirm_place_identity`；服务端依据记录的查询词重新读取 provider，绝不信任浏览器提交的坐标或地点详情。
+- “换一个 / 搜索地点”只是只读检索；它不创建 Draft revision，也不改变原始地点语义。
+- 不渲染照片、评分、路线时间、距离或置信度，除非另有真实、已验证的 provider 事实契约。
 
 **完成标准**：
 
 - 页面默认显示“已理解”“还需确认”“已确认”三个明确区域。
 - 缺少地点不使用红色错误容器；时间冲突仍是警示。
 - 确认候选后仅该项目更新，不丢失其他 Draft 状态。
+- 首个 provider 候选以“系统推荐”呈现，并有清楚、不可伪装成事实的推荐依据。
+- 无初始候选时可直接搜索更具体的地点；搜索本身没有写入副作用。
+- 从搜索结果采用地点时，确认 mutation 带上查询词，由服务端重新核验 provider ID 后再追加 revision。
 - 生成按钮显示明确剩余项与不可用原因；`onCancel` 有可读的“修改原始需求”文案。
 - 不出现假的地图、评分、图片或无行为按钮。
 
 **主要文件**：
 
 - `frontend/src/features/preplan-intent/PrePlanIntentWorkspace.tsx`
-- `frontend/src/features/preplan-intent/confirmation/*`
+- `frontend/src/features/preplan-intent/PrePlanConfirmationQueue.tsx`
+- `frontend/src/features/preplan-intent/draftIntentEditApi.ts`
+- `backend/app/services/place_identity_resolution.py`
+- `backend/app/trips/service.py`
+- `backend/app/api/routes/trips.py`
 - `frontend/src/app/globals.css`
 - `frontend/src/features/preplan-intent/prePlanIntentWorkspace.smoke.test.tsx`
 
@@ -144,4 +158,3 @@ Round 29 release gate / review
 | 旧 Draft 同时出现历史 blocker 与新队列项 | 由 P0.0 统一去重，先加 characterization tests。 |
 | 重构破坏 stale/idempotency 行为 | 复用现有 request owner，保留 focused contract tests。 |
 | Mindtrip 式地图变成伪精度 | 地图与详情卡只在 verified place / provider data 已存在时另行实现。 |
-

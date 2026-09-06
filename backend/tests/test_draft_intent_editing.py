@@ -17,6 +17,7 @@ from app.trips.dependencies import get_trip_repository, reset_trip_repository_ca
 from app.trips.errors import StaleDraftRevisionError, StaleIntentRevisionError
 from app.trips.service import TripPersistenceService
 from app.trips.intent_contracts import CompileTripIntentRequest, PlaceIdentity, PlaceResolutionOption
+from app.services.place_identity_resolution import PlaceIdentitySuggestions
 
 
 class DraftIntentEditingApiTests(unittest.TestCase):
@@ -119,6 +120,77 @@ class DraftIntentEditingApiTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 422, invalid.text)
         self.assertEqual(invalid.json()["error"]["code"], "fixed_event_outside_trip")
         self.assertEqual(get_trip_repository().get_latest_draft_intent_revision(trip_id=self.trip_id).id, before_invalid)
+
+    def test_place_suggestions_are_read_only_and_keep_provider_confirmation_explicit(self) -> None:
+        identity = PlaceIdentity(
+            stable_id="shancheng", original_name="山城步道", city="重庆", ownership="must",
+            resolution_status="unresolved", source_fragment_ids=["direct"], confirmation_options=[],
+        )
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": "我想去重庆玩三天，已经想去山城步道。"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-place-suggestions"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        trip_id = created.json()["trip"]["id"]
+        with patch("app.trips.service.discover_place_identities", return_value=[identity]):
+            compiled = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/compile",
+                json={"base_intent_revision_id": None, "structured_overrides": {"city": "重庆", "trip_days": 3}},
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "compile-place-suggestions"},
+            )
+        self.assertEqual(compiled.status_code, 201, compiled.text)
+        revision_id = compiled.json()["revision"]["id"]
+        suggestions = PlaceIdentitySuggestions(
+            query="十八梯",
+            options=[PlaceResolutionOption(
+                provider_place_id="amap-shibati", canonical_name="十八梯传统风貌区", address_summary="重庆市渝中区十八梯", city="重庆",
+            )],
+            recommended_provider_place_id="amap-shibati",
+        )
+        with patch("app.trips.service.search_place_identity_suggestions", return_value=suggestions):
+            response = self.client.get(
+                f"/trips/{trip_id}/preplan-intent/place-identities/shancheng/suggestions",
+                params={"query": "十八梯"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["query"], "十八梯")
+        self.assertEqual(response.json()["recommended_provider_place_id"], "amap-shibati")
+        self.assertEqual(response.json()["options"][0]["provider_place_id"], "amap-shibati")
+        self.assertEqual(get_trip_repository().get_latest_draft_intent_revision(trip_id=trip_id).id, revision_id)
+
+        verified = identity.model_copy(
+            update={
+                "resolution_status": "verified",
+                "provider": "amap",
+                "provider_place_id": "amap-shibati",
+                "canonical_name": "十八梯传统风貌区",
+                "latitude": 29.5542,
+                "longitude": 106.5709,
+                "confirmation_options": [],
+                "resolution_confidence": 1.0,
+            }
+        )
+        with patch("app.trips.service.confirm_place_identity", return_value=verified) as confirm:
+            draft = self.client.get(f"/trips/{trip_id}/draft")
+            self.assertEqual(draft.status_code, 200, draft.text)
+            confirmed = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/edits",
+                json={
+                    "base_intent_revision_id": revision_id,
+                    "base_draft_version": draft.json()["trip"]["draft_version"],
+                    "operations": [{
+                        "operation": "confirm_place_identity",
+                        "place_stable_id": "shancheng",
+                        "provider_place_id": "amap-shibati",
+                        "search_query": "十八梯",
+                    }],
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "confirm-place-suggestion"},
+            )
+        self.assertEqual(confirmed.status_code, 201, confirmed.text)
+        self.assertEqual(confirmed.json()["envelope"]["formal_contract"]["place_identities"][0]["canonical_name"], "十八梯传统风貌区")
+        self.assertEqual(confirm.call_args.kwargs["search_query"], "十八梯")
 
     def test_unlocated_fixed_event_requires_location_then_confirmation_before_planning(self) -> None:
         created = self.client.post(
