@@ -29,6 +29,7 @@ type TripRevisionRow = {
 type ErrorGate = {
   allowExpectedInitialIntentAbsence: () => void;
   allowExpectedNetworkFailure: () => void;
+  allowExpectedProviderUnavailable: () => void;
   allowExpectedStaleConflict: () => void;
   allowExpectedRouteSegmentAbort: () => void;
   assertClean: () => void;
@@ -225,6 +226,51 @@ test("Scenario D: retries a lost edit response with the original idempotency key
   await expect(page.getByText("已确认这项修改已经保存。")).toBeVisible();
   expect(readDraftDatabase(tripId).intent_revisions).toHaveLength(2);
   expect(readDraftDatabase(tripId).draft_version - initialSnapshot.draft_version).toBe(1);
+  gate.assertClean();
+});
+
+test("Scenario E: keeps a provider-unavailable place unconfirmed and retries safely", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const gate = installErrorGate(page);
+  gate.allowExpectedInitialIntentAbsence();
+  gate.allowExpectedProviderUnavailable();
+  const tripId = await createDraftThroughHome(page, "去杭州玩两天，想去西湖。");
+  const before = readDraftDatabase(tripId);
+  let hasReturnedProviderOutage = false;
+  await page.route("**/api/trips/*/preplan-intent/edits", async (route) => {
+    if (hasReturnedProviderOutage) {
+      await route.continue();
+      return;
+    }
+    hasReturnedProviderOutage = true;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "place_identity_provider_unavailable",
+          message: "Place identity provider is temporarily unavailable.",
+          recoverable: true,
+        },
+      }),
+    });
+  });
+
+  const unavailable = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: "采用这个地点" }).click();
+  expect((await unavailable).status()).toBe(503);
+  await expect(page.getByText("地点服务暂时不可用，当前地点尚未确认。")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "采用这个地点" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重新提交" })).toBeVisible();
+  expect(readDraftDatabase(tripId).intent_revisions).toHaveLength(before.intent_revisions.length);
+  expect(readDraftDatabase(tripId).draft_version).toBe(before.draft_version);
+
+  const retry = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: "重新提交" }).click();
+  expect((await retry).status()).toBe(201);
+  await expect(page.getByText("已更新行程信息。")).toBeVisible();
+  expect(readDraftDatabase(tripId).intent_revisions).toHaveLength(before.intent_revisions.length + 1);
+  expect(readDraftDatabase(tripId).draft_version).toBe(before.draft_version + 1);
   gate.assertClean();
 });
 
@@ -493,16 +539,18 @@ function installErrorGate(page: Page): ErrorGate {
   const errors: string[] = [];
   let allowExpectedInitialIntentAbsence = false;
   let allowExpectedNetworkFailure = false;
+  let allowExpectedProviderUnavailable = false;
   let allowExpectedStaleConflict = false;
   let allowExpectedRouteSegmentAbort = false;
   page.on("console", (message) => {
     // Chromium logs the deliberate, user-visible 409 stale response as a resource error.
     const expectedInitialIntentAbsence = allowExpectedInitialIntentAbsence && message.text().includes("status of 422");
     const expectedNetworkReset = allowExpectedNetworkFailure && message.text().includes("net::ERR_CONNECTION_RESET");
+    const expectedProviderUnavailable = allowExpectedProviderUnavailable && message.text().includes("status of 503");
     const expectedStaleConflict = allowExpectedStaleConflict && message.text().includes("status of 409");
     const expectedRouteSegmentAbort = allowExpectedRouteSegmentAbort && message.text().includes("net::ERR_INTERNET_DISCONNECTED");
     // The initial GET probes for an existing immutable IntentRevision before first compile.
-    if (message.type() === "error" && !expectedInitialIntentAbsence && !expectedNetworkReset && !expectedStaleConflict && !expectedRouteSegmentAbort) {
+    if (message.type() === "error" && !expectedInitialIntentAbsence && !expectedNetworkReset && !expectedProviderUnavailable && !expectedStaleConflict && !expectedRouteSegmentAbort) {
       errors.push(`console.error: ${message.text()}`);
     }
   });
@@ -516,13 +564,14 @@ function installErrorGate(page: Page): ErrorGate {
     }
   });
   page.on("response", (response) => {
-    if (response.url().includes("/api/") && response.status() >= 500) {
+    if (response.url().includes("/api/") && response.status() >= 500 && !allowExpectedProviderUnavailable) {
       errors.push(`API ${response.status()}: ${response.url()}`);
     }
   });
   return {
     allowExpectedInitialIntentAbsence: () => { allowExpectedInitialIntentAbsence = true; },
     allowExpectedNetworkFailure: () => { allowExpectedNetworkFailure = true; },
+    allowExpectedProviderUnavailable: () => { allowExpectedProviderUnavailable = true; },
     allowExpectedStaleConflict: () => { allowExpectedStaleConflict = true; },
     allowExpectedRouteSegmentAbort: () => { allowExpectedRouteSegmentAbort = true; },
     assertClean: () => expect(errors, errors.join("\n")).toEqual([]),
