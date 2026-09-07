@@ -47,7 +47,7 @@ for (const viewportCase of viewportCases) {
     gate.allowExpectedInitialIntentAbsence();
     const tripId = await createDraftThroughHome(page, "周末去杭州玩两天，轻松一点。");
 
-    const overview = page.getByRole("region", { name: "行程概览" });
+    const overview = page.getByRole("region", { name: "已理解" });
     await expect(overview).toContainText("杭州");
     await expect(overview).toContainText("2 天");
     await expect(overview).toContainText("轻松");
@@ -92,8 +92,8 @@ for (const viewportCase of viewportCases) {
     const gate = installErrorGate(page);
     gate.allowExpectedInitialIntentAbsence();
     const tripId = await createDraftThroughHome(page, "周末玩两天，轻松一点。");
-    const overview = page.getByRole("region", { name: "行程概览" });
-    const clarification = page.getByRole("region", { name: "还需要你补充" });
+    const overview = page.getByRole("region", { name: "已理解" });
+    const clarification = page.getByRole("region", { name: "还需确认" });
     const primary = page.getByRole("button", { name: "生成路线预览" });
 
     await expect(clarification.getByText("请填写这次旅行的目的地")).toBeVisible();
@@ -136,8 +136,8 @@ test("Scenario C: preserves a stale edit and manually reapplies it on desktop", 
   const gateB = installErrorGate(pageB);
   await pageB.goto("/");
   await expect(pageB.getByRole("heading", { name: "确认行程信息" })).toBeVisible();
-  const overviewA = pageA.getByRole("region", { name: "行程概览" });
-  const overviewB = pageB.getByRole("region", { name: "行程概览" });
+  const overviewA = pageA.getByRole("region", { name: "已理解" });
+  const overviewB = pageB.getByRole("region", { name: "已理解" });
   const initialSnapshot = readDraftDatabase(tripId);
 
   await pageB.getByRole("button", { name: "修改旅行节奏" }).click();
@@ -212,7 +212,7 @@ test("Scenario D: retries a lost edit response with the original idempotency key
   await page.getByLabel("旅行天数").fill("3");
   const initialSnapshot = readDraftDatabase(tripId);
   await page.getByRole("button", { name: "保存修改" }).click();
-  await expect(page.getByText("网络连接失败，你的修改还在这里。")).toBeVisible();
+  await expect(page.getByText("网络连接失败，你的修改还在这里。")).toHaveCount(1);
   await expect(page.getByLabel("旅行天数")).toHaveValue("3");
   expect(droppedResponse.value?.idempotent_replay).toBe(false);
   const afterLostResponse = readDraftDatabase(tripId);
@@ -431,16 +431,16 @@ test("Scenario H: home confirmation requires a fixed-place revision before previ
   });
   const tripId = await createDraftThroughHome(page, "去上海两天，第二天下午两点到四点预约了上海博物馆。");
   const primary = page.getByRole("button", { name: "生成路线预览" });
-  const fixedPlace = page.getByRole("region", { name: "确认固定安排地点" });
+  const fixedPlace = page.getByRole("region", { name: "还需确认" });
 
-  await expect(fixedPlace.getByRole("heading", { name: "补充后才能安排进路线" })).toBeVisible();
-  await expect(fixedPlace.getByRole("button", { name: /上海博物馆（人民广场馆）/ })).toBeVisible();
+  await expect(fixedPlace.getByText(/确认.*上海博物馆/)).toBeVisible();
+  await expect(fixedPlace.getByRole("button", { name: "采用这个地点" })).toBeVisible();
   await expect(primary).toBeDisabled();
   expect(previewRequests).toEqual([]);
   const before = readDraftDatabase(tripId);
 
   const confirmation = page.waitForResponse(isDraftIntentEditResponse);
-  await fixedPlace.getByRole("button", { name: /上海博物馆（人民广场馆）/ }).click();
+  await fixedPlace.getByRole("button", { name: "采用这个地点" }).click();
   expect((await confirmation).status()).toBe(201);
   await expect(primary).toBeEnabled();
 
@@ -485,7 +485,7 @@ async function createDraftThroughHome(page: Page, text: string): Promise<string>
   expect(createResponse.status()).toBe(201);
   const payload = await createResponse.json() as { trip: { id: string } };
   await expect(page.getByRole("heading", { name: "确认行程信息" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "行程概览" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "已理解" })).toBeVisible();
   return payload.trip.id;
 }
 

@@ -59,6 +59,7 @@ type PendingDraftIntentRequest = {
   idempotencyKey: string;
   operation: DraftIntentEditOperation;
   formDraft: CriticalIntentFormDraft;
+  feedbackScope: "inline_editor" | "workspace";
   clarificationId?: string;
   restoreFocusAfterSuccess?: boolean;
 };
@@ -287,7 +288,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     const message = result.code ? userFacingEditError(result.code) : "网络连接失败，你的修改还在这里。";
     setRetryableRequest(result.recoverable || !result.code ? request : null);
     setEditorError(message);
-    setFeedback({ tone: "error", message });
+    setFeedback(request.feedbackScope === "workspace" ? { tone: "error", message } : null);
   }
 
   function saveEditor() {
@@ -304,6 +305,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       idempotencyKey: createIdempotencyKey("draft-edit"),
       operation,
       formDraft,
+      feedbackScope: "inline_editor",
     });
   }
 
@@ -317,6 +319,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       idempotencyKey: createIdempotencyKey("draft-clarification"),
       operation,
       formDraft: draft,
+      feedbackScope: "workspace",
       clarificationId: questionId,
     });
   }
@@ -336,6 +339,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       idempotencyKey: createIdempotencyKey("draft-place-confirm"),
       operation,
       formDraft: {},
+      feedbackScope: "workspace",
     });
   }
 
@@ -377,6 +381,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       idempotencyKey: createIdempotencyKey("draft-fixed-location"),
       operation,
       formDraft: {},
+      feedbackScope: "workspace",
     });
   }
 
