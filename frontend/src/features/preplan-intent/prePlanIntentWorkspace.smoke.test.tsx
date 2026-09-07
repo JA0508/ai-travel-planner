@@ -9,6 +9,7 @@ import { PrePlanConfirmationQueue } from "./PrePlanConfirmationQueue";
 
 const componentPath = fileURLToPath(new URL("./PrePlanIntentWorkspace.tsx", import.meta.url));
 const queuePath = fileURLToPath(new URL("./PrePlanConfirmationQueue.tsx", import.meta.url));
+const stylesPath = fileURLToPath(new URL("../../app/globals.css", import.meta.url));
 
 test("pre-plan workspace starts with a plain-language confirmation surface", () => {
   const html = renderToStaticMarkup(
@@ -145,4 +146,14 @@ test("place confirmation presents a recommendation without silently confirming i
   assert.match(html, /采用这个地点/);
   assert.match(html, /换一个 \/ 搜索地点/);
   assert.doesNotMatch(html, /已确认地点/);
+});
+
+test("pre-plan confirmation controls retain a visible keyboard focus ring", () => {
+  const styles = readFileSync(stylesPath, "utf8");
+  assert.match(styles, /\.uc-intent-primary:focus-visible/);
+  assert.match(styles, /\.uc-intent-secondary:focus-visible/);
+  assert.match(styles, /\.uc-intent-text-action:focus-visible/);
+  assert.match(styles, /\.uc-intent-choice button:focus-visible/);
+  assert.match(styles, /\.uc-intent-editor input:focus-visible/);
+  assert.match(styles, /\.uc-intent-clarification select:focus-visible/);
 });

@@ -430,7 +430,15 @@ body {
 .uc-confirmation-location input:focus-visible,
 .uc-place-accept:focus-visible,
 .uc-place-search-toggle:focus-visible,
-.uc-place-search-form input:focus-visible {
+.uc-place-search-form input:focus-visible,
+.uc-intent-primary:focus-visible,
+.uc-intent-secondary:focus-visible,
+.uc-intent-text-action:focus-visible,
+.uc-intent-choice button:focus-visible,
+.uc-intent-editor input:focus-visible,
+.uc-intent-editor select:focus-visible,
+.uc-intent-clarification input:focus-visible,
+.uc-intent-clarification select:focus-visible {
   outline: none;
   border-color: rgba(177, 138, 88, 0.72);
   box-shadow: var(--ec-focus-ring);
