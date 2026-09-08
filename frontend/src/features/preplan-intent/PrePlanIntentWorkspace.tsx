@@ -7,7 +7,7 @@ import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace"
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
 import { PrePlanConfirmationQueue } from "./PrePlanConfirmationQueue";
-import { userFacingPrePlanRequestError } from "./prePlanRequestError";
+import { isStalePrePlanIntentError, userFacingPrePlanRequestError } from "./prePlanRequestError";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 import type {
@@ -270,7 +270,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       if (request.restoreFocusAfterSuccess) setRestorePrimaryFocus(true);
       return;
     }
-    if (result.code === "stale_draft_revision" || result.code === "stale_intent_revision") {
+    if (result.code === "stale_draft_revision" || isStalePrePlanIntentError(result.code)) {
       const latest = await refreshLatestIntent();
       if (latest) {
         setStaleConflict({
@@ -420,6 +420,13 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     );
     setOperation("idle");
     if (!result.ok) {
+      if (isStalePrePlanIntentError(result.code)) {
+        const latest = await refreshLatestIntent();
+        if (latest) {
+          setFeedback({ tone: "info", message: "行程信息已经在其他页面更新，已载入最新行程信息，请重新生成路线预览。" });
+          return;
+        }
+      }
       setFeedback({ tone: "error", message: userFacingPrePlanRequestError(result.code, "暂时无法生成路线预览，你确认的信息已经保留。", result.context) });
       return;
     }

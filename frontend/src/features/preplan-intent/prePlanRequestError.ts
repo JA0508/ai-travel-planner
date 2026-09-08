@@ -17,3 +17,7 @@ export function userFacingPrePlanRequestError(
   }
   return fallback;
 }
+
+export function isStalePrePlanIntentError(code?: string): boolean {
+  return code === "stale_intent_revision" || code === "stale_base_revision";
+}

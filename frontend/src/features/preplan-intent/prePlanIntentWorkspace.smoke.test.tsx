@@ -66,6 +66,12 @@ test("pre-plan workspace connects critical edits and clarification answers to se
   assert.doesNotMatch(source, /localStorage/);
 });
 
+test("pre-plan preview refreshes the latest Draft after a stale response", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /if \(isStalePrePlanIntentError\(result\.code\)\) \{[\s\S]*await refreshLatestIntent\(\)/);
+  assert.match(source, /已载入最新行程信息，请重新生成路线预览/);
+});
+
 test("pre-plan workspace uses one editorial confirmation queue instead of repeated blocker cards", () => {
   const source = readFileSync(componentPath, "utf8");
   const queueSource = readFileSync(queuePath, "utf8");
