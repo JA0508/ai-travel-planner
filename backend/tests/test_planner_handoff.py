@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app.api.routes.itinerary import build_itinerary_response
 from app.main import app
 from app.trips.access import hash_idempotency_key
 from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
@@ -291,6 +292,54 @@ class PlannerHandoffTests(unittest.TestCase):
         self.assertEqual(fixed.fixed_time_start.strftime("%H:%M"), "14:00")
         self.assertEqual(fixed.fixed_time_end.strftime("%H:%M"), "15:30")
         self.assertIsNotNone(fixed.verified_place)
+
+    def test_handoff_reuses_verified_direct_must_places_without_import_candidates(self) -> None:
+        candidate = register_verified_candidate(self.client, self.trip_id)
+        intent = compile_ready_intent(self.client, self.trip_id, self.base_revision_id, candidate["id"])
+        repository = get_trip_repository()
+        revision = repository.get_intent_revision(trip_id=self.trip_id, revision_id=intent["id"])
+        envelope = SourceLinkedTripIntentEnvelope.model_validate(revision.envelope)
+        hongyadong = PlaceIdentity(
+            stable_id="must-hongyadong",
+            original_name="洪崖洞",
+            canonical_name="洪崖洞民俗风貌区",
+            city="重庆",
+            ownership="must",
+            resolution_status="verified",
+            provider="amap",
+            provider_place_id="fixture-hongyadong",
+            latitude=29.5630,
+            longitude=106.5720,
+            category="scenic",
+            source_fragment_ids=["source_direct"],
+        )
+        shancheng = hongyadong.model_copy(update={
+            "stable_id": "must-shancheng",
+            "original_name": "山城步道",
+            "canonical_name": "山城步道",
+            "provider_place_id": "fixture-shancheng-walkway",
+            "latitude": 29.5510,
+            "longitude": 106.5690,
+        })
+        formal = envelope.formal_contract.model_copy(update={
+            "must_visit_places": [],
+            "fixed_events": [],
+            "place_identities": [hongyadong, shancheng],
+        })
+
+        result = build_planner_handoff_input(
+            envelope=envelope.model_copy(update={"formal_contract": formal}),
+            candidates=[],
+        )
+
+        scenic = result.handoff.itinerary_request.scenic_spots
+        self.assertEqual([item.name for item in scenic], ["洪崖洞民俗风貌区", "山城步道"])
+        self.assertEqual([item.candidate_id for item in scenic], ["must-hongyadong", "must-shancheng"])
+        self.assertTrue(all(item.verified_place is not None for item in scenic))
+
+        itinerary = build_itinerary_response(result.handoff.itinerary_request)
+        scheduled_names = [item.name for day in itinerary.days for block in day.blocks for item in block.items]
+        self.assertTrue({"洪崖洞民俗风貌区", "山城步道"}.issubset(scheduled_names))
 
     def test_fixed_event_without_verified_place_is_blocked_before_planning(self) -> None:
         compiled = self.client.post(

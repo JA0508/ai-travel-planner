@@ -1338,7 +1338,7 @@ def compile_source_linked_intent(
     conflicts.extend(validation_conflicts)
     conflicts.extend(_validate_date_policy_fields(selected))
     clarifications.extend(_clarifications_for_blocking_conflicts(conflicts, clarifications))
-    typed_assumptions = _build_typed_assumptions(selected, planner_ready)
+    typed_assumptions = _build_typed_assumptions(selected, planner_ready, identities)
     assumptions = [assumption.explanation for assumption in typed_assumptions]
     for assumption in assumptions:
         if assumption not in planner_ready.assumptions:
@@ -2524,7 +2524,11 @@ def _date_conflict(field: IntentField, reason_code: str, explanation: str) -> In
     )
 
 
-def _build_typed_assumptions(fields: list[IntentField], preview: PlannerReadyIntentPreview) -> list[IntentAssumption]:
+def _build_typed_assumptions(
+    fields: list[IntentField],
+    preview: PlannerReadyIntentPreview,
+    place_identities: list[PlaceIdentity],
+) -> list[IntentAssumption]:
     assumptions: list[IntentAssumption] = []
     if preview.trip_days is None:
         assumptions.append(
@@ -2539,7 +2543,11 @@ def _build_typed_assumptions(fields: list[IntentField], preview: PlannerReadyInt
                 explanation="Trip length is unresolved and must be clarified before deterministic planning.",
             )
         )
-    if not preview.must_place_candidate_ids:
+    has_verified_direct_must = any(
+        identity.ownership == "must" and identity.resolution_status == "verified"
+        for identity in place_identities
+    )
+    if not preview.must_place_candidate_ids and not has_verified_direct_must:
         assumptions.append(
             IntentAssumption(
                 assumption_id=f"asm_{sha256_digest({'field_path': 'poi.must_candidates', 'reason': 'empty_reviewed_candidate_set'})[:16]}",

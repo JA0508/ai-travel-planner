@@ -11,6 +11,7 @@ from app.main import app
 from app.schemas import PlannerRealismSummary
 from app.schemas.intent import ParsedFixedEvent, ParsedTripIntentResponse
 from app.trips.dependencies import reset_trip_repository_cache_for_tests
+from app.trips.intent_contracts import PlaceIdentity, PlaceResolutionOption
 from tests.test_trip_persistence_api import simple_itinerary
 
 
@@ -173,6 +174,74 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         envelope = compiled.json()["envelope"]
         self.assertEqual(envelope["parser_result"]["status"], "success")
         self.assertEqual(envelope["formal_contract"]["fixed_events"], [])
+
+    def test_preview_includes_a_confirmed_direct_must_place_without_candidate_import(self) -> None:
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": "我想去重庆玩三天，已经想去洪崖洞。"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-direct-must-preview"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        trip_id = created.json()["trip"]["id"]
+        ambiguous = PlaceIdentity(
+            stable_id="must-hongyadong",
+            original_name="洪崖洞",
+            city="重庆",
+            ownership="must",
+            resolution_status="ambiguous",
+            source_fragment_ids=["direct"],
+            confirmation_options=[PlaceResolutionOption(
+                provider_place_id="fixture-hongyadong",
+                canonical_name="洪崖洞民俗风貌区",
+                address_summary="重庆市渝中区嘉陵江滨江路",
+                category="scenic",
+                city="重庆",
+            )],
+        )
+        with patch("app.trips.service.discover_place_identities", return_value=[ambiguous]):
+            compiled = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/compile",
+                json={"base_intent_revision_id": None, "structured_overrides": {"city": "重庆", "trip_days": 3}},
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-direct-must-compile"},
+            )
+        self.assertEqual(compiled.status_code, 201, compiled.text)
+        draft = self.client.get(f"/trips/{trip_id}/draft")
+        self.assertEqual(draft.status_code, 200, draft.text)
+        verified = ambiguous.model_copy(update={
+            "resolution_status": "verified",
+            "provider": "amap",
+            "provider_place_id": "fixture-hongyadong",
+            "canonical_name": "洪崖洞民俗风貌区",
+            "latitude": 29.5630,
+            "longitude": 106.5720,
+            "category": "scenic",
+            "confirmation_options": [],
+        })
+        with patch("app.trips.service.confirm_place_identity", return_value=verified):
+            confirmed = self.client.post(
+                f"/trips/{trip_id}/preplan-intent/edits",
+                json={
+                    "base_intent_revision_id": compiled.json()["revision"]["id"],
+                    "base_draft_version": draft.json()["trip"]["draft_version"],
+                    "operations": [{
+                        "operation": "confirm_place_identity",
+                        "place_stable_id": "must-hongyadong",
+                        "provider_place_id": "fixture-hongyadong",
+                    }],
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-direct-must-confirm"},
+            )
+        self.assertEqual(confirmed.status_code, 201, confirmed.text)
+
+        with patch("app.trips.service.build_itinerary_response", return_value=simple_itinerary(3)) as planner:
+            preview = self.client.post(
+                f"/trips/{trip_id}/preplan-handoff/preview",
+                json={"draft_intent_revision_id": confirmed.json()["revision"]["id"]},
+            )
+        self.assertEqual(preview.status_code, 200, preview.text)
+        request = planner.call_args.args[0]
+        self.assertEqual([item.name for item in request.scenic_spots], ["洪崖洞民俗风貌区"])
+        self.assertEqual(request.scenic_spots[0].verified_place.provider_place_id, "fixture-hongyadong")
 
     def test_newer_draft_intent_invalidates_older_preview(self) -> None:
         created = self.client.post("/trips/drafts", json={"direct_user_text": "我想去西安玩两天。"}, headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-xian-two"})

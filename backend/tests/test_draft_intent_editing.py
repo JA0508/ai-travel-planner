@@ -509,6 +509,10 @@ class DraftIntentEditingApiTests(unittest.TestCase):
         self.assertTrue(body["changed"])
         self.assertEqual(body["revision"]["parent_draft_intent_revision_id"], first["revision"]["id"])
         self.assertEqual(body["envelope"]["formal_contract"]["place_identities"][0]["resolution_status"], "verified")
+        self.assertFalse(any(
+            assumption["reason_code"] == "no_reviewed_must_candidates"
+            for assumption in body["envelope"]["typed_assumptions"]
+        ))
         self.assertEqual(get_trip_repository().get_trip(trip_id).revision_count, 0)
 
         stale_run = self.client.post(

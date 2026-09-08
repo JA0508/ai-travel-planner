@@ -120,6 +120,30 @@ def build_planner_handoff_input(
         else:
             scenic.append(ScenicSpotInput.model_validate(raw))
 
+    scheduled_place_ids = {
+        item.canonical_place_id
+        for item in [*scenic, *restaurants]
+        if item.canonical_place_id is not None
+    }
+    for identity in formal.place_identities:
+        if identity.ownership != "must":
+            continue
+        raw = _verified_must_identity_to_raw(identity)
+        if raw["canonical_place_id"] in scheduled_place_ids:
+            continue
+        direct_identity_link = PlannerHandoffSourceLink(
+            subject_id=identity.stable_id,
+            field_id=f"place_identity:{identity.stable_id}",
+            field_path=f"formal_contract.place_identities.{identity.stable_id}",
+            provenance_node_ids=[],
+            authority="user_confirmed",
+            confirmed=True,
+        )
+        source_links.append(direct_identity_link)
+        candidate_links[identity.stable_id] = direct_identity_link
+        scenic.append(ScenicSpotInput.model_validate(raw))
+        scheduled_place_ids.add(raw["canonical_place_id"])
+
     for fixed_event in formal.fixed_events:
         raw = _fixed_event_to_raw(
             fixed_event=fixed_event,
@@ -355,6 +379,37 @@ def _fixed_event_to_raw(
         "fixed_event_identity_not_verified",
         field_id=fixed_event.metadata.field_id,
     )
+
+
+def _verified_must_identity_to_raw(identity: PlaceIdentity) -> dict[str, Any]:
+    if (
+        identity.resolution_status != "verified"
+        or identity.provider != "amap"
+        or not identity.provider_place_id
+        or not identity.canonical_name
+        or identity.latitude is None
+        or identity.longitude is None
+    ):
+        raise PlannerHandoffBlockedError("must_place_identity_not_verified")
+    return {
+        "name": identity.canonical_name,
+        "candidate_id": identity.stable_id,
+        "canonical_place_id": identity.provider_place_id,
+        "resolved_latitude": identity.latitude,
+        "resolved_longitude": identity.longitude,
+        "intent_ownership": "user_must",
+        "verified_place": VerifiedPlaceRef(
+            stable_id=identity.stable_id,
+            original_name=identity.original_name,
+            canonical_name=identity.canonical_name,
+            provider=identity.provider,
+            provider_place_id=identity.provider_place_id,
+            latitude=identity.latitude,
+            longitude=identity.longitude,
+            category=identity.category,
+            source_fragment_ids=identity.source_fragment_ids,
+        ),
+    }
 
 
 def _availability_windows(formal, *, trip_days: int) -> list[AvailabilityWindow]:
