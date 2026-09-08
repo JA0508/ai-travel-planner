@@ -6,6 +6,7 @@ import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace";
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
+import { resolvePrePlanCompileAttempt, type PrePlanCompileAttempt } from "./prePlanCompileAttempt";
 import { PrePlanConfirmationQueue } from "./PrePlanConfirmationQueue";
 import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, previewTimedOutMessage, previewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
@@ -100,6 +101,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
   const [restorePrimaryFocus, setRestorePrimaryFocus] = useState(false);
   const autoCompileTripRef = useRef<string | null>(null);
   const compileInFlightRef = useRef(false);
+  const compileAttemptRef = useRef<PrePlanCompileAttempt | null>(null);
 
   const view = useMemo(
     () => (intent ? buildPrePlanConfirmationViewModel(intent.envelope) : null),
@@ -137,12 +139,19 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     }
   }
 
-  async function compileIntent() {
+  async function compileIntent({ startNewAttempt = false }: { startNewAttempt?: boolean } = {}) {
     if (compileInFlightRef.current) return;
     compileInFlightRef.current = true;
     setBootstrap("compiling");
     setFeedback({ tone: "info", message: "正在整理你的旅行需求……" });
     const parentIntentRevisionId = latestIntentRevisionId;
+    const compileAttempt = resolvePrePlanCompileAttempt(
+      compileAttemptRef.current,
+      parentIntentRevisionId,
+      startNewAttempt,
+      () => createIdempotencyKey("draft-intent"),
+    );
+    compileAttemptRef.current = compileAttempt;
     const result = await postTripJson<DraftIntentResponse>(
       TRIP_API_ENDPOINTS.compilePrePlanIntent(tripId),
       {
@@ -154,7 +163,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       },
       "暂时无法整理旅行信息，你的输入已经保留。",
       "服务暂时不可用，你的输入不会丢失。",
-      { headers: { "X-Idempotency-Key": `draft-intent:${tripId}:${parentIntentRevisionId ?? "root"}` } },
+      { headers: { "X-Idempotency-Key": compileAttempt.idempotencyKey } },
     );
     compileInFlightRef.current = false;
     if (!result.ok) {
@@ -523,7 +532,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
 
         {view.assumptions.length ? <details className="uc-intent-card uc-intent-details"><summary><span><strong>系统暂时这样理解</strong><small>{view.assumptions.length} 项暂定设置</small></span><span aria-hidden="true">展开</span></summary><div className="uc-intent-list">{view.assumptions.map((item) => <article key={item.title}><strong>{item.title}</strong><span>{item.detail}</span></article>)}</div></details> : null}
 
-        <details className="uc-intent-card uc-intent-details"><summary><span><strong>查看依据</strong><small>按需查看输入和导入资料</small></span><span aria-hidden="true">展开</span></summary><SourceDetails directUserText={directUserText} sourceLines={view.sourceLines} candidates={candidates} selectedCandidateIds={selectedCandidateIds} onSelectCandidate={selectCandidate} onRefresh={() => void compileIntent()} onImportChanged={() => { void refreshCandidates(); setSourcesChanged(true); setPreview(null); setFeedback({ tone: "info", message: "已更新导入资料；重新整理后会纳入行程信息。" }); }} busy={busy} tripId={tripId} /></details>
+        <details className="uc-intent-card uc-intent-details"><summary><span><strong>查看依据</strong><small>按需查看输入和导入资料</small></span><span aria-hidden="true">展开</span></summary><SourceDetails directUserText={directUserText} sourceLines={view.sourceLines} candidates={candidates} selectedCandidateIds={selectedCandidateIds} onSelectCandidate={selectCandidate} onRefresh={() => void compileIntent({ startNewAttempt: true })} onImportChanged={() => { void refreshCandidates(); setSourcesChanged(true); setPreview(null); setFeedback({ tone: "info", message: "已更新导入资料；重新整理后会纳入行程信息。" }); }} busy={busy} tripId={tripId} /></details>
       </> : null}
 
       {preview ? <ExecutableRoutePreview itinerary={preview.itinerary} variant="draft" /> : null}
