@@ -91,6 +91,12 @@ test("pre-plan preview provides a separate retry action after a recoverable fail
   assert.match(source, /feedback\.action === "retry_preview"[\s\S]*onClick=\{\(\) => void buildPreview\(\)\}/);
 });
 
+test("pre-plan preview exposes a matching inline edit for a repairable planning blocker", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /plannerHandoffRecoveryAction\(result\.code, result\.context\)/);
+  assert.match(source, /feedback\.action === "edit_date_policy"[\s\S]*openEditor\("date_policy"\)/);
+});
+
 test("pre-plan workspace uses one editorial confirmation queue instead of repeated blocker cards", () => {
   const source = readFileSync(componentPath, "utf8");
   const queueSource = readFileSync(queuePath, "utf8");

@@ -16,6 +16,26 @@ const PLANNER_HANDOFF_MESSAGES: Record<string, string> = {
   travel_boundary_outside_trip: "抵达或离开时间不在当前旅行时间内。请调整旅行时间后再生成路线预览。",
 };
 
+export type PlannerHandoffRecoveryAction = "edit_date_policy" | "edit_destination";
+
+const DATE_POLICY_RECOVERY_REASONS = new Set([
+  "trip_days_missing",
+  "fixed_event_requires_date_policy",
+  "fixed_event_outside_trip",
+  "availability_window_requires_date_policy",
+  "availability_window_outside_supported_range",
+  "travel_boundary_outside_trip",
+]);
+
+export function plannerHandoffRecoveryAction(
+  code?: string,
+  context?: Record<string, unknown>,
+): PlannerHandoffRecoveryAction | undefined {
+  if (code !== "planner_handoff_blocked" || typeof context?.reason_code !== "string") return undefined;
+  if (context.reason_code === "destination_missing") return "edit_destination";
+  return DATE_POLICY_RECOVERY_REASONS.has(context.reason_code) ? "edit_date_policy" : undefined;
+}
+
 export function userFacingPrePlanRequestError(
   code?: string,
   fallback = "暂时无法整理旅行信息，你的输入已经保留。",

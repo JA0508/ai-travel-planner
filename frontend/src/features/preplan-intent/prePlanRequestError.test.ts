@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isStalePrePlanIntentError, previewTimedOutMessage, previewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
+import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, previewTimedOutMessage, previewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
 
 test("turns a blocked direct must-place handoff into an actionable recovery message", () => {
   const message = userFacingPrePlanRequestError(
@@ -63,4 +63,10 @@ test("explains missing verified place data as a refreshable planning issue", () 
 
   assert.match(message, /地点资料/);
   assert.match(message, /重新整理/);
+});
+
+test("offers a direct date editor only for a blocked preview that can be repaired by travel dates", () => {
+  assert.equal(plannerHandoffRecoveryAction("planner_handoff_blocked", { reason_code: "fixed_event_outside_trip" }), "edit_date_policy");
+  assert.equal(plannerHandoffRecoveryAction("planner_handoff_blocked", { reason_code: "destination_missing" }), "edit_destination");
+  assert.equal(plannerHandoffRecoveryAction("planner_handoff_blocked", { reason_code: "must_place_identity_not_verified" }), undefined);
 });
