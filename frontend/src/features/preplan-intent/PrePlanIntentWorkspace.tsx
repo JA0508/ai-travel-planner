@@ -46,7 +46,7 @@ type CandidateListResponse = {
 };
 
 type BootstrapState = "idle" | "compiling" | "ready" | "failed";
-type Feedback = { tone: "info" | "error"; message: string } | null;
+type Feedback = { tone: "info" | "error"; message: string; action?: "retry_preview" } | null;
 type CriticalEditor = "destination" | "date_policy" | "trip_days" | "pace";
 type CriticalIntentFormDraft = {
   city?: string;
@@ -427,7 +427,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     setOperation("idle");
     if (!result.ok) {
       if (result.aborted) {
-        setFeedback({ tone: "error", message: previewTimedOutMessage() });
+        setFeedback({ tone: "error", message: previewTimedOutMessage(), action: "retry_preview" });
         return;
       }
       if (isStalePrePlanIntentError(result.code)) {
@@ -438,7 +438,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
         }
       }
       if ((result.recoverable || !result.code) && result.code !== "planner_handoff_blocked") {
-        setFeedback({ tone: "error", message: previewUnavailableMessage() });
+        setFeedback({ tone: "error", message: previewUnavailableMessage(), action: "retry_preview" });
         return;
       }
       setFeedback({ tone: "error", message: userFacingPrePlanRequestError(result.code, "暂时无法生成路线预览，你确认的信息已经保留。", result.context) });
@@ -525,7 +525,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
 
       {staleConflict ? <StaleConflictPanel conflict={staleConflict} onViewLatest={() => { setFeedback({ tone: "info", message: "已显示最新行程信息；你的修改仍保留，可以重新应用。" }); }} onReapply={reapplyStaleEdit} onDiscard={() => { setStaleConflict(null); setActiveEditor(null); setFormDraft(null); setEditorError(null); setRestorePrimaryFocus(true); }} disabled={Boolean(pendingEdit)} /> : null}
 
-      {feedback ? <p role={feedback.tone === "error" ? "alert" : "status"} className={feedback.tone === "error" ? "uc-intent-feedback uc-intent-feedback--error" : "uc-intent-feedback"}>{feedback.message}</p> : null}
+      {feedback ? <div className="uc-intent-feedback-area"><p role={feedback.tone === "error" ? "alert" : "status"} className={feedback.tone === "error" ? "uc-intent-feedback uc-intent-feedback--error" : "uc-intent-feedback"}>{feedback.message}</p>{feedback.action === "retry_preview" ? <button type="button" className="uc-intent-secondary" onClick={() => void buildPreview()} disabled={busy || !canGeneratePreview}>重新生成路线预览</button> : null}</div> : null}
       {retryableRequest && editorError ? <button type="button" className="uc-intent-secondary" onClick={retryNetworkRequest} disabled={Boolean(pendingEdit)}>重新提交</button> : null}
 
       {view ? <footer className="uc-intent-actions"><button type="button" className="uc-intent-secondary" onClick={onCancel} disabled={busy}>修改原始需求</button><div><p>{primaryHint}</p><button id="preplan-primary-action" type="button" className="uc-intent-primary" onClick={() => { if (preview) void apply(); else void buildPreview(); }} disabled={primaryDisabled}>{operation === "previewing" ? "正在生成预览……" : operation === "applying" ? "正在保存行程……" : primaryLabel}</button></div></footer> : null}

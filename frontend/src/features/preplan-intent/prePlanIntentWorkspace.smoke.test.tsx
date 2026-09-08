@@ -85,6 +85,12 @@ test("pre-plan preview gives recoverable failures a direct retry instruction", (
   assert.match(source, /previewUnavailableMessage\(\)/);
 });
 
+test("pre-plan preview provides a separate retry action after a recoverable failure", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /action: "retry_preview"/);
+  assert.match(source, /feedback\.action === "retry_preview"[\s\S]*onClick=\{\(\) => void buildPreview\(\)\}/);
+});
+
 test("pre-plan workspace uses one editorial confirmation queue instead of repeated blocker cards", () => {
   const source = readFileSync(componentPath, "utf8");
   const queueSource = readFileSync(queuePath, "utf8");
