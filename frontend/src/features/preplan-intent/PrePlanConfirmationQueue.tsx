@@ -1,4 +1,4 @@
-import React, { useState, type FormEvent, type ReactNode } from "react";
+import React, { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption } from "@/features/intent-confirmation/intentTypes";
 import type { ConfirmationItem, ConfirmedItem } from "./prePlanConfirmationModel";
 import type { PlaceIdentitySuggestionSearchResult, PrePlanPlaceIdentitySuggestionsResponse } from "./draftIntentEditApi";
@@ -28,8 +28,21 @@ export function PrePlanConfirmationQueue({
   onUpdateFixedLocation,
   renderClarification,
 }: Props) {
-  const questionById = new Map(questions.map((question) => [question.question_id, question]));
+  const questionById = useMemo(() => new Map(questions.map((question) => [question.question_id, question])), [questions]);
   const remainingCopy = items.length ? `还需确认 ${items.length} 项` : "可以生成首版路线";
+  const actionableItems = useMemo(
+    () => items.filter((item) => isActionableItem(item, identities, events, questionById)),
+    [events, identities, items, questionById],
+  );
+  const [expandedItemId, setExpandedItemId] = useState<string | null>(() => actionableItems[0]?.id ?? null);
+
+  useEffect(() => {
+    setExpandedItemId((current) => (
+      current && actionableItems.some((item) => item.id === current)
+        ? current
+        : actionableItems[0]?.id ?? null
+    ));
+  }, [actionableItems]);
 
   return (
     <section className="uc-confirmation-workbench" aria-label="确认清单" aria-live="polite">
@@ -51,6 +64,9 @@ export function PrePlanConfirmationQueue({
             event={item.kind === "fixed_place" ? events.find((event) => event.event_id === item.eventId) ?? null : null}
             question={item.kind === "clarification" || item.kind === "conflict" ? item.questionId ? questionById.get(item.questionId) ?? null : null : null}
             busy={busy}
+            expanded={expandedItemId === item.id}
+            actionable={actionableItems.some((actionableItem) => actionableItem.id === item.id)}
+            onToggle={() => setExpandedItemId((current) => current === item.id ? null : item.id)}
             onConfirmPlace={onConfirmPlace}
             onSearchPlace={onSearchPlace}
             onUpdateFixedLocation={onUpdateFixedLocation}
@@ -79,6 +95,9 @@ function ConfirmationItemCard({
   event,
   question,
   busy,
+  expanded,
+  actionable,
+  onToggle,
   onConfirmPlace,
   onSearchPlace,
   onUpdateFixedLocation,
@@ -89,25 +108,67 @@ function ConfirmationItemCard({
   event: FixedEventIntent | null;
   question: IntentClarification | null;
   busy: boolean;
+  expanded: boolean;
+  actionable: boolean;
+  onToggle: () => void;
   onConfirmPlace: Props["onConfirmPlace"];
   onSearchPlace: Props["onSearchPlace"];
   onUpdateFixedLocation: Props["onUpdateFixedLocation"];
   renderClarification: Props["renderClarification"];
 }) {
-  if (item.kind === "clarification" && question) return <div className="uc-confirmation-item">{renderClarification(question)}</div>;
+  if (item.kind === "clarification" && question) {
+    return <div className="uc-confirmation-item">
+      <ConfirmationItemCopy item={item} />
+      {actionable ? <ConfirmationItemToggle item={item} expanded={expanded} busy={busy} onToggle={onToggle} /> : null}
+      {expanded ? <div id={`confirmation-item-${item.id}`} className="uc-confirmation-item-editor">{renderClarification(question)}</div> : null}
+    </div>;
+  }
   if (item.kind === "conflict") return <article className="uc-confirmation-item uc-confirmation-item--conflict"><h4>{item.title}</h4><p>{item.detail}</p></article>;
 
   return <article className="uc-confirmation-item">
-    <div className="uc-confirmation-item-copy"><h4>{item.title}</h4><p>{item.detail}</p></div>
-    {identity ? <PlaceIdentityRecommendation
-      identity={identity}
-      title={item.title}
-      busy={busy}
-      onConfirm={onConfirmPlace}
-      onSearch={onSearchPlace}
-    /> : null}
-    {item.kind === "fixed_place" && event ? <FixedLocationPrompt event={event} busy={busy} onSave={onUpdateFixedLocation} /> : null}
+    <ConfirmationItemCopy item={item} />
+    {actionable ? <ConfirmationItemToggle item={item} expanded={expanded} busy={busy} onToggle={onToggle} /> : null}
+    {expanded ? <div id={`confirmation-item-${item.id}`} className="uc-confirmation-item-editor">
+      {identity ? <PlaceIdentityRecommendation
+        identity={identity}
+        title={item.title}
+        busy={busy}
+        onConfirm={onConfirmPlace}
+        onSearch={onSearchPlace}
+      /> : null}
+      {item.kind === "fixed_place" && event && !identity ? <FixedLocationPrompt event={event} busy={busy} onSave={onUpdateFixedLocation} /> : null}
+    </div> : null}
   </article>;
+}
+
+function isActionableItem(
+  item: ConfirmationItem,
+  identities: PlaceIdentity[],
+  events: FixedEventIntent[],
+  questionById: Map<string, IntentClarification>,
+): boolean {
+  if (item.kind === "conflict") return false;
+  if (item.kind === "clarification") return Boolean(item.questionId && questionById.has(item.questionId));
+  if (item.kind === "must_place") return identities.some((identity) => identity.stable_id === item.identityId);
+  if (item.kind === "fixed_place") return events.some((event) => event.event_id === item.eventId);
+  return false;
+}
+
+function ConfirmationItemCopy({ item }: { item: ConfirmationItem }) {
+  return <div className="uc-confirmation-item-copy"><h4>{item.title}</h4><p>{item.detail}</p></div>;
+}
+
+function ConfirmationItemToggle({ item, expanded, busy, onToggle }: { item: ConfirmationItem; expanded: boolean; busy: boolean; onToggle: () => void }) {
+  const label = expanded ? "收起" : item.kind === "fixed_place" ? "补充地点" : item.kind === "must_place" ? "选择地点" : "处理这项";
+  const panelId = `confirmation-item-${item.id}`;
+  return <button
+    type="button"
+    className="uc-confirmation-item-action"
+    aria-expanded={expanded}
+    aria-controls={expanded ? panelId : undefined}
+    disabled={busy}
+    onClick={onToggle}
+  >{label}</button>;
 }
 
 function PlaceIdentityRecommendation({

@@ -224,6 +224,12 @@ body {
   font-size: 15px;
 }
 
+.uc-confirmation-item-copy,
+.uc-confirmation-item-editor {
+  display: grid;
+  gap: 7px;
+}
+
 .uc-confirmation-item p,
 .uc-confirmation-confirmed-list span,
 .uc-confirmation-empty,
@@ -232,6 +238,26 @@ body {
   color: var(--ec-slate);
   font-size: 13px;
   line-height: 1.55;
+}
+
+.uc-confirmation-item-action {
+  justify-self: start;
+  min-height: 44px;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ec-clay);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.uc-confirmation-item-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
 }
 
 .uc-confirmation-item--conflict {
@@ -427,6 +453,7 @@ body {
 }
 
 .uc-confirmation-choice button:focus-visible,
+.uc-confirmation-item-action:focus-visible,
 .uc-confirmation-location input:focus-visible,
 .uc-place-accept:focus-visible,
 .uc-place-search-toggle:focus-visible,
@@ -1056,6 +1083,11 @@ textarea {
   .uc-place-search-form .uc-intent-secondary,
   .uc-place-accept {
     width: 100%;
+  }
+
+  .uc-confirmation-item-action {
+    width: 100%;
+    text-align: left;
   }
 
   .uc-confirmation-location .uc-intent-secondary {

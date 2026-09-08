@@ -148,8 +148,64 @@ test("place confirmation presents a recommendation without silently confirming i
   assert.doesNotMatch(html, /已确认地点/);
 });
 
+test("confirmation queue expands only the first actionable place by default", () => {
+  const identity = (stableId: string, placeId: string, address: string) => ({
+    stable_id: stableId,
+    original_name: stableId,
+    canonical_name: null,
+    city: "重庆",
+    ownership: "must" as const,
+    fixed_event_id: null,
+    resolution_status: "ambiguous" as const,
+    provider: null,
+    provider_place_id: null,
+    latitude: null,
+    longitude: null,
+    category: null,
+    source_fragment_ids: ["direct"],
+    confirmation_options: [{
+      provider_place_id: placeId,
+      canonical_name: `${stableId} 推荐地点`,
+      address_summary: address,
+      category: null,
+      city: "重庆",
+    }],
+    resolution_confidence: null,
+  });
+  const html = renderToStaticMarkup(
+    <PrePlanConfirmationQueue
+      items={[
+        { id: "conflict:dates", kind: "conflict", title: "抵达时间不能晚于离开时间", detail: "请先返回修改需求。", questionId: null, tone: "conflict" },
+        { id: "must-place:hongyadong", kind: "must_place", title: "确认「洪崖洞」具体是哪一处", detail: "确认后才会使用真实的位置和路线数据。", identityId: "hongyadong", tone: "todo" },
+        { id: "must-place:shancheng", kind: "must_place", title: "确认「山城步道」具体是哪一处", detail: "确认后才会使用真实的位置和路线数据。", identityId: "shancheng", tone: "todo" },
+      ]}
+      confirmedItems={[]}
+      identities={[
+        identity("hongyadong", "amap-hongyadong", "重庆市渝中区嘉陵江滨江路"),
+        identity("shancheng", "amap-shancheng", "重庆市渝中区中兴路"),
+      ]}
+      events={[]}
+      questions={[]}
+      busy={false}
+      onConfirmPlace={() => undefined}
+      onSearchPlace={async () => ({ kind: "failed", message: "地点服务暂时不可用。", retryable: true })}
+      onUpdateFixedLocation={() => undefined}
+      renderClarification={() => null}
+    />,
+  );
+
+  assert.match(html, /抵达时间不能晚于离开时间/);
+  assert.match(html, /重庆市渝中区嘉陵江滨江路/);
+  assert.doesNotMatch(html, /重庆市渝中区中兴路/);
+  assert.equal((html.match(/采用这个地点/g) ?? []).length, 1);
+  assert.match(html, /选择地点/);
+});
+
 test("pre-plan confirmation controls retain a visible keyboard focus ring", () => {
   const styles = readFileSync(stylesPath, "utf8");
+  assert.match(styles, /\.uc-confirmation-item-action\s*\{[\s\S]*min-height:\s*44px/);
+  assert.match(styles, /@media \(max-width: 760px\)\s*\{[\s\S]*\.uc-confirmation-item-action\s*\{[\s\S]*width:\s*100%/);
+  assert.match(styles, /\.uc-confirmation-item-action:focus-visible/);
   assert.match(styles, /\.uc-intent-primary:focus-visible/);
   assert.match(styles, /\.uc-intent-secondary:focus-visible/);
   assert.match(styles, /\.uc-intent-text-action:focus-visible/);
