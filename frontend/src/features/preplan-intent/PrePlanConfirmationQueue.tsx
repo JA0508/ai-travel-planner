@@ -10,6 +10,7 @@ type Props = {
   events: FixedEventIntent[];
   questions: IntentClarification[];
   busy: boolean;
+  canGeneratePreview: boolean;
   onConfirmPlace: (identity: PlaceIdentity, option: PlaceResolutionOption, searchQuery?: string) => void;
   onSearchPlace: (identity: PlaceIdentity, query: string) => Promise<PlaceIdentitySuggestionSearchResult>;
   onUpdateFixedLocation: (event: FixedEventIntent, location: string) => void;
@@ -23,13 +24,19 @@ export function PrePlanConfirmationQueue({
   events,
   questions,
   busy,
+  canGeneratePreview,
   onConfirmPlace,
   onSearchPlace,
   onUpdateFixedLocation,
   renderClarification,
 }: Props) {
   const questionById = useMemo(() => new Map(questions.map((question) => [question.question_id, question])), [questions]);
-  const remainingCopy = items.length ? `还需确认 ${items.length} 项` : "可以生成首版路线";
+  const blockedWithoutAction = !canGeneratePreview && items.length === 0;
+  const remainingCopy = items.length
+    ? `还需确认 ${items.length} 项`
+    : blockedWithoutAction
+      ? "还需要检查需求"
+      : "可以生成首版路线";
   const actionableItems = useMemo(
     () => items.filter((item) => isActionableItem(item, identities, events, questionById)),
     [events, identities, items, questionById],
@@ -51,8 +58,10 @@ export function PrePlanConfirmationQueue({
           <p>确认清单</p>
           <h2>{remainingCopy}</h2>
         </div>
-        <span>{items.length ? "每完成一项，路线就更可靠" : "关键信息已齐备"}</span>
+        <span>{items.length ? "每完成一项，路线就更可靠" : blockedWithoutAction ? "请先补齐路线条件" : "关键信息已齐备"}</span>
       </div>
+
+      {blockedWithoutAction ? <p className="uc-confirmation-muted">当前没有可直接确认的项目。请使用页面底部的“修改原始需求”补充或校正路线条件。</p> : null}
 
       {items.length ? <section className="uc-confirmation-lane uc-confirmation-lane--todo" aria-label="还需确认">
         <div className="uc-confirmation-lane-heading"><span>01</span><div><p>还需确认</p><h3>只处理会影响这版路线的项目</h3></div></div>
@@ -82,7 +91,7 @@ export function PrePlanConfirmationQueue({
             {confirmedItems.map((item) => <li key={item.id}><strong>{item.title}</strong><span>{item.detail}</span></li>)}
           </ul>
         ) : (
-          <p className="uc-confirmation-muted">完成上面的确认后，地点和固定安排会出现在这里。</p>
+          <p className="uc-confirmation-muted">{blockedWithoutAction ? "补齐路线条件后，确认的地点和固定安排会出现在这里。" : "完成上面的确认后，地点和固定安排会出现在这里。"}</p>
         )}
       </section>
     </section>

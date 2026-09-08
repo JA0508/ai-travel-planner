@@ -133,6 +133,7 @@ test("place confirmation presents a recommendation without silently confirming i
       events={[]}
       questions={[]}
       busy={false}
+      canGeneratePreview={false}
       onConfirmPlace={() => undefined}
       onSearchPlace={async () => ({ kind: "failed", message: "地点服务暂时不可用。", retryable: true })}
       onUpdateFixedLocation={() => undefined}
@@ -187,6 +188,7 @@ test("confirmation queue expands only the first actionable place by default", ()
       events={[]}
       questions={[]}
       busy={false}
+      canGeneratePreview={false}
       onConfirmPlace={() => undefined}
       onSearchPlace={async () => ({ kind: "failed", message: "地点服务暂时不可用。", retryable: true })}
       onUpdateFixedLocation={() => undefined}
@@ -199,6 +201,28 @@ test("confirmation queue expands only the first actionable place by default", ()
   assert.doesNotMatch(html, /重庆市渝中区中兴路/);
   assert.equal((html.match(/采用这个地点/g) ?? []).length, 1);
   assert.match(html, /选择地点/);
+});
+
+test("confirmation queue never calls a blocked zero-item Draft ready", () => {
+  const html = renderToStaticMarkup(
+    <PrePlanConfirmationQueue
+      items={[]}
+      confirmedItems={[]}
+      identities={[]}
+      events={[]}
+      questions={[]}
+      busy={false}
+      canGeneratePreview={false}
+      onConfirmPlace={() => undefined}
+      onSearchPlace={async () => ({ kind: "failed", message: "地点服务暂时不可用。", retryable: true })}
+      onUpdateFixedLocation={() => undefined}
+      renderClarification={() => null}
+    />,
+  );
+
+  assert.match(html, /还需要检查需求/);
+  assert.match(html, /当前没有可直接确认的项目/);
+  assert.doesNotMatch(html, /关键信息已齐备/);
 });
 
 test("pre-plan confirmation controls retain a visible keyboard focus ring", () => {
