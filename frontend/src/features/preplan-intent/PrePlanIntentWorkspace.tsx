@@ -7,6 +7,7 @@ import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace"
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
 import { PrePlanConfirmationQueue } from "./PrePlanConfirmationQueue";
+import { userFacingPrePlanRequestError } from "./prePlanRequestError";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 import type {
@@ -156,7 +157,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     compileInFlightRef.current = false;
     if (!result.ok) {
       setBootstrap("failed");
-      setFeedback({ tone: "error", message: userFacingRequestError(result.code) });
+      setFeedback({ tone: "error", message: userFacingPrePlanRequestError(result.code) });
       return;
     }
     setIntent(result.data);
@@ -187,7 +188,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       return;
     }
     setBootstrap("failed");
-    setFeedback({ tone: "error", message: userFacingRequestError(result.code) });
+    setFeedback({ tone: "error", message: userFacingPrePlanRequestError(result.code) });
   }
 
   async function refreshLatestIntent(): Promise<LatestPrePlanIntentResponse | null> {
@@ -419,7 +420,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     );
     setOperation("idle");
     if (!result.ok) {
-      setFeedback({ tone: "error", message: userFacingRequestError(result.code, "暂时无法生成路线预览，你确认的信息已经保留。", result.context) });
+      setFeedback({ tone: "error", message: userFacingPrePlanRequestError(result.code, "暂时无法生成路线预览，你确认的信息已经保留。", result.context) });
       return;
     }
     setPreview(result.data);
@@ -439,7 +440,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     );
     setOperation("idle");
     if (!result.ok) {
-      setFeedback({ tone: "error", message: userFacingRequestError(result.code, "暂时无法保存行程，你确认的信息已经保留。") });
+      setFeedback({ tone: "error", message: userFacingPrePlanRequestError(result.code, "暂时无法保存行程，你确认的信息已经保留。") });
       return;
     }
     onApplied(result.data);
@@ -519,13 +520,6 @@ function RetryState({ onRetry }: { onRetry: () => void }) {
 
 function SourceDetails({ directUserText, sourceLines, candidates, selectedCandidateIds, onSelectCandidate, onRefresh, onImportChanged, busy, tripId }: { directUserText: string; sourceLines: Array<{ label: string; source: string }>; candidates: CandidateListResponse["candidates"]; selectedCandidateIds: string[]; onSelectCandidate: (id: string, checked: boolean) => void; onRefresh: () => void; onImportChanged: () => void; busy: boolean; tripId: string }) {
   return <div className="uc-intent-details-body"><div><strong>这份行程信息来自</strong>{sourceLines.length ? <div className="uc-intent-source-list">{sourceLines.map((item) => <p key={item.label}>{item.label}<span>{item.source}</span></p>)}</div> : <p className="uc-intent-muted">目前主要依据你的输入整理。</p>}</div><details><summary>查看原始需求</summary><p className="uc-intent-raw-text">{directUserText}</p></details>{candidates.length ? <div><strong>从导入资料补充地点</strong><div className="uc-intent-candidate-list">{candidates.map((candidate) => <label key={candidate.id}><input type="checkbox" checked={selectedCandidateIds.includes(candidate.id)} onChange={(event) => onSelectCandidate(candidate.id, event.target.checked)} />{candidate.display_name}</label>)}</div></div> : null}<button type="button" className="uc-intent-secondary" onClick={onRefresh} disabled={busy}>重新整理旅行信息</button><details><summary>添加或审核导入资料</summary><ImportReviewWorkspace tripPersistence={{ status: "draft", tripId }} onCandidatesChanged={onImportChanged} /></details></div>;
-}
-
-function userFacingRequestError(code?: string, fallback = "暂时无法整理旅行信息，你的输入已经保留。", context?: Record<string, unknown>): string {
-  if (code === "stale_intent_revision" || code === "stale_base_revision") return "行程信息已经在其他页面更新，请返回后重新进入确认页面。";
-  if (code === "intent_parser_unavailable" || code === "intent_parser_timeout" || code === "intent_parser_invalid_output") return "部分内容未能自动识别，请检查关键信息。";
-  if (code === "planner_handoff_blocked" && context?.reason_code === "fixed_event_identity_not_verified") return "固定安排的地点还没有确认，暂时不能把它排进可执行路线。请返回修改需求，补充预约地点或从导入资料中确认该地点。";
-  return fallback;
 }
 
 function userFacingPlaceSuggestionError(code?: string): string {
