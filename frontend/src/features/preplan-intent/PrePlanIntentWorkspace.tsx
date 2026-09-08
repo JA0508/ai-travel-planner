@@ -7,7 +7,7 @@ import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace"
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
 import { PrePlanConfirmationQueue } from "./PrePlanConfirmationQueue";
-import { isStalePrePlanIntentError, previewTimedOutMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
+import { isStalePrePlanIntentError, previewTimedOutMessage, previewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 import type {
@@ -436,6 +436,10 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
           setFeedback({ tone: "info", message: "行程信息已经在其他页面更新，已载入最新行程信息，请重新生成路线预览。" });
           return;
         }
+      }
+      if ((result.recoverable || !result.code) && result.code !== "planner_handoff_blocked") {
+        setFeedback({ tone: "error", message: previewUnavailableMessage() });
+        return;
       }
       setFeedback({ tone: "error", message: userFacingPrePlanRequestError(result.code, "暂时无法生成路线预览，你确认的信息已经保留。", result.context) });
       return;

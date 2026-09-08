@@ -79,6 +79,12 @@ test("pre-plan preview ends a slow request with a clear retry state", () => {
   assert.match(source, /previewTimedOutMessage\(\)/);
 });
 
+test("pre-plan preview gives recoverable failures a direct retry instruction", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /result\.recoverable \|\| !result\.code/);
+  assert.match(source, /previewUnavailableMessage\(\)/);
+});
+
 test("pre-plan workspace uses one editorial confirmation queue instead of repeated blocker cards", () => {
   const source = readFileSync(componentPath, "utf8");
   const queueSource = readFileSync(queuePath, "utf8");

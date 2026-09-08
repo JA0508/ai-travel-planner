@@ -25,3 +25,7 @@ export function isStalePrePlanIntentError(code?: string): boolean {
 export function previewTimedOutMessage(): string {
   return "路线预览暂未完成，已停止本次等待。你的确认信息没有变化，可以重新生成路线预览。";
 }
+
+export function previewUnavailableMessage(): string {
+  return "路线预览服务暂时不可用，你的确认信息没有变化。请稍后重新生成路线预览。";
+}
