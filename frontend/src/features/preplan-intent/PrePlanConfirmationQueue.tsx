@@ -11,6 +11,7 @@ type Props = {
   questions: IntentClarification[];
   busy: boolean;
   canGeneratePreview: boolean;
+  onModifyRequest: () => void;
   onConfirmPlace: (identity: PlaceIdentity, option: PlaceResolutionOption, searchQuery?: string) => void;
   onSearchPlace: (identity: PlaceIdentity, query: string) => Promise<PlaceIdentitySuggestionSearchResult>;
   onUpdateFixedLocation: (event: FixedEventIntent, location: string) => void;
@@ -25,6 +26,7 @@ export function PrePlanConfirmationQueue({
   questions,
   busy,
   canGeneratePreview,
+  onModifyRequest,
   onConfirmPlace,
   onSearchPlace,
   onUpdateFixedLocation,
@@ -61,7 +63,7 @@ export function PrePlanConfirmationQueue({
         <span>{items.length ? "每完成一项，路线就更可靠" : blockedWithoutAction ? "请先补齐路线条件" : "关键信息已齐备"}</span>
       </div>
 
-      {blockedWithoutAction ? <p className="uc-confirmation-muted">当前没有可直接确认的项目。请使用页面底部的“修改原始需求”补充或校正路线条件。</p> : null}
+      {blockedWithoutAction ? <div className="uc-confirmation-recovery"><p className="uc-confirmation-muted">当前没有可直接确认的项目。请补充或校正路线条件后再继续。</p><button type="button" className="uc-intent-secondary" onClick={onModifyRequest} disabled={busy}>修改原始需求</button></div> : null}
 
       {items.length ? <section className="uc-confirmation-lane uc-confirmation-lane--todo" aria-label="还需确认">
         <div className="uc-confirmation-lane-heading"><span>01</span><div><p>还需确认</p><h3>只处理会影响这版路线的项目</h3></div></div>

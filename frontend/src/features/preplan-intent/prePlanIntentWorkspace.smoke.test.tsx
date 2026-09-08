@@ -140,6 +140,7 @@ test("place confirmation presents a recommendation without silently confirming i
       questions={[]}
       busy={false}
       canGeneratePreview={false}
+      onModifyRequest={() => undefined}
       onConfirmPlace={() => undefined}
       onSearchPlace={async () => ({ kind: "failed", message: "地点服务暂时不可用。", retryable: true })}
       onUpdateFixedLocation={() => undefined}
@@ -195,6 +196,7 @@ test("confirmation queue expands only the first actionable place by default", ()
       questions={[]}
       busy={false}
       canGeneratePreview={false}
+      onModifyRequest={() => undefined}
       onConfirmPlace={() => undefined}
       onSearchPlace={async () => ({ kind: "failed", message: "地点服务暂时不可用。", retryable: true })}
       onUpdateFixedLocation={() => undefined}
@@ -219,6 +221,7 @@ test("confirmation queue never calls a blocked zero-item Draft ready", () => {
       questions={[]}
       busy={false}
       canGeneratePreview={false}
+      onModifyRequest={() => undefined}
       onConfirmPlace={() => undefined}
       onSearchPlace={async () => ({ kind: "failed", message: "地点服务暂时不可用。", retryable: true })}
       onUpdateFixedLocation={() => undefined}
@@ -228,6 +231,7 @@ test("confirmation queue never calls a blocked zero-item Draft ready", () => {
 
   assert.match(html, /还需要检查需求/);
   assert.match(html, /当前没有可直接确认的项目/);
+  assert.match(html, /<button[^>]*>修改原始需求<\/button>/);
   assert.doesNotMatch(html, /关键信息已齐备/);
 });
 

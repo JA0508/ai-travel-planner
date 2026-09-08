@@ -240,6 +240,12 @@ body {
   line-height: 1.55;
 }
 
+.uc-confirmation-recovery {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+}
+
 .uc-confirmation-item-action {
   justify-self: start;
   min-height: 44px;

@@ -495,6 +495,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
           questions={intent.envelope.clarification_queue}
           busy={busy || draftVersion === null}
           canGeneratePreview={view.canGeneratePreview}
+          onModifyRequest={onCancel}
           onConfirmPlace={confirmPlaceIdentity}
           onSearchPlace={searchPlaceSuggestions}
           onUpdateFixedLocation={updateFixedEventLocation}
