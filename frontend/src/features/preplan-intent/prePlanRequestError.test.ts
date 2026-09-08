@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isStalePrePlanIntentError, userFacingPrePlanRequestError } from "./prePlanRequestError";
+import { isStalePrePlanIntentError, previewTimedOutMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
 
 test("turns a blocked direct must-place handoff into an actionable recovery message", () => {
   const message = userFacingPrePlanRequestError(
@@ -29,4 +29,10 @@ test("recognizes only stale Draft revisions as safe-to-refresh preview failures"
   assert.equal(isStalePrePlanIntentError("stale_intent_revision"), true);
   assert.equal(isStalePrePlanIntentError("stale_base_revision"), true);
   assert.equal(isStalePrePlanIntentError("planner_handoff_blocked"), false);
+});
+
+test("makes a slow route-preview request safely retryable", () => {
+  assert.match(previewTimedOutMessage(), /未完成/);
+  assert.match(previewTimedOutMessage(), /重新生成/);
+  assert.doesNotMatch(previewTimedOutMessage(), /已经保存/);
 });

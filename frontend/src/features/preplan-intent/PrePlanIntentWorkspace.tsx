@@ -7,7 +7,7 @@ import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace"
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
 import { PrePlanConfirmationQueue } from "./PrePlanConfirmationQueue";
-import { isStalePrePlanIntentError, userFacingPrePlanRequestError } from "./prePlanRequestError";
+import { isStalePrePlanIntentError, previewTimedOutMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 import type {
@@ -22,6 +22,8 @@ import type {
 } from "./draftIntentEditApi";
 
 type ItineraryResponse = any;
+
+const PREVIEW_REQUEST_TIMEOUT_MS = 25_000;
 
 type DraftIntentResponse = {
   envelope: SourceLinkedTripIntentEnvelope;
@@ -412,14 +414,22 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     if (!intent || !view?.canGeneratePreview || sourcesChanged) return;
     setOperation("previewing");
     setFeedback({ tone: "info", message: "正在生成第一版路线预览……" });
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), PREVIEW_REQUEST_TIMEOUT_MS);
     const result = await postTripJson<PreviewResponse>(
       TRIP_API_ENDPOINTS.previewPrePlanHandoff(tripId),
       { draft_intent_revision_id: intent.revision.id },
       "暂时无法生成路线预览，你确认的信息已经保留。",
       "服务暂时不可用，你确认的信息不会丢失。",
+      { signal: controller.signal },
     );
+    window.clearTimeout(timeoutId);
     setOperation("idle");
     if (!result.ok) {
+      if (result.aborted) {
+        setFeedback({ tone: "error", message: previewTimedOutMessage() });
+        return;
+      }
       if (isStalePrePlanIntentError(result.code)) {
         const latest = await refreshLatestIntent();
         if (latest) {

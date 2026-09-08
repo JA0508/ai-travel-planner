@@ -21,3 +21,7 @@ export function userFacingPrePlanRequestError(
 export function isStalePrePlanIntentError(code?: string): boolean {
   return code === "stale_intent_revision" || code === "stale_base_revision";
 }
+
+export function previewTimedOutMessage(): string {
+  return "路线预览暂未完成，已停止本次等待。你的确认信息没有变化，可以重新生成路线预览。";
+}

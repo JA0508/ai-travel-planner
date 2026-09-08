@@ -72,6 +72,13 @@ test("pre-plan preview refreshes the latest Draft after a stale response", () =>
   assert.match(source, /已载入最新行程信息，请重新生成路线预览/);
 });
 
+test("pre-plan preview ends a slow request with a clear retry state", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /PREVIEW_REQUEST_TIMEOUT_MS/);
+  assert.match(source, /AbortController/);
+  assert.match(source, /previewTimedOutMessage\(\)/);
+});
+
 test("pre-plan workspace uses one editorial confirmation queue instead of repeated blocker cards", () => {
   const source = readFileSync(componentPath, "utf8");
   const queueSource = readFileSync(queuePath, "utf8");
