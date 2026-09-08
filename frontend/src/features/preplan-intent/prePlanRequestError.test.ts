@@ -42,3 +42,25 @@ test("makes a recoverable route-preview failure explicitly retryable", () => {
   assert.match(previewUnavailableMessage(), /重新生成/);
   assert.doesNotMatch(previewUnavailableMessage(), /已保存/);
 });
+
+test("explains a fixed arrangement that falls outside the trip instead of showing a generic preview failure", () => {
+  const message = userFacingPrePlanRequestError(
+    "planner_handoff_blocked",
+    "暂时无法生成路线预览，你确认的信息已经保留。",
+    { reason_code: "fixed_event_outside_trip" },
+  );
+
+  assert.match(message, /固定安排/);
+  assert.match(message, /旅行时间/);
+});
+
+test("explains missing verified place data as a refreshable planning issue", () => {
+  const message = userFacingPrePlanRequestError(
+    "planner_handoff_blocked",
+    "暂时无法生成路线预览，你确认的信息已经保留。",
+    { reason_code: "intent_candidate_identity_not_verified" },
+  );
+
+  assert.match(message, /地点资料/);
+  assert.match(message, /重新整理/);
+});
