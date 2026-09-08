@@ -14,10 +14,11 @@ from app.imports.dependencies import reset_import_dependencies_for_tests
 from app.main import app
 from app.persistence.database import SQLiteConnectionFactory
 from app.persistence.sqlite_trip_repository import SQLiteTripRepository
-from app.schemas.intent import ParsedTripIntentResponse
+from app.schemas.intent import ParsedFixedEvent, ParsedTripIntentResponse
 from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
 from app.trips.errors import StaleIntentRevisionError
 from app.trips.intent_contracts import TripIntentRevisionRecord
+from app.trips.intent_llm_adapter import build_untrusted_llm_intent_proposal
 from tests.test_trip_persistence_api import simple_itinerary
 
 
@@ -761,6 +762,61 @@ class TripIntentContractTests(unittest.TestCase):
         self.assertTrue(
             any(field["status"] == "shadowed" and field["source_refs"][0]["source_type"] == "llm_proposal" for field in envelope["fields"])
         )
+
+    def test_llm_adapter_drops_generic_fixed_events_not_supported_by_user_text(self) -> None:
+        text = (
+            "我想去重庆玩3天。第一天晚上20:30到江北机场，第三天下午16:30飞走。"
+            "下午安排一次可以坐下来休息的空档。"
+            "如果某个地点需要预约、天气影响较大或可能人流拥挤，请标注为待确认项。"
+        )
+        with patch(
+            "app.trips.intent_llm_adapter.parse_trip_text_with_llm",
+            return_value=ParsedTripIntentResponse(
+                city="重庆",
+                trip_days=3,
+                fixed_events=[
+                    ParsedFixedEvent(
+                        name="预约",
+                        fixed_day=2,
+                        fixed_time_start="14:00",
+                        fixed_time_end="16:00",
+                    ),
+                    ParsedFixedEvent(
+                        name="有安排",
+                        fixed_day=1,
+                        fixed_time_start="18:00",
+                        fixed_time_end="20:00",
+                    ),
+                ],
+            ),
+        ):
+            proposal = build_untrusted_llm_intent_proposal(text)
+
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal.fixed_events, [])
+
+    def test_llm_adapter_preserves_generic_fixed_event_supported_by_user_text(self) -> None:
+        with patch(
+            "app.trips.intent_llm_adapter.parse_trip_text_with_llm",
+            return_value=ParsedTripIntentResponse(
+                city="杭州",
+                trip_days=2,
+                fixed_events=[
+                    ParsedFixedEvent(
+                        name="预约",
+                        fixed_day=2,
+                        fixed_time_start="14:00",
+                        fixed_time_end="16:00",
+                    )
+                ],
+            ),
+        ):
+            proposal = build_untrusted_llm_intent_proposal(
+                "我想去杭州玩两天。第二天下午两点到四点有个预约。"
+            )
+
+        self.assertIsNotNone(proposal)
+        self.assertEqual([event.name for event in proposal.fixed_events], ["预约"])
 
     def test_llm_adapter_timeout_is_recorded_without_trusting_parser_output(self) -> None:
         client, trip_id, base_revision_id = create_saved_trip()

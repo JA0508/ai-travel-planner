@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.schemas import PlannerRealismSummary
+from app.schemas.intent import ParsedFixedEvent, ParsedTripIntentResponse
 from app.trips.dependencies import reset_trip_repository_cache_for_tests
 from tests.test_trip_persistence_api import simple_itinerary
 
@@ -138,6 +139,40 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
             ["洪崖洞", "解放碑", "李子坝轻轨站", "鹅岭二厂", "山城步道", "南山一棵树观景台"],
         )
         self.assertEqual(formal["fixed_events"], [])
+
+    def test_compile_does_not_turn_output_requirements_into_fixed_arrangements(self) -> None:
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": CHONGQING_THREE_DAY_REQUEST},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-chongqing-no-generic-events"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        with patch(
+            "app.trips.intent_llm_adapter.parse_trip_text_with_llm",
+            return_value=ParsedTripIntentResponse(
+                city="重庆",
+                trip_days=3,
+                fixed_events=[
+                    ParsedFixedEvent(name="预约", fixed_day=2, fixed_time_start="14:00", fixed_time_end="16:00"),
+                    ParsedFixedEvent(name="有安排", fixed_day=1, fixed_time_start="18:00", fixed_time_end="20:00"),
+                ],
+            ),
+        ):
+            compiled = self.client.post(
+                f"/trips/{created.json()['trip']['id']}/preplan-intent/compile",
+                json={
+                    "base_trip_revision_id": None,
+                    "base_intent_revision_id": None,
+                    "use_llm_proposal_adapter": True,
+                },
+                headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-chongqing-no-generic-events-compile"},
+            )
+
+        self.assertEqual(compiled.status_code, 201, compiled.text)
+        envelope = compiled.json()["envelope"]
+        self.assertEqual(envelope["parser_result"]["status"], "success")
+        self.assertEqual(envelope["formal_contract"]["fixed_events"], [])
 
     def test_newer_draft_intent_invalidates_older_preview(self) -> None:
         created = self.client.post("/trips/drafts", json={"direct_user_text": "我想去西安玩两天。"}, headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-xian-two"})
