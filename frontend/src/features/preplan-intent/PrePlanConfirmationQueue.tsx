@@ -276,7 +276,7 @@ function PlaceIdentityRecommendation({
       <button type="button" className="uc-place-accept" disabled={busy || searching} onClick={() => onConfirm(identity, recommended, suggestions?.query)}>采用这个地点</button>
     </section> : <p className="uc-confirmation-muted">暂时没有可确认的地点候选。你可以搜索更具体的地标或街区名称。</p>}
 
-    <button type="button" className="uc-place-search-toggle" disabled={busy} aria-expanded={searchOpen} onClick={() => setSearchOpen((open) => !open)}>换一个 / 搜索地点</button>
+    <button type="button" className="uc-place-search-toggle" disabled={busy} aria-expanded={searchOpen} onClick={() => setSearchOpen((open) => !open)}>{recommended ? "换一个 / 搜索地点" : "搜索地点"}</button>
     {searchOpen ? <div className="uc-place-search-panel">
       <form className="uc-place-search-form" onSubmit={submitSearch}>
         <label htmlFor={`place-search-${identity.stable_id}`}>搜索更具体的地点</label>

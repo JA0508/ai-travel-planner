@@ -219,6 +219,52 @@ test("place confirmation presents a recommendation without silently confirming i
   assert.doesNotMatch(html, /已确认地点/);
 });
 
+test("place confirmation uses a plain search action when no provider candidate exists", () => {
+  const html = renderToStaticMarkup(
+    <PrePlanConfirmationQueue
+      items={[{
+        id: "must-place:shancheng",
+        kind: "must_place",
+        title: "确认「山城步道」具体是哪一处",
+        detail: "确认后才会使用真实的位置和路线数据。",
+        identityId: "shancheng",
+        tone: "todo",
+      }]}
+      confirmedItems={[]}
+      identities={[{
+        stable_id: "shancheng",
+        original_name: "山城步道",
+        canonical_name: null,
+        city: "重庆",
+        ownership: "must",
+        fixed_event_id: null,
+        resolution_status: "ambiguous",
+        provider: null,
+        provider_place_id: null,
+        latitude: null,
+        longitude: null,
+        category: null,
+        source_fragment_ids: ["direct"],
+        confirmation_options: [],
+        resolution_confidence: null,
+      }]}
+      events={[]}
+      questions={[]}
+      busy={false}
+      canGeneratePreview={false}
+      onModifyRequest={() => undefined}
+      onConfirmPlace={() => undefined}
+      onSearchPlace={async () => ({ kind: "failed", message: "地点服务暂时不可用。", retryable: true })}
+      onUpdateFixedLocation={() => undefined}
+      renderClarification={() => null}
+    />,
+  );
+
+  assert.match(html, /暂时没有可确认的地点候选/);
+  assert.match(html, /<button[^>]*>搜索地点<\/button>/);
+  assert.doesNotMatch(html, /换一个 \/ 搜索地点/);
+});
+
 test("confirmation queue expands only the first actionable place by default", () => {
   const identity = (stableId: string, placeId: string, address: string) => ({
     stable_id: stableId,
