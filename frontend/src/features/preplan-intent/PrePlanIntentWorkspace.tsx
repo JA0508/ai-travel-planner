@@ -454,9 +454,17 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       const action = plannerHandoffRecoveryAction(result.code, result.context);
       const actionFieldId = plannerHandoffRecoveryFieldId(action, result.context);
       const actionPlaceStableId = plannerHandoffRecoveryPlaceStableId(action, result.context);
+      const actionPlaceName = actionPlaceStableId
+        ? (intent?.envelope.formal_contract.place_identities ?? []).find((identity) => identity.stable_id === actionPlaceStableId)?.original_name
+        : undefined;
       setFeedback({
         tone: "error",
-        message: userFacingPrePlanRequestError(result.code, "暂时无法生成路线预览，你确认的信息已经保留。", result.context),
+        message: userFacingPrePlanRequestError(
+          result.code,
+          "暂时无法生成路线预览，你确认的信息已经保留。",
+          result.context,
+          actionPlaceName,
+        ),
         ...(action ? { action } : {}),
         ...(actionFieldId ? { actionFieldId } : {}),
         ...(actionPlaceStableId ? { actionPlaceStableId } : {}),

@@ -15,6 +15,18 @@ test("turns a blocked direct must-place handoff into an actionable recovery mess
   assert.doesNotMatch(message, /暂时无法生成路线预览/);
 });
 
+test("names the blocked must-place when the current Draft still has that identity", () => {
+  const message = userFacingPrePlanRequestError(
+    "planner_handoff_blocked",
+    "暂时无法生成路线预览，你确认的信息已经保留。",
+    { reason_code: "must_place_identity_not_verified" },
+    "山城步道",
+  );
+
+  assert.match(message, /「山城步道」/);
+  assert.match(message, /重新选择/);
+});
+
 test("keeps an unknown preview failure honest and preserves the safe fallback", () => {
   assert.equal(
     userFacingPrePlanRequestError(

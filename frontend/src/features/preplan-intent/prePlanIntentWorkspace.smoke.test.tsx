@@ -114,6 +114,12 @@ test("pre-plan preview can take a blocked direct place to its confirmation contr
   assert.match(queueSource, /item\.identityId === placeFocusRequest\.stableId/);
 });
 
+test("pre-plan preview names the still-current must-place that blocks it", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /find\(\(identity\) => identity\.stable_id === actionPlaceStableId\)/);
+  assert.match(source, /result\.context,\s*actionPlaceName,/);
+});
+
 test("pre-plan preview can take a blocked fixed arrangement to its location confirmation", () => {
   const source = readFileSync(componentPath, "utf8");
   const queueSource = readFileSync(queuePath, "utf8");
