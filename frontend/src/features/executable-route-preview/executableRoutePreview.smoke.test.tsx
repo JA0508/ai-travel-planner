@@ -42,7 +42,7 @@ test("saved route uses an on-the-road workspace vocabulary", () => {
   saved.days[0].blocks[0].items[0].is_fixed = true;
   saved.days[0].blocks[0].items[0].placement_reason = "Reused canonical coordinates from the intent handoff.";
   const html = renderToStaticMarkup(<ExecutableRoutePreview itinerary={saved} variant="saved" tripId="trip-1" baseRevisionId="revision-1" onApplied={() => undefined} />);
-  assert.match(html, /带着这份路线上路/);
+  assert.match(html, /这份行程已保存为正式路线/);
   assert.match(html, /LIVING ROADBOOK/);
   assert.match(html, /DAY 01/);
   assert.match(html, /LOCKED/);
