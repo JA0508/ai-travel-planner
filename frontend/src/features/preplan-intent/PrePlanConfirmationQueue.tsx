@@ -11,6 +11,7 @@ type Props = {
   questions: IntentClarification[];
   busy: boolean;
   canGeneratePreview: boolean;
+  placeFocusRequest?: number;
   onModifyRequest: () => void;
   onConfirmPlace: (identity: PlaceIdentity, option: PlaceResolutionOption, searchQuery?: string) => void;
   onSearchPlace: (identity: PlaceIdentity, query: string) => Promise<PlaceIdentitySuggestionSearchResult>;
@@ -26,6 +27,7 @@ export function PrePlanConfirmationQueue({
   questions,
   busy,
   canGeneratePreview,
+  placeFocusRequest = 0,
   onModifyRequest,
   onConfirmPlace,
   onSearchPlace,
@@ -52,6 +54,19 @@ export function PrePlanConfirmationQueue({
         : actionableItems[0]?.id ?? null
     ));
   }, [actionableItems]);
+
+  const placeFocusItemId = actionableItems.find((item) => item.kind === "must_place")?.id ?? null;
+
+  useEffect(() => {
+    if (!placeFocusRequest || !placeFocusItemId) return;
+    setExpandedItemId(placeFocusItemId);
+    const frame = window.requestAnimationFrame(() => {
+      const target = document.getElementById(`confirmation-item-${placeFocusItemId}`);
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+      target?.querySelector<HTMLButtonElement>("button")?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [placeFocusItemId, placeFocusRequest]);
 
   return (
     <section className="uc-confirmation-workbench" aria-label="确认清单" aria-live="polite">
@@ -128,18 +143,18 @@ function ConfirmationItemCard({
   renderClarification: Props["renderClarification"];
 }) {
   if (item.kind === "clarification" && question) {
-    return <div className="uc-confirmation-item">
+    return <div id={`confirmation-item-${item.id}`} className="uc-confirmation-item">
       <ConfirmationItemCopy item={item} />
       {actionable ? <ConfirmationItemToggle item={item} expanded={expanded} busy={busy} onToggle={onToggle} /> : null}
-      {expanded ? <div id={`confirmation-item-${item.id}`} className="uc-confirmation-item-editor">{renderClarification(question)}</div> : null}
+      {expanded ? <div id={`confirmation-item-editor-${item.id}`} className="uc-confirmation-item-editor">{renderClarification(question)}</div> : null}
     </div>;
   }
-  if (item.kind === "conflict") return <article className="uc-confirmation-item uc-confirmation-item--conflict"><h4>{item.title}</h4><p>{item.detail}</p></article>;
+  if (item.kind === "conflict") return <article id={`confirmation-item-${item.id}`} className="uc-confirmation-item uc-confirmation-item--conflict"><h4>{item.title}</h4><p>{item.detail}</p></article>;
 
-  return <article className="uc-confirmation-item">
+  return <article id={`confirmation-item-${item.id}`} className="uc-confirmation-item">
     <ConfirmationItemCopy item={item} />
     {actionable ? <ConfirmationItemToggle item={item} expanded={expanded} busy={busy} onToggle={onToggle} /> : null}
-    {expanded ? <div id={`confirmation-item-${item.id}`} className="uc-confirmation-item-editor">
+    {expanded ? <div id={`confirmation-item-editor-${item.id}`} className="uc-confirmation-item-editor">
       {identity ? <PlaceIdentityRecommendation
         identity={identity}
         title={item.title}
@@ -171,7 +186,7 @@ function ConfirmationItemCopy({ item }: { item: ConfirmationItem }) {
 
 function ConfirmationItemToggle({ item, expanded, busy, onToggle }: { item: ConfirmationItem; expanded: boolean; busy: boolean; onToggle: () => void }) {
   const label = expanded ? "收起" : item.kind === "fixed_place" ? "补充地点" : item.kind === "must_place" ? "选择地点" : "处理这项";
-  const panelId = `confirmation-item-${item.id}`;
+  const panelId = `confirmation-item-editor-${item.id}`;
   return <button
     type="button"
     className="uc-confirmation-item-action"

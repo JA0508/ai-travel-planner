@@ -103,6 +103,15 @@ test("pre-plan preview gives changed place facts a direct safe refresh action", 
   assert.match(source, /重新整理旅行信息/);
 });
 
+test("pre-plan preview can take a blocked direct place to its confirmation control", () => {
+  const source = readFileSync(componentPath, "utf8");
+  const queueSource = readFileSync(queuePath, "utf8");
+  assert.match(source, /feedback\.action === "focus_place_confirmation"[\s\S]*setPlaceConfirmationFocusRequest/);
+  assert.match(source, /placeFocusRequest=\{placeConfirmationFocusRequest\}/);
+  assert.match(queueSource, /placeFocusRequest/);
+  assert.match(queueSource, /scrollIntoView/);
+});
+
 test("explicitly reprocessing travel information starts a fresh idempotent compile attempt", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /compileIntent\(\{ startNewAttempt: true \}\)/);
