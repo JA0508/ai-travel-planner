@@ -1305,6 +1305,7 @@ export default function HomePage() {
   });
   const resultSectionRef = useRef<HTMLElement | null>(null);
   const shouldRevealResultRef = useRef(false);
+  const shouldFocusResultRef = useRef(false);
   const isAvailabilityPreviewStale =
     availabilityPreview !== null &&
     availabilityPreviewSignature !== buildAvailabilityPreviewSignature(tripDays, availabilityWindowsText);
@@ -1926,6 +1927,11 @@ export default function HomePage() {
       return false;
     }
 
+    if (shouldFocusResultRef.current) {
+      target.focus({ preventScroll: true });
+      shouldFocusResultRef.current = false;
+    }
+
     const targetTop = Math.max(0, target.getBoundingClientRect().top + window.scrollY - 20);
     window.scrollTo({
       top: targetTop,
@@ -1934,8 +1940,9 @@ export default function HomePage() {
     return true;
   }
 
-  function scheduleResultReveal() {
+  function scheduleResultReveal({ focus = false }: { focus?: boolean } = {}) {
     shouldRevealResultRef.current = true;
+    shouldFocusResultRef.current = focus;
 
     if (typeof window === "undefined") {
       return;
@@ -2108,6 +2115,10 @@ export default function HomePage() {
     }
 
     shouldRevealResultRef.current = false;
+    if (shouldFocusResultRef.current) {
+      target.focus({ preventScroll: true });
+      shouldFocusResultRef.current = false;
+    }
     const revealTimer = window.setTimeout(() => {
       const targetTop = Math.max(0, target.getBoundingClientRect().top + window.scrollY - 20);
       window.scrollTo({
@@ -4193,7 +4204,7 @@ function buildRegenerationSemanticsViewModel(
             setResult(applied.itinerary);
             rememberPersistedTrip(applied.trip, applied.current_revision);
             void refreshRevisionHistory(applied.trip.id);
-            scheduleResultReveal();
+            scheduleResultReveal({ focus: true });
           }}
         />
       ) : null}
@@ -4844,7 +4855,12 @@ function buildRegenerationSemanticsViewModel(
       ) : null}
 
       {result ? (
-        <section ref={resultSectionRef} className="ec-result-entry">
+        <section
+          ref={resultSectionRef}
+          className="ec-result-entry"
+          tabIndex={-1}
+          aria-label={tripPersistence.status === "saved" ? "已保存的正式路线工作台" : "路线工作台"}
+        >
           <SectionShell>
             {tripPersistence.status === "saved" ? (
               <ExecutableRoutePreview
