@@ -118,6 +118,9 @@ export function SavedLivingRoadbook({
           <p>LIVING ROADBOOK / SAVED ROUTE</p>
           <h1>{city}</h1>
           <span>这份行程已保存为正式路线 · {itinerary.trip_days} DAYS · {totalStops} STOPS · 可以继续调整</span>
+          <p className="roadbook__sr-only" role="status" aria-live="polite">
+            行程已保存为正式路线。可以继续调整。
+          </p>
         </div>
         <nav aria-label="选择行程日期">
           {editableDays.map((day) => (
