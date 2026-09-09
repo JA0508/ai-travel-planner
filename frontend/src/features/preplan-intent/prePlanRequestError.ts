@@ -79,7 +79,7 @@ export function userFacingPrePlanRequestError(
   if (code === "planner_handoff_blocked" && context?.reason_code === "must_place_identity_not_verified") {
     const label = placeName?.trim();
     if (label) {
-      return `「${label}」还没有可用于规划的已确认位置。请打开该地点并重新选择，再生成路线预览。`;
+      return `「${label}」还没有可用于规划的已确认位置。请打开该地点卡，从系统推荐中选择，或搜索更具体的地点后再选择，再生成路线预览。`;
     }
     return "有一个必去地点还没有可用于规划的已确认位置。请打开该地点并重新选择，再生成路线预览。";
   }

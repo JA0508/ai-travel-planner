@@ -24,7 +24,9 @@ test("names the blocked must-place when the current Draft still has that identit
   );
 
   assert.match(message, /「山城步道」/);
-  assert.match(message, /重新选择/);
+  assert.match(message, /地点卡/);
+  assert.match(message, /系统推荐/);
+  assert.match(message, /搜索更具体/);
 });
 
 test("keeps an unknown preview failure honest and preserves the safe fallback", () => {
