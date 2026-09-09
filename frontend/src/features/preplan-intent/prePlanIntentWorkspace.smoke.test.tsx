@@ -129,6 +129,14 @@ test("pre-plan preview can take a blocked fixed arrangement to its location conf
   assert.match(queueSource, /event\?\.metadata\.field_id === placeFocusRequest\.fieldId/);
 });
 
+test("blocked place recovery focuses the next confirmation action instead of the collapse control", () => {
+  const queueSource = readFileSync(queuePath, "utf8");
+
+  assert.match(queueSource, /focusPlaceConfirmationAction\(target\)/);
+  assert.match(queueSource, /\.uc-place-accept, \.uc-place-search-toggle, input, \.uc-confirmation-item-action/);
+  assert.doesNotMatch(queueSource, /target\?\.querySelector<HTMLButtonElement>\("button"\)\?\.focus\(\)/);
+});
+
 test("explicitly reprocessing travel information starts a fresh idempotent compile attempt", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /compileIntent\(\{ startNewAttempt: true \}\)/);

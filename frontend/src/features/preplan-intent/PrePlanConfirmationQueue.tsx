@@ -86,7 +86,7 @@ export function PrePlanConfirmationQueue({
     const frame = window.requestAnimationFrame(() => {
       const target = document.getElementById(`confirmation-item-${placeFocusItemId}`);
       target?.scrollIntoView({ behavior: "smooth", block: "center" });
-      target?.querySelector<HTMLButtonElement>("button")?.focus();
+      if (target) focusPlaceConfirmationAction(target);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [placeFocusItemId, placeFocusRequest?.requestId]);
@@ -136,6 +136,10 @@ export function PrePlanConfirmationQueue({
       </section>
     </section>
   );
+}
+
+function focusPlaceConfirmationAction(target: HTMLElement) {
+  target.querySelector<HTMLElement>(".uc-place-accept, .uc-place-search-toggle, input, .uc-confirmation-item-action")?.focus();
 }
 
 function ConfirmationItemCard({
