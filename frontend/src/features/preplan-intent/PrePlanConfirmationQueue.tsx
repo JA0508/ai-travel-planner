@@ -92,7 +92,10 @@ export function PrePlanConfirmationQueue({
   }, [placeFocusItemId, placeFocusRequest?.requestId]);
 
   return (
-    <section className="uc-confirmation-workbench" aria-label="确认清单" aria-live="polite">
+    <section className="uc-confirmation-workbench" aria-label="确认清单">
+      <p className="uc-intent-sr-only" role="status" aria-atomic="true">
+        确认清单更新：{remainingCopy}。
+      </p>
       <div className="uc-confirmation-workbench-heading">
         <div>
           <p>确认清单</p>

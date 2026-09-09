@@ -187,6 +187,15 @@ test("pre-plan workspace uses one editorial confirmation queue instead of repeat
   assert.doesNotMatch(source, /function FixedArrangementSummary/);
 });
 
+test("confirmation queue announces concise progress instead of its entire interactive form", () => {
+  const queueSource = readFileSync(queuePath, "utf8");
+
+  assert.match(queueSource, /role="status"/);
+  assert.match(queueSource, /aria-atomic="true"/);
+  assert.match(queueSource, /确认清单更新/);
+  assert.doesNotMatch(queueSource, /<section className="uc-confirmation-workbench" aria-label="确认清单" aria-live="polite">/);
+});
+
 test("place confirmation presents a recommendation without silently confirming it", () => {
   const html = renderToStaticMarkup(
     <PrePlanConfirmationQueue

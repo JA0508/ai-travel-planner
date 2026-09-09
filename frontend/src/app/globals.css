@@ -122,6 +122,17 @@ body {
   box-shadow: var(--ec-shadow-1);
 }
 
+.uc-intent-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .uc-confirmation-workbench-heading,
 .uc-confirmation-lane {
   padding: 20px;
