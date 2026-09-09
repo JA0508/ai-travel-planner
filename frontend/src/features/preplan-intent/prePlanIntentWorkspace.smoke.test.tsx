@@ -97,6 +97,12 @@ test("pre-plan preview exposes a matching inline edit for a repairable planning 
   assert.match(source, /feedback\.action === "edit_date_policy"[\s\S]*openEditor\("date_policy"\)/);
 });
 
+test("pre-plan preview gives changed place facts a direct safe refresh action", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /feedback\.action === "refresh_intent"[\s\S]*compileIntent\(\{ startNewAttempt: true \}\)/);
+  assert.match(source, /重新整理旅行信息/);
+});
+
 test("explicitly reprocessing travel information starts a fresh idempotent compile attempt", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /compileIntent\(\{ startNewAttempt: true \}\)/);

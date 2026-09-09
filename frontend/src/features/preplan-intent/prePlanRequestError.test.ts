@@ -70,3 +70,18 @@ test("offers a direct date editor only for a blocked preview that can be repaire
   assert.equal(plannerHandoffRecoveryAction("planner_handoff_blocked", { reason_code: "destination_missing" }), "edit_destination");
   assert.equal(plannerHandoffRecoveryAction("planner_handoff_blocked", { reason_code: "must_place_identity_not_verified" }), undefined);
 });
+
+test("offers an explicit safe refresh when selected place facts have changed", () => {
+  assert.equal(
+    plannerHandoffRecoveryAction("planner_handoff_blocked", { reason_code: "intent_candidate_missing" }),
+    "refresh_intent",
+  );
+  assert.equal(
+    plannerHandoffRecoveryAction("planner_handoff_blocked", { reason_code: "intent_candidate_identity_not_verified" }),
+    "refresh_intent",
+  );
+  assert.equal(
+    plannerHandoffRecoveryAction("planner_handoff_blocked", { reason_code: "fixed_event_candidate_missing" }),
+    "refresh_intent",
+  );
+});

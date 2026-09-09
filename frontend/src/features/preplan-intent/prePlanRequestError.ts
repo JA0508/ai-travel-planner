@@ -16,7 +16,7 @@ const PLANNER_HANDOFF_MESSAGES: Record<string, string> = {
   travel_boundary_outside_trip: "抵达或离开时间不在当前旅行时间内。请调整旅行时间后再生成路线预览。",
 };
 
-export type PlannerHandoffRecoveryAction = "edit_date_policy" | "edit_destination";
+export type PlannerHandoffRecoveryAction = "edit_date_policy" | "edit_destination" | "refresh_intent";
 
 const DATE_POLICY_RECOVERY_REASONS = new Set([
   "trip_days_missing",
@@ -27,12 +27,19 @@ const DATE_POLICY_RECOVERY_REASONS = new Set([
   "travel_boundary_outside_trip",
 ]);
 
+const PLACE_FACT_REFRESH_RECOVERY_REASONS = new Set([
+  "intent_candidate_missing",
+  "intent_candidate_identity_not_verified",
+  "fixed_event_candidate_missing",
+]);
+
 export function plannerHandoffRecoveryAction(
   code?: string,
   context?: Record<string, unknown>,
 ): PlannerHandoffRecoveryAction | undefined {
   if (code !== "planner_handoff_blocked" || typeof context?.reason_code !== "string") return undefined;
   if (context.reason_code === "destination_missing") return "edit_destination";
+  if (PLACE_FACT_REFRESH_RECOVERY_REASONS.has(context.reason_code)) return "refresh_intent";
   return DATE_POLICY_RECOVERY_REASONS.has(context.reason_code) ? "edit_date_policy" : undefined;
 }
 
