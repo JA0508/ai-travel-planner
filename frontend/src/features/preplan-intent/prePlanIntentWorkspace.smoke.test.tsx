@@ -98,6 +98,14 @@ test("ready route previews explain that confirmation creates the formal itinerar
   assert.match(source, /preview\s*\?\s*"确认后会保存为正式行程，之后仍可修改。"/);
 });
 
+test("recoverable formal-itinerary saves keep the preview and expose a direct retry", () => {
+  const source = readFileSync(componentPath, "utf8");
+
+  assert.match(source, /savePreviewUnavailableMessage\(\)/);
+  assert.match(source, /action: "retry_apply"/);
+  assert.match(source, /feedback\.action === "retry_apply"[\s\S]*onClick=\{\(\) => void apply\(\)\}/);
+});
+
 test("pre-plan preview exposes a matching inline edit for a repairable planning blocker", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /plannerHandoffRecoveryAction\(result\.code, result\.context\)/);

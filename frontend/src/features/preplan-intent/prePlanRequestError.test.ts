@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, plannerHandoffRecoveryFieldId, plannerHandoffRecoveryPlaceStableId, previewTimedOutMessage, previewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
+import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, plannerHandoffRecoveryFieldId, plannerHandoffRecoveryPlaceStableId, previewTimedOutMessage, previewUnavailableMessage, savePreviewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
 
 test("turns a blocked direct must-place handoff into an actionable recovery message", () => {
   const message = userFacingPrePlanRequestError(
@@ -55,6 +55,13 @@ test("makes a recoverable route-preview failure explicitly retryable", () => {
   assert.match(previewUnavailableMessage(), /服务/);
   assert.match(previewUnavailableMessage(), /重新生成/);
   assert.doesNotMatch(previewUnavailableMessage(), /已保存/);
+});
+
+test("makes a recoverable formal-itinerary save failure explicitly retryable", () => {
+  assert.match(savePreviewUnavailableMessage(), /保存结果暂时未确认/);
+  assert.match(savePreviewUnavailableMessage(), /路线预览/);
+  assert.match(savePreviewUnavailableMessage(), /重新保存/);
+  assert.doesNotMatch(savePreviewUnavailableMessage(), /已经保存/);
 });
 
 test("explains a fixed arrangement that falls outside the trip instead of showing a generic preview failure", () => {

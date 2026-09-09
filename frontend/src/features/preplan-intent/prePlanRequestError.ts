@@ -101,3 +101,7 @@ export function previewTimedOutMessage(): string {
 export function previewUnavailableMessage(): string {
   return "路线预览服务暂时不可用，你的确认信息没有变化。请稍后重新生成路线预览。";
 }
+
+export function savePreviewUnavailableMessage(): string {
+  return "正式行程的保存结果暂时未确认；你的路线预览和确认信息都还在。请稍后重新保存。";
+}
