@@ -3,6 +3,11 @@ import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolut
 import type { ConfirmationItem, ConfirmedItem } from "./prePlanConfirmationModel";
 import type { PlaceIdentitySuggestionSearchResult, PrePlanPlaceIdentitySuggestionsResponse } from "./draftIntentEditApi";
 
+export type PlaceConfirmationFocusRequest = {
+  requestId: number;
+  kind: "must_place" | "fixed_place";
+};
+
 type Props = {
   items: ConfirmationItem[];
   confirmedItems: ConfirmedItem[];
@@ -11,7 +16,7 @@ type Props = {
   questions: IntentClarification[];
   busy: boolean;
   canGeneratePreview: boolean;
-  placeFocusRequest?: number;
+  placeFocusRequest?: PlaceConfirmationFocusRequest;
   onModifyRequest: () => void;
   onConfirmPlace: (identity: PlaceIdentity, option: PlaceResolutionOption, searchQuery?: string) => void;
   onSearchPlace: (identity: PlaceIdentity, query: string) => Promise<PlaceIdentitySuggestionSearchResult>;
@@ -27,7 +32,7 @@ export function PrePlanConfirmationQueue({
   questions,
   busy,
   canGeneratePreview,
-  placeFocusRequest = 0,
+  placeFocusRequest,
   onModifyRequest,
   onConfirmPlace,
   onSearchPlace,
@@ -55,7 +60,9 @@ export function PrePlanConfirmationQueue({
     ));
   }, [actionableItems]);
 
-  const placeFocusItemId = actionableItems.find((item) => item.kind === "must_place")?.id ?? null;
+  const placeFocusItemId = placeFocusRequest
+    ? actionableItems.find((item) => item.kind === placeFocusRequest.kind)?.id ?? null
+    : null;
 
   useEffect(() => {
     if (!placeFocusRequest || !placeFocusItemId) return;
@@ -66,7 +73,7 @@ export function PrePlanConfirmationQueue({
       target?.querySelector<HTMLButtonElement>("button")?.focus();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [placeFocusItemId, placeFocusRequest]);
+  }, [placeFocusItemId, placeFocusRequest?.requestId]);
 
   return (
     <section className="uc-confirmation-workbench" aria-label="确认清单" aria-live="polite">
