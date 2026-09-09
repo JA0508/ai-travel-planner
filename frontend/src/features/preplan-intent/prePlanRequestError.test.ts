@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, plannerHandoffRecoveryFieldId, previewTimedOutMessage, previewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
+import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, plannerHandoffRecoveryFieldId, plannerHandoffRecoveryPlaceStableId, previewTimedOutMessage, previewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
 
 test("turns a blocked direct must-place handoff into an actionable recovery message", () => {
   const message = userFacingPrePlanRequestError(
@@ -93,4 +93,15 @@ test("keeps the server-provided fixed-arrangement field identity for focused rec
     "field:booking:late-show",
   );
   assert.equal(plannerHandoffRecoveryFieldId("focus_place_confirmation", { field_id: "field:place" }), undefined);
+});
+
+test("keeps the server-provided must-place identity for focused recovery", () => {
+  assert.equal(
+    plannerHandoffRecoveryPlaceStableId("focus_place_confirmation", { place_stable_id: "must:shancheng-walkway" }),
+    "must:shancheng-walkway",
+  );
+  assert.equal(
+    plannerHandoffRecoveryPlaceStableId("focus_fixed_place_confirmation", { place_stable_id: "fixed:reservation" }),
+    undefined,
+  );
 });

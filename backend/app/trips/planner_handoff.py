@@ -390,7 +390,10 @@ def _verified_must_identity_to_raw(identity: PlaceIdentity) -> dict[str, Any]:
         or identity.latitude is None
         or identity.longitude is None
     ):
-        raise PlannerHandoffBlockedError("must_place_identity_not_verified")
+        raise PlannerHandoffBlockedError(
+            "must_place_identity_not_verified",
+            place_stable_id=identity.stable_id,
+        )
     return {
         "name": identity.canonical_name,
         "candidate_id": identity.stable_id,

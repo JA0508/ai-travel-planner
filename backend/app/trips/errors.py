@@ -155,12 +155,21 @@ class InvalidRevisionOperationError(TripError):
 
 
 class PlannerHandoffBlockedError(TripError):
-    def __init__(self, reason_code: str, *, candidate_id: str | None = None, field_id: str | None = None) -> None:
+    def __init__(
+        self,
+        reason_code: str,
+        *,
+        candidate_id: str | None = None,
+        field_id: str | None = None,
+        place_stable_id: str | None = None,
+    ) -> None:
         context = {"reason_code": reason_code}
         if candidate_id:
             context["candidate_id"] = candidate_id
         if field_id:
             context["field_id"] = field_id
+        if place_stable_id:
+            context["place_stable_id"] = place_stable_id
         super().__init__(
             code="planner_handoff_blocked",
             message="The confirmed intent cannot safely enter the planner.",

@@ -14,6 +14,7 @@ from app.main import app
 from app.trips.access import hash_idempotency_key
 from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
 from app.trips.digests import request_digest
+from app.trips.errors import PlannerHandoffBlockedError
 from app.trips.intent_contracts import PlaceIdentity, SourceLinkedTripIntentEnvelope
 from app.trips.planner_handoff import build_planner_handoff_input
 from app.trips.service import format_utc
@@ -340,6 +341,53 @@ class PlannerHandoffTests(unittest.TestCase):
         itinerary = build_itinerary_response(result.handoff.itinerary_request)
         scheduled_names = [item.name for day in itinerary.days for block in day.blocks for item in block.items]
         self.assertTrue({"洪崖洞民俗风貌区", "山城步道"}.issubset(scheduled_names))
+
+    def test_unverified_direct_must_place_identifies_the_exact_confirmation_to_recover(self) -> None:
+        candidate = register_verified_candidate(self.client, self.trip_id)
+        intent = compile_ready_intent(self.client, self.trip_id, self.base_revision_id, candidate["id"])
+        repository = get_trip_repository()
+        revision = repository.get_intent_revision(trip_id=self.trip_id, revision_id=intent["id"])
+        envelope = SourceLinkedTripIntentEnvelope.model_validate(revision.envelope)
+        verified = PlaceIdentity(
+            stable_id="must-hongyadong",
+            original_name="洪崖洞",
+            canonical_name="洪崖洞民俗风貌区",
+            city="重庆",
+            ownership="must",
+            resolution_status="verified",
+            provider="amap",
+            provider_place_id="fixture-hongyadong",
+            latitude=29.5630,
+            longitude=106.5720,
+            category="scenic",
+            source_fragment_ids=["source_direct"],
+        )
+        blocked = verified.model_copy(update={
+            "stable_id": "must-shancheng",
+            "original_name": "山城步道",
+            "canonical_name": None,
+            "resolution_status": "unresolved",
+            "provider": None,
+            "provider_place_id": None,
+            "latitude": None,
+            "longitude": None,
+        })
+        formal = envelope.formal_contract.model_copy(update={
+            "must_visit_places": [],
+            "fixed_events": [],
+            "place_identities": [verified, blocked],
+        })
+
+        with self.assertRaises(PlannerHandoffBlockedError) as raised:
+            build_planner_handoff_input(
+                envelope=envelope.model_copy(update={"formal_contract": formal}),
+                candidates=[],
+            )
+
+        self.assertEqual(raised.exception.context, {
+            "reason_code": "must_place_identity_not_verified",
+            "place_stable_id": "must-shancheng",
+        })
 
     def test_fixed_event_without_verified_place_is_blocked_before_planning(self) -> None:
         compiled = self.client.post(

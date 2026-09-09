@@ -106,16 +106,18 @@ test("pre-plan preview gives changed place facts a direct safe refresh action", 
 test("pre-plan preview can take a blocked direct place to its confirmation control", () => {
   const source = readFileSync(componentPath, "utf8");
   const queueSource = readFileSync(queuePath, "utf8");
-  assert.match(source, /feedback\.action === "focus_place_confirmation"[\s\S]*requestPlaceConfirmationFocus\("must_place"\)/);
+  assert.match(source, /feedback\.action === "focus_place_confirmation"[\s\S]*requestPlaceConfirmationFocus\("must_place", \{ stableId: feedback\.actionPlaceStableId \}\)/);
   assert.match(source, /placeFocusRequest=\{placeConfirmationFocusRequest \?\? undefined\}/);
   assert.match(queueSource, /placeFocusRequest/);
   assert.match(queueSource, /scrollIntoView/);
+  assert.match(source, /plannerHandoffRecoveryPlaceStableId\(action, result\.context\)/);
+  assert.match(queueSource, /item\.identityId === placeFocusRequest\.stableId/);
 });
 
 test("pre-plan preview can take a blocked fixed arrangement to its location confirmation", () => {
   const source = readFileSync(componentPath, "utf8");
   const queueSource = readFileSync(queuePath, "utf8");
-  assert.match(source, /feedback\.action === "focus_fixed_place_confirmation"[\s\S]*requestPlaceConfirmationFocus\("fixed_place", feedback\.actionFieldId\)/);
+  assert.match(source, /feedback\.action === "focus_fixed_place_confirmation"[\s\S]*requestPlaceConfirmationFocus\("fixed_place", \{ fieldId: feedback\.actionFieldId \}\)/);
   assert.match(queueSource, /item\.kind === placeFocusRequest\.kind/);
   assert.match(source, /plannerHandoffRecoveryFieldId\(action, result\.context\)/);
   assert.match(queueSource, /event\?\.metadata\.field_id === placeFocusRequest\.fieldId/);

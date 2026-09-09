@@ -7,6 +7,7 @@ export type PlaceConfirmationFocusRequest = {
   requestId: number;
   kind: "must_place" | "fixed_place";
   fieldId?: string;
+  stableId?: string;
 };
 
 type Props = {
@@ -64,7 +65,13 @@ export function PrePlanConfirmationQueue({
   const sameTypeFocusItem = placeFocusRequest
     ? actionableItems.find((item) => item.kind === placeFocusRequest.kind) ?? null
     : null;
-  const placeFocusItem = placeFocusRequest?.fieldId
+  const placeFocusItem = placeFocusRequest?.stableId
+    ? actionableItems.find((item) => (
+      item.kind === "must_place"
+      && placeFocusRequest.kind === "must_place"
+      && item.identityId === placeFocusRequest.stableId
+    )) ?? sameTypeFocusItem
+    : placeFocusRequest?.fieldId
     ? actionableItems.find((item) => {
       if (item.kind !== placeFocusRequest.kind) return false;
       const event = item.kind === "fixed_place" ? events.find((candidate) => candidate.event_id === item.eventId) : null;

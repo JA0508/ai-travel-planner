@@ -53,6 +53,14 @@ export function plannerHandoffRecoveryFieldId(
   return context.field_id.trim() || undefined;
 }
 
+export function plannerHandoffRecoveryPlaceStableId(
+  action: PlannerHandoffRecoveryAction | undefined,
+  context?: Record<string, unknown>,
+): string | undefined {
+  if (action !== "focus_place_confirmation" || typeof context?.place_stable_id !== "string") return undefined;
+  return context.place_stable_id.trim() || undefined;
+}
+
 export function userFacingPrePlanRequestError(
   code?: string,
   fallback = "暂时无法整理旅行信息，你的输入已经保留。",
