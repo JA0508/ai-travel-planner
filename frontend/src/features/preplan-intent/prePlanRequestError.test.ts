@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, previewTimedOutMessage, previewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
+import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, plannerHandoffRecoveryFieldId, previewTimedOutMessage, previewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
 
 test("turns a blocked direct must-place handoff into an actionable recovery message", () => {
   const message = userFacingPrePlanRequestError(
@@ -85,4 +85,12 @@ test("offers an explicit safe refresh when selected place facts have changed", (
     plannerHandoffRecoveryAction("planner_handoff_blocked", { reason_code: "fixed_event_candidate_missing" }),
     "refresh_intent",
   );
+});
+
+test("keeps the server-provided fixed-arrangement field identity for focused recovery", () => {
+  assert.equal(
+    plannerHandoffRecoveryFieldId("focus_fixed_place_confirmation", { field_id: "field:booking:late-show" }),
+    "field:booking:late-show",
+  );
+  assert.equal(plannerHandoffRecoveryFieldId("focus_place_confirmation", { field_id: "field:place" }), undefined);
 });

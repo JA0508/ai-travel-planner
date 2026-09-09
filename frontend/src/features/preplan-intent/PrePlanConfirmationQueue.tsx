@@ -6,6 +6,7 @@ import type { PlaceIdentitySuggestionSearchResult, PrePlanPlaceIdentitySuggestio
 export type PlaceConfirmationFocusRequest = {
   requestId: number;
   kind: "must_place" | "fixed_place";
+  fieldId?: string;
 };
 
 type Props = {
@@ -60,9 +61,17 @@ export function PrePlanConfirmationQueue({
     ));
   }, [actionableItems]);
 
-  const placeFocusItemId = placeFocusRequest
-    ? actionableItems.find((item) => item.kind === placeFocusRequest.kind)?.id ?? null
+  const sameTypeFocusItem = placeFocusRequest
+    ? actionableItems.find((item) => item.kind === placeFocusRequest.kind) ?? null
     : null;
+  const placeFocusItem = placeFocusRequest?.fieldId
+    ? actionableItems.find((item) => {
+      if (item.kind !== placeFocusRequest.kind) return false;
+      const event = item.kind === "fixed_place" ? events.find((candidate) => candidate.event_id === item.eventId) : null;
+      return event?.metadata.field_id === placeFocusRequest.fieldId;
+    }) ?? sameTypeFocusItem
+    : sameTypeFocusItem;
+  const placeFocusItemId = placeFocusItem?.id ?? null;
 
   useEffect(() => {
     if (!placeFocusRequest || !placeFocusItemId) return;

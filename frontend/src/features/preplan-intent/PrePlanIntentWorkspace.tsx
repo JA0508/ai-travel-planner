@@ -8,7 +8,7 @@ import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolut
 import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
 import { resolvePrePlanCompileAttempt, type PrePlanCompileAttempt } from "./prePlanCompileAttempt";
 import { PrePlanConfirmationQueue, type PlaceConfirmationFocusRequest } from "./PrePlanConfirmationQueue";
-import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, previewTimedOutMessage, previewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
+import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, plannerHandoffRecoveryFieldId, previewTimedOutMessage, previewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
 import type {
@@ -47,7 +47,7 @@ type CandidateListResponse = {
 };
 
 type BootstrapState = "idle" | "compiling" | "ready" | "failed";
-type Feedback = { tone: "info" | "error"; message: string; action?: "retry_preview" | "edit_date_policy" | "edit_destination" | "refresh_intent" | "focus_place_confirmation" | "focus_fixed_place_confirmation" } | null;
+type Feedback = { tone: "info" | "error"; message: string; action?: "retry_preview" | "edit_date_policy" | "edit_destination" | "refresh_intent" | "focus_place_confirmation" | "focus_fixed_place_confirmation"; actionFieldId?: string } | null;
 type CriticalEditor = "destination" | "date_policy" | "trip_days" | "pace";
 type CriticalIntentFormDraft = {
   city?: string;
@@ -452,10 +452,12 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
         return;
       }
       const action = plannerHandoffRecoveryAction(result.code, result.context);
+      const actionFieldId = plannerHandoffRecoveryFieldId(action, result.context);
       setFeedback({
         tone: "error",
         message: userFacingPrePlanRequestError(result.code, "暂时无法生成路线预览，你确认的信息已经保留。", result.context),
         ...(action ? { action } : {}),
+        ...(actionFieldId ? { actionFieldId } : {}),
       });
       return;
     }
@@ -489,10 +491,11 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     setFeedback({ tone: "info", message: "已更新导入资料；重新整理后会纳入行程信息。" });
   }
 
-  function requestPlaceConfirmationFocus(kind: PlaceConfirmationFocusRequest["kind"]) {
+  function requestPlaceConfirmationFocus(kind: PlaceConfirmationFocusRequest["kind"], fieldId?: string) {
     setPlaceConfirmationFocusRequest((current) => ({
       requestId: (current?.requestId ?? 0) + 1,
       kind,
+      ...(fieldId ? { fieldId } : {}),
     }));
   }
 
@@ -548,7 +551,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
 
       {staleConflict ? <StaleConflictPanel conflict={staleConflict} onViewLatest={() => { setFeedback({ tone: "info", message: "已显示最新行程信息；你的修改仍保留，可以重新应用。" }); }} onReapply={reapplyStaleEdit} onDiscard={() => { setStaleConflict(null); setActiveEditor(null); setFormDraft(null); setEditorError(null); setRestorePrimaryFocus(true); }} disabled={Boolean(pendingEdit)} /> : null}
 
-      {feedback ? <div className="uc-intent-feedback-area"><p role={feedback.tone === "error" ? "alert" : "status"} className={feedback.tone === "error" ? "uc-intent-feedback uc-intent-feedback--error" : "uc-intent-feedback"}>{feedback.message}</p>{feedback.action === "retry_preview" ? <button type="button" className="uc-intent-secondary" onClick={() => void buildPreview()} disabled={busy || !canGeneratePreview}>重新生成路线预览</button> : null}{feedback.action === "refresh_intent" ? <button type="button" className="uc-intent-secondary" onClick={() => void compileIntent({ startNewAttempt: true })} disabled={busy}>重新整理旅行信息</button> : null}{feedback.action === "focus_place_confirmation" ? <button type="button" className="uc-intent-secondary" onClick={() => requestPlaceConfirmationFocus("must_place")} disabled={busy}>前往确认该地点</button> : null}{feedback.action === "focus_fixed_place_confirmation" ? <button type="button" className="uc-intent-secondary" onClick={() => requestPlaceConfirmationFocus("fixed_place")} disabled={busy}>前往确认预约地点</button> : null}{feedback.action === "edit_date_policy" ? <button type="button" className="uc-intent-secondary" onClick={() => openEditor("date_policy")} disabled={busy || draftVersion === null}>调整旅行时间</button> : null}{feedback.action === "edit_destination" ? <button type="button" className="uc-intent-secondary" onClick={() => openEditor("destination")} disabled={busy || draftVersion === null}>补充目的地</button> : null}</div> : null}
+      {feedback ? <div className="uc-intent-feedback-area"><p role={feedback.tone === "error" ? "alert" : "status"} className={feedback.tone === "error" ? "uc-intent-feedback uc-intent-feedback--error" : "uc-intent-feedback"}>{feedback.message}</p>{feedback.action === "retry_preview" ? <button type="button" className="uc-intent-secondary" onClick={() => void buildPreview()} disabled={busy || !canGeneratePreview}>重新生成路线预览</button> : null}{feedback.action === "refresh_intent" ? <button type="button" className="uc-intent-secondary" onClick={() => void compileIntent({ startNewAttempt: true })} disabled={busy}>重新整理旅行信息</button> : null}{feedback.action === "focus_place_confirmation" ? <button type="button" className="uc-intent-secondary" onClick={() => requestPlaceConfirmationFocus("must_place")} disabled={busy}>前往确认该地点</button> : null}{feedback.action === "focus_fixed_place_confirmation" ? <button type="button" className="uc-intent-secondary" onClick={() => requestPlaceConfirmationFocus("fixed_place", feedback.actionFieldId)} disabled={busy}>前往确认预约地点</button> : null}{feedback.action === "edit_date_policy" ? <button type="button" className="uc-intent-secondary" onClick={() => openEditor("date_policy")} disabled={busy || draftVersion === null}>调整旅行时间</button> : null}{feedback.action === "edit_destination" ? <button type="button" className="uc-intent-secondary" onClick={() => openEditor("destination")} disabled={busy || draftVersion === null}>补充目的地</button> : null}</div> : null}
       {retryableRequest && editorError ? <button type="button" className="uc-intent-secondary" onClick={retryNetworkRequest} disabled={Boolean(pendingEdit)}>重新提交</button> : null}
 
       {view ? <footer className="uc-intent-actions"><button type="button" className="uc-intent-secondary" onClick={onCancel} disabled={busy}>修改原始需求</button><div><p>{primaryHint}</p><button id="preplan-primary-action" type="button" className="uc-intent-primary" onClick={() => { if (preview) void apply(); else void buildPreview(); }} disabled={primaryDisabled}>{operation === "previewing" ? "正在生成预览……" : operation === "applying" ? "正在保存行程……" : primaryLabel}</button></div></footer> : null}

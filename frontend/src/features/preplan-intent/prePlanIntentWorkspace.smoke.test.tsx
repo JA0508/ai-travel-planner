@@ -115,8 +115,10 @@ test("pre-plan preview can take a blocked direct place to its confirmation contr
 test("pre-plan preview can take a blocked fixed arrangement to its location confirmation", () => {
   const source = readFileSync(componentPath, "utf8");
   const queueSource = readFileSync(queuePath, "utf8");
-  assert.match(source, /feedback\.action === "focus_fixed_place_confirmation"[\s\S]*requestPlaceConfirmationFocus\("fixed_place"\)/);
+  assert.match(source, /feedback\.action === "focus_fixed_place_confirmation"[\s\S]*requestPlaceConfirmationFocus\("fixed_place", feedback\.actionFieldId\)/);
   assert.match(queueSource, /item\.kind === placeFocusRequest\.kind/);
+  assert.match(source, /plannerHandoffRecoveryFieldId\(action, result\.context\)/);
+  assert.match(queueSource, /event\?\.metadata\.field_id === placeFocusRequest\.fieldId/);
 });
 
 test("explicitly reprocessing travel information starts a fresh idempotent compile attempt", () => {

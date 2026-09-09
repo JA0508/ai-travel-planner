@@ -45,6 +45,14 @@ export function plannerHandoffRecoveryAction(
   return DATE_POLICY_RECOVERY_REASONS.has(context.reason_code) ? "edit_date_policy" : undefined;
 }
 
+export function plannerHandoffRecoveryFieldId(
+  action: PlannerHandoffRecoveryAction | undefined,
+  context?: Record<string, unknown>,
+): string | undefined {
+  if (action !== "focus_fixed_place_confirmation" || typeof context?.field_id !== "string") return undefined;
+  return context.field_id.trim() || undefined;
+}
+
 export function userFacingPrePlanRequestError(
   code?: string,
   fallback = "暂时无法整理旅行信息，你的输入已经保留。",
