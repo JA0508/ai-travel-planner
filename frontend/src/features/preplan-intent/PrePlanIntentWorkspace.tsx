@@ -519,7 +519,9 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     ? "导入资料已更新，请先重新整理旅行信息。"
     : previewHasExecutionConflict
       ? "这版路线仍有执行冲突，请先返回修改旅行信息后再生成。"
-    : view?.actionHint ?? "正在整理你的旅行需求。";
+      : preview
+        ? "确认后会保存为正式行程，之后仍可修改。"
+      : view?.actionHint ?? "正在整理你的旅行需求。";
 
   return (
     <main className="uc-intent-shell" data-preplan-intent-workspace="true">

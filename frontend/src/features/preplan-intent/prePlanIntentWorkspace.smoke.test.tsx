@@ -91,6 +91,13 @@ test("pre-plan preview provides a separate retry action after a recoverable fail
   assert.match(source, /feedback\.action === "retry_preview"[\s\S]*onClick=\{\(\) => void buildPreview\(\)\}/);
 });
 
+test("ready route previews explain that confirmation creates the formal itinerary", () => {
+  const source = readFileSync(componentPath, "utf8");
+
+  assert.match(source, /const primaryLabel = preview \? "确认并生成行程"/);
+  assert.match(source, /preview\s*\?\s*"确认后会保存为正式行程，之后仍可修改。"/);
+});
+
 test("pre-plan preview exposes a matching inline edit for a repairable planning blocker", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /plannerHandoffRecoveryAction\(result\.code, result\.context\)/);
