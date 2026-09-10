@@ -134,7 +134,12 @@ export function ExecutableRoutePreview({
   const replacementDismissFocusStopIdRef = useRef<string | null>(null);
   const repairDismissFocusDayRef = useRef<number | null>(null);
   const canRepair = variant === "saved" && Boolean(tripId && baseRevisionId && onApplied);
-  const replaceActive = replace.status !== "idle" && replace.status !== "restored";
+  const repairInteractionActive = repair.status === "previewing" || repair.status === "review" || repair.status === "applying";
+  const replaceInteractionActive = replace.status === "candidates"
+    || replace.status === "previewing"
+    || replace.status === "unsafe"
+    || replace.status === "review"
+    || replace.status === "applying";
 
   useEffect(() => {
     if (replace.status !== "idle") return;
@@ -154,7 +159,7 @@ export function ExecutableRoutePreview({
 
   async function previewRelaxation(day: number) {
     if (!tripId || !baseRevisionId) return;
-    if (replaceActive) return;
+    if (replaceInteractionActive) return;
     if (!loads.some((load) => load.day === day)) {
       setRepair({ status: "error", message: "暂时无法读取这一天的行程负载，当前行程没有被修改。" });
       return;
@@ -215,6 +220,7 @@ export function ExecutableRoutePreview({
       setRepair({ status: "error", message: repairFailureMessage(response.code, "apply") });
       return;
     }
+    setReplace({ status: "idle" });
     onApplied(response.data);
     setRepair({ status: "applied", day, revisionId: response.data.current_revision.id, undoing: false });
   }
@@ -241,7 +247,7 @@ export function ExecutableRoutePreview({
   }
 
   async function findReplacementCandidates(target: RoutePreviewItem) {
-    if (!tripId || !baseRevisionId || !target.stable_id || repair.status !== "idle") return;
+    if (!tripId || !baseRevisionId || !target.stable_id || repairInteractionActive) return;
     const requestId = replaceRequestsRef.current.begin();
     setReplace({ status: "candidates", target, options: [], loading: true });
     const response = await postTripJson<SafeReplaceCandidateResponse>(
@@ -331,6 +337,7 @@ export function ExecutableRoutePreview({
       setReplace({ status: "error", message: safeReplaceFailureMessage(response.code, "apply", response.context), stopId: state.target.stable_id ?? undefined });
       return;
     }
+    setRepair({ status: "idle" });
     onApplied(response.data);
     setReplace({
       status: "applied",

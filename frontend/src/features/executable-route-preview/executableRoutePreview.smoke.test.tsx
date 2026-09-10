@@ -226,6 +226,11 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /repair\.status === "restored"\s*\?\s*<RepairFeedback autoFocus/);
   assert.match(source, /replace\.status === "restored"\s*\?\s*<RepairFeedback autoFocus/);
   assert.match(source, /eyebrow="ROUTE RESTORED"/);
+  assert.match(source, /const repairInteractionActive =/);
+  assert.match(source, /const replaceInteractionActive =/);
+  assert.match(source, /if \(replaceInteractionActive\) return;/);
+  assert.match(source, /target\.stable_id \|\| repairInteractionActive\) return;/);
+  assert.doesNotMatch(source, /target\.stable_id \|\| repair\.status !== "idle"/);
   assert.match(source, /暂时没有可验证的安排说明/);
   assert.doesNotMatch(source, /buildDayRelaxationPlan/);
   assert.doesNotMatch(source, /commands\s*:\s*\[/);

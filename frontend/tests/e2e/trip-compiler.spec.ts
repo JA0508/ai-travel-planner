@@ -288,6 +288,8 @@ test("Trip Compiler uses a Draft Intent revision before it creates a Planning Ru
   await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toHaveCount(0);
   await page.locator(".erp-repair-feedback").scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(REPAIR_SCREENSHOT_DIRECTORY, "desktop-repair-applied.png") });
+  await openSafeReplaceCandidates(page, "湖畔小馆", 2);
+  await page.getByRole("button", { name: "关闭候选地点" }).click();
   await page.reload();
   await expect(page.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
   await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toHaveCount(0);
