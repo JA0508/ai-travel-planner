@@ -522,6 +522,12 @@ body {
   background: rgba(255, 228, 223, 0.9);
 }
 
+.uc-intent-preview-reveal:focus-visible {
+  outline: 3px solid var(--ec-ochre);
+  outline-offset: 6px;
+  border-radius: 16px;
+}
+
 .uc-intent-summary {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

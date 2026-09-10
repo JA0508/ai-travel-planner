@@ -508,6 +508,32 @@ test("Scenario H: home confirmation requires a fixed-place revision before previ
   gate.assertClean();
 });
 
+test("Scenario I: home confirmation reveals the first route preview after the final required place", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const gate = installErrorGate(page);
+  gate.allowExpectedInitialIntentAbsence();
+  await createDraftThroughHome(page, "去杭州玩两天，轻松一点，想去西湖。");
+  const primary = page.getByRole("button", { name: "生成路线预览" });
+  const confirmationQueue = page.getByRole("region", { name: "还需确认" });
+
+  await expect(primary).toBeDisabled();
+  const confirmation = page.waitForResponse(isDraftIntentEditResponse);
+  await confirmationQueue.getByRole("button", { name: "采用这个地点" }).click();
+  expect((await confirmation).status()).toBe(201);
+  await expect(primary).toBeEnabled();
+
+  const previewResponse = page.waitForResponse((response) => response.url().includes("/preplan-handoff/preview") && response.request().method() === "POST");
+  await primary.click();
+  const previewPayload = await (await previewResponse).json() as { handoff: { id: string } };
+  expect(previewPayload.handoff.id).toBeTruthy();
+  const preview = page.getByRole("region", { name: "第一版路线预览" });
+  await expect(preview).toBeVisible();
+  await expect(preview).toBeFocused();
+  await expect(preview.getByRole("heading", { name: "你的第一版行程" })).toBeVisible();
+  await assertViewportFits(page);
+  gate.assertClean();
+});
+
 async function createTripCompilerDraft(page: Page, text: string): Promise<string> {
   await page.goto("/trip-compiler");
   await page.getByLabel("这一趟，你已经知道些什么？").fill(text);

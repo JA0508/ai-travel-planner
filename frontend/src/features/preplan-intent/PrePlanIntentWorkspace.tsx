@@ -99,10 +99,12 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
   const [editorError, setEditorError] = useState<string | null>(null);
   const [staleConflict, setStaleConflict] = useState<DraftIntentStaleConflict | null>(null);
   const [restorePrimaryFocus, setRestorePrimaryFocus] = useState(false);
+  const [revealPreview, setRevealPreview] = useState(false);
   const [placeConfirmationFocusRequest, setPlaceConfirmationFocusRequest] = useState<PlaceConfirmationFocusRequest | null>(null);
   const autoCompileTripRef = useRef<string | null>(null);
   const compileInFlightRef = useRef(false);
   const compileAttemptRef = useRef<PrePlanCompileAttempt | null>(null);
+  const previewRevealRef = useRef<HTMLElement>(null);
 
   const view = useMemo(
     () => (intent ? buildPrePlanConfirmationViewModel(intent.envelope) : null),
@@ -128,6 +130,16 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     document.getElementById("preplan-primary-action")?.focus();
     setRestorePrimaryFocus(false);
   }, [restorePrimaryFocus]);
+
+  useEffect(() => {
+    if (!revealPreview || !preview) return;
+    const frame = window.requestAnimationFrame(() => {
+      previewRevealRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      previewRevealRef.current?.focus();
+      setRevealPreview(false);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [preview, revealPreview]);
 
   async function refreshCandidates() {
     const result = await getTripJson<CandidateListResponse>(
@@ -472,6 +484,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       return;
     }
     setPreview(result.data);
+    setRevealPreview(true);
     setFeedback({ tone: "info", message: "第一版路线已准备好，请确认后生成正式行程。" });
   }
 
@@ -567,7 +580,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
         <details className="uc-intent-card uc-intent-details"><summary><span><strong>查看依据</strong><small>按需查看输入和导入资料</small></span><span aria-hidden="true">展开</span></summary><SourceDetails directUserText={directUserText} sourceLines={view.sourceLines} candidates={candidates} selectedCandidateIds={selectedCandidateIds} onSelectCandidate={selectCandidate} onRefresh={() => void compileIntent({ startNewAttempt: true })} onImportChanged={() => { void refreshCandidates(); setSourcesChanged(true); setPreview(null); setFeedback({ tone: "info", message: "已更新导入资料；重新整理后会纳入行程信息。" }); }} busy={busy} tripId={tripId} /></details>
       </> : null}
 
-      {preview ? <ExecutableRoutePreview itinerary={preview.itinerary} variant="draft" /> : null}
+      {preview ? <section ref={previewRevealRef} className="uc-intent-preview-reveal" aria-label="第一版路线预览" tabIndex={-1}><ExecutableRoutePreview itinerary={preview.itinerary} variant="draft" /></section> : null}
 
       {staleConflict ? <StaleConflictPanel conflict={staleConflict} onViewLatest={() => { setFeedback({ tone: "info", message: "已显示最新行程信息；你的修改仍保留，可以重新应用。" }); }} onReapply={reapplyStaleEdit} onDiscard={() => { setStaleConflict(null); setActiveEditor(null); setFormDraft(null); setEditorError(null); setRestorePrimaryFocus(true); }} disabled={Boolean(pendingEdit)} /> : null}
 
@@ -624,14 +637,17 @@ function ClarificationCard({ question, pending, onResolve }: { question: IntentC
   const [draft, setDraft] = useState<CriticalIntentFormDraft>({});
   const [error, setError] = useState<string | null>(null);
   const kind = clarificationInputKind(question.reason_code);
-  if (!kind) return <article><strong>还需要确认一项信息</strong><span>{question.question}</span><span className="uc-intent-muted">请使用底部“修改原始需求”补充后重新整理。</span></article>;
+  // The confirmation item already supplies the heading. Repeating it here makes
+  // the required action look like two separate questions to both people and
+  // assistive technology.
+  if (!kind) return <article><span>{question.question}</span><span className="uc-intent-muted">请使用底部“修改原始需求”补充后重新整理。</span></article>;
   const submit = () => {
     const answer = clarificationAnswerForKind(kind, draft);
     if (!answer) { setError("请完整填写这项信息后再确认。"); return; }
     setError(null);
     onResolve(question.question_id, answer, draft);
   };
-  return <article className="uc-intent-clarification"><strong>{clarificationTitle(kind)}</strong><span>{clarificationDetail(kind)}</span>
+  return <article className="uc-intent-clarification"><span>{clarificationDetail(kind)}</span>
     {kind === "destination" ? <label>目的地<input value={draft.city ?? ""} onChange={(event) => setDraft({ ...draft, city: event.target.value })} placeholder="例如：杭州" disabled={pending} /></label> : null}
     {kind === "trip_days" ? <><label>旅行天数<input inputMode="numeric" type="number" min="1" max="60" value={draft.tripDays ?? ""} onChange={(event) => setDraft({ ...draft, tripDays: event.target.value })} disabled={pending} /></label><span>也可以改为填写具体日期。</span></> : null}
     {kind === "date_range" ? <div className="uc-intent-editor-grid"><label>开始日期<input type="date" value={draft.startDate ?? ""} onChange={(event) => setDraft({ ...draft, startDate: event.target.value })} disabled={pending} /></label><label>结束日期<input type="date" value={draft.endDate ?? ""} onChange={(event) => setDraft({ ...draft, endDate: event.target.value })} disabled={pending} /></label></div> : null}
@@ -664,7 +680,6 @@ function clarificationInputKind(code: string): "destination" | "trip_days" | "da
   return null;
 }
 
-function clarificationTitle(kind: NonNullable<ReturnType<typeof clarificationInputKind>>): string { return { destination: "请填写这次旅行的目的地", trip_days: "请填写旅行日期或天数", date_range: "请确认具体出发日期", date_choice: "请确认旅行日期或天数" }[kind]; }
 function clarificationDetail(kind: NonNullable<ReturnType<typeof clarificationInputKind>>): string { return { destination: "目的地决定路线范围和可安排的地点。", trip_days: "我们需要知道可用于安排行程的时间。", date_range: "相对日期需要一个明确的日历参考。", date_choice: "日期和天数目前不一致，需要你指定一个安排依据。" }[kind]; }
 function clarificationAnswerForKind(kind: NonNullable<ReturnType<typeof clarificationInputKind>>, draft: CriticalIntentFormDraft): DraftClarificationAnswer | null {
   if (kind === "destination" && draft.city?.trim()) return { answer_type: "destination", city: draft.city.trim() };

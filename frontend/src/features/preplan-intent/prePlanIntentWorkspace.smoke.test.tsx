@@ -51,6 +51,7 @@ test("pre-plan bootstrap restores an existing intent before compiling a new Draf
 test("pre-plan workspace connects critical edits and clarification answers to server state", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /update_destination/);
+  assert.doesNotMatch(source, /clarificationTitle\(/);
   assert.match(source, /update_date_policy/);
   assert.match(source, /update_trip_days/);
   assert.match(source, /update_pace/);
@@ -89,6 +90,15 @@ test("pre-plan preview provides a separate retry action after a recoverable fail
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /action: "retry_preview"/);
   assert.match(source, /feedback\.action === "retry_preview"[\s\S]*onClick=\{\(\) => void buildPreview\(\)\}/);
+});
+
+test("first route preview is revealed and focused after it is generated", () => {
+  const source = readFileSync(componentPath, "utf8");
+
+  assert.match(source, /setPreview\(result\.data\);[\s\S]*setRevealPreview\(true\)/);
+  assert.match(source, /previewRevealRef\.current\?\.scrollIntoView/);
+  assert.match(source, /previewRevealRef\.current\?\.focus/);
+  assert.match(source, /aria-label="第一版路线预览"/);
 });
 
 test("ready route previews explain that confirmation creates the formal itinerary", () => {
