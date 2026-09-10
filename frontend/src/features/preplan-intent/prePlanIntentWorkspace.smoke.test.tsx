@@ -67,6 +67,17 @@ test("pre-plan workspace connects critical edits and clarification answers to se
   assert.doesNotMatch(source, /localStorage/);
 });
 
+test("confirmation queue advances reading focus after a confirmed place leaves the queue", () => {
+  const source = readFileSync(queuePath, "utf8");
+
+  assert.match(source, /completedPlaceItemIdRef/);
+  assert.match(source, /onPlaceConfirmationStart/);
+  assert.match(source, /items\.some\(\(item\) => item\.id === completedItemId\)/);
+  assert.match(source, /setExpandedItemId\(nextItem\.id\)/);
+  assert.match(source, /focusPlaceConfirmationAction\(nextTarget\)/);
+  assert.match(source, /confirmationHeadingRef\.current\?\.focus\(\)/);
+});
+
 test("pre-plan preview refreshes the latest Draft after a stale response", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /if \(isStalePrePlanIntentError\(result\.code\)\) \{[\s\S]*await refreshLatestIntent\(\)/);

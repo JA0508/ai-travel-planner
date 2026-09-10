@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import React, { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption } from "@/features/intent-confirmation/intentTypes";
 import type { ConfirmationItem, ConfirmedItem } from "./prePlanConfirmationModel";
 import type { PlaceIdentitySuggestionSearchResult, PrePlanPlaceIdentitySuggestionsResponse } from "./draftIntentEditApi";
@@ -60,6 +60,8 @@ export function PrePlanConfirmationQueue({
     [events, identities, items, questionById],
   );
   const [expandedItemId, setExpandedItemId] = useState<string | null>(() => actionableItems[0]?.id ?? null);
+  const completedPlaceItemIdRef = useRef<string | null>(null);
+  const confirmationHeadingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     setExpandedItemId((current) => (
@@ -68,6 +70,27 @@ export function PrePlanConfirmationQueue({
         : actionableItems[0]?.id ?? null
     ));
   }, [actionableItems]);
+
+  useEffect(() => {
+    const completedItemId = completedPlaceItemIdRef.current;
+    if (!completedItemId || items.some((item) => item.id === completedItemId)) return;
+    completedPlaceItemIdRef.current = null;
+    const nextItem = actionableItems[0] ?? null;
+    if (nextItem) setExpandedItemId(nextItem.id);
+    const frame = window.requestAnimationFrame(() => {
+      if (nextItem) {
+        const nextTarget = document.getElementById(`confirmation-item-${nextItem.id}`);
+        if (nextTarget) focusPlaceConfirmationAction(nextTarget);
+        return;
+      }
+      confirmationHeadingRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [actionableItems, items]);
+
+  function onPlaceConfirmationStart(itemId: string) {
+    completedPlaceItemIdRef.current = itemId;
+  }
 
   const sameTypeFocusItem = placeFocusRequest
     ? actionableItems.find((item) => item.kind === placeFocusRequest.kind) ?? null
@@ -106,7 +129,7 @@ export function PrePlanConfirmationQueue({
       <div className="uc-confirmation-workbench-heading">
         <div>
           <p>确认清单</p>
-          <h2>{remainingCopy}</h2>
+          <h2 ref={confirmationHeadingRef} tabIndex={-1}>{remainingCopy}</h2>
         </div>
         <span>{items.length ? "每完成一项，路线就更可靠" : blockedWithoutAction ? "请先补齐路线条件" : "关键信息已齐备"}</span>
       </div>
@@ -126,6 +149,7 @@ export function PrePlanConfirmationQueue({
             expanded={expandedItemId === item.id}
             actionable={actionableItems.some((actionableItem) => actionableItem.id === item.id)}
             onToggle={() => setExpandedItemId((current) => current === item.id ? null : item.id)}
+            onPlaceConfirmationStart={onPlaceConfirmationStart}
             onConfirmPlace={onConfirmPlace}
             onSearchPlace={onSearchPlace}
             onUpdateFixedLocation={onUpdateFixedLocation}
@@ -161,6 +185,7 @@ function ConfirmationItemCard({
   expanded,
   actionable,
   onToggle,
+  onPlaceConfirmationStart,
   onConfirmPlace,
   onSearchPlace,
   onUpdateFixedLocation,
@@ -174,6 +199,7 @@ function ConfirmationItemCard({
   expanded: boolean;
   actionable: boolean;
   onToggle: () => void;
+  onPlaceConfirmationStart: (itemId: string) => void;
   onConfirmPlace: Props["onConfirmPlace"];
   onSearchPlace: Props["onSearchPlace"];
   onUpdateFixedLocation: Props["onUpdateFixedLocation"];
@@ -196,7 +222,10 @@ function ConfirmationItemCard({
         identity={identity}
         title={item.title}
         busy={busy}
-        onConfirm={onConfirmPlace}
+        onConfirm={(confirmedIdentity, option, searchQuery) => {
+          onPlaceConfirmationStart(item.id);
+          onConfirmPlace(confirmedIdentity, option, searchQuery);
+        }}
         onSearch={onSearchPlace}
       /> : null}
       {item.kind === "fixed_place" && event && !identity ? <FixedLocationPrompt event={event} busy={busy} onSave={onUpdateFixedLocation} /> : null}
