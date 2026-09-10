@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PrePlanIntentWorkspace } from "./PrePlanIntentWorkspace";
-import { PrePlanConfirmationQueue } from "./PrePlanConfirmationQueue";
+import { PrePlanConfirmationQueue, shouldKeepPreviousPlaceSearchSuggestions } from "./PrePlanConfirmationQueue";
 
 const componentPath = fileURLToPath(new URL("./PrePlanIntentWorkspace.tsx", import.meta.url));
 const queuePath = fileURLToPath(new URL("./PrePlanConfirmationQueue.tsx", import.meta.url));
@@ -187,6 +187,20 @@ test("pre-plan workspace uses one editorial confirmation queue instead of repeat
   assert.doesNotMatch(source, /function FixedPlaceConfirmation/);
   assert.doesNotMatch(source, /function MustPlaceConfirmation/);
   assert.doesNotMatch(source, /function FixedArrangementSummary/);
+});
+
+test("place search retains only same-query candidates after a recoverable retry", () => {
+  const suggestions = {
+    place_stable_id: "must:shancheng",
+    query: "重庆 山城步道",
+    options: [],
+    recommended_provider_place_id: null,
+    recommendation_reason: null,
+  };
+
+  assert.equal(shouldKeepPreviousPlaceSearchSuggestions(suggestions, " 重庆 山城步道 "), true);
+  assert.equal(shouldKeepPreviousPlaceSearchSuggestions(suggestions, "重庆 洪崖洞"), false);
+  assert.equal(shouldKeepPreviousPlaceSearchSuggestions(null, "重庆 山城步道"), false);
 });
 
 test("confirmation queue announces concise progress instead of its entire interactive form", () => {

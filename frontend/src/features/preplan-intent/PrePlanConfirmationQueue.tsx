@@ -10,6 +10,13 @@ export type PlaceConfirmationFocusRequest = {
   stableId?: string;
 };
 
+export function shouldKeepPreviousPlaceSearchSuggestions(
+  suggestions: PrePlanPlaceIdentitySuggestionsResponse | null,
+  query: string,
+): boolean {
+  return suggestions?.query === query.trim();
+}
+
 type Props = {
   items: ConfirmationItem[];
   confirmedItems: ConfirmedItem[];
@@ -245,7 +252,7 @@ function PlaceIdentityRecommendation({
   const [suggestions, setSuggestions] = useState<PrePlanPlaceIdentitySuggestionsResponse | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchMessage, setSearchMessage] = useState<string | null>(null);
-  const [searchError, setSearchError] = useState<{ message: string; retryable: boolean } | null>(null);
+  const [searchError, setSearchError] = useState<{ message: string; retryable: boolean; keptPreviousSuggestions: boolean } | null>(null);
   const options = suggestions?.options ?? identity.confirmation_options;
   const recommendedId = suggestions?.recommended_provider_place_id ?? options[0]?.provider_place_id ?? null;
   const recommended = options.find((option) => option.provider_place_id === recommendedId) ?? null;
@@ -255,10 +262,11 @@ function PlaceIdentityRecommendation({
   async function runSearch() {
     const trimmed = query.trim();
     if (!trimmed || searching || busy) return;
+    const previousSuggestionsMatchQuery = shouldKeepPreviousPlaceSearchSuggestions(suggestions, trimmed);
     setSearching(true);
     setSearchMessage(null);
     setSearchError(null);
-    setSuggestions(null);
+    if (!previousSuggestionsMatchQuery) setSuggestions(null);
     const result = await onSearch(identity, trimmed);
     setSearching(false);
     if (result.kind === "success") {
@@ -270,7 +278,9 @@ function PlaceIdentityRecommendation({
       );
       return;
     }
-    setSearchError({ message: result.message, retryable: result.retryable });
+    const keptPreviousSuggestions = result.retryable && previousSuggestionsMatchQuery;
+    if (!keptPreviousSuggestions) setSuggestions(null);
+    setSearchError({ message: result.message, retryable: result.retryable, keptPreviousSuggestions });
   }
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
@@ -293,7 +303,7 @@ function PlaceIdentityRecommendation({
         <label htmlFor={`place-search-${identity.stable_id}`}>搜索更具体的地点</label>
         <div><input id={`place-search-${identity.stable_id}`} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如：十八梯、解放碑附近" maxLength={160} disabled={busy || searching} /><button type="submit" className="uc-intent-secondary" disabled={busy || searching || !query.trim()}>{searching ? "搜索中…" : "搜索"}</button></div>
       </form>
-      {searchError ? <><p className="uc-place-search-error" role="alert">{searchError.message}{searchError.retryable ? " 你可以直接重新搜索，当前行程没有变化。" : " 请换一个更具体的地点名称后再试。"}</p>{searchError.retryable ? <button type="button" className="uc-intent-secondary" disabled={busy || searching || !query.trim()} onClick={() => void runSearch()}>重新搜索</button> : null}</> : null}
+      {searchError ? <><p className="uc-place-search-error" role="alert">{searchError.message}{searchError.retryable ? searchError.keptPreviousSuggestions ? " 已保留上次查询的候选；采用时会再次核验。" : " 你可以直接重新搜索，当前行程没有变化。" : " 请换一个更具体的地点名称后再试。"}</p>{searchError.retryable ? <button type="button" className="uc-intent-secondary" disabled={busy || searching || !query.trim()} onClick={() => void runSearch()}>重新搜索</button> : null}</> : null}
       {searchMessage ? <p className="uc-place-search-status" role="status">{searchMessage}</p> : null}
       {alternatives.length ? <div className="uc-confirmation-choice" aria-label={`${title}的其他地点候选`}>
         {alternatives.map((option) => <button key={option.provider_place_id} type="button" disabled={busy || searching} onClick={() => onConfirm(identity, option, suggestions?.query)}><strong>{option.canonical_name}</strong><small>{option.address_summary ?? option.category ?? "提供商地点候选"}</small></button>)}
