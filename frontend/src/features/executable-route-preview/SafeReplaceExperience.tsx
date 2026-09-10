@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import { formatDistance, formatMinutes } from "./routePreviewModel";
 import {
   formatSafeReplaceRouteDelta,
@@ -24,8 +24,9 @@ export function SafeReplaceCandidates({
   onSelect: (candidate: SafeReplaceCandidate) => void;
   onKeep: () => void;
 }) {
+  const rootRef = useFocusedReplaceSurface();
   return (
-    <section className="safe-replace safe-replace--candidates" aria-label={`替换 ${targetName}`}>
+    <section ref={rootRef} className="safe-replace safe-replace--candidates" role="region" aria-label={`替换 ${targetName}`} tabIndex={-1}>
       <header className="safe-replace__header">
         <div>
           <p>ONE STOP / A FEW BETTER FITS</p>
@@ -85,9 +86,10 @@ export function SafeReplacePreview({
   onKeep: () => void;
   onOtherCandidates: () => void;
 }) {
+  const rootRef = useFocusedReplaceSurface();
   const safe = candidate.route_impact.safe_to_apply && Boolean(model);
   return (
-    <section className={`safe-replace safe-replace--preview ${safe ? "is-safe" : "is-unsafe"}`} aria-label="地点替换预览" tabIndex={-1}>
+    <section ref={rootRef} className={`safe-replace safe-replace--preview ${safe ? "is-safe" : "is-unsafe"}`} role="region" aria-label="地点替换预览" tabIndex={-1}>
       <header className="safe-replace__header">
         <div>
           <p>LOCAL ROUTE CHANGE / BEFORE &amp; AFTER</p>
@@ -140,6 +142,22 @@ export function SafeReplacePreview({
       <SafeReplaceStyles />
     </section>
   );
+}
+
+function useFocusedReplaceSurface() {
+  const rootRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const behavior = reducedMotion ? "auto" : "smooth";
+    const top = Math.max(0, window.scrollY + root.getBoundingClientRect().top - 16);
+    window.scrollTo({ top, behavior });
+    root.focus({ preventScroll: true });
+  }, []);
+
+  return rootRef;
 }
 
 function RouteColumn({

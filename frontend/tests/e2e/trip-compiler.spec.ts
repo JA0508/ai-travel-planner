@@ -184,7 +184,10 @@ async function openSafeReplaceCandidates(
   await page.getByRole("button", { name: "换一个" }).click();
   const response = await candidateResponse;
   expect(response.status()).toBe(200);
-  await expect(page.getByRole("heading", { name: "换一个更适合你的地点" })).toBeVisible();
+  const candidatePanel = page.getByRole("region", { name: `替换 ${targetName}` });
+  await expect(candidatePanel).toBeVisible();
+  await expect(candidatePanel).toBeFocused();
+  await expect(candidatePanel.getByRole("heading", { name: "换一个更适合你的地点" })).toBeVisible();
   const payload = await response.json() as {
     options: Array<{ name: string; verified_place: { provider_place_id: string }; route_impact: { safe_to_apply: boolean } }>;
   };

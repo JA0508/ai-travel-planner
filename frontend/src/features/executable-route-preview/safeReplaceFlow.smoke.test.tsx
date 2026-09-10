@@ -32,6 +32,9 @@ test("candidate stage presents only safe choices and an exact quality count", ()
   assert.match(html, /茶人村/);
   assert.match(html, /路上约少 4 分钟/);
   assert.match(html, /看看换成这里/);
+  assert.match(html, /role="region"/);
+  assert.match(html, /tabindex="-1"/);
+  assert.match(html, /aria-label="替换 青芝坞餐厅"/);
   assert.doesNotMatch(html, /provider_place_id|latitude|longitude|score|ranking/);
   assert.doesNotMatch(html, /换成这个地点/);
 });
@@ -77,6 +80,15 @@ test("safe preview makes the bounded change, route evidence and protected items 
   assert.match(html, /已经留好的时间，不会移动/);
   assert.match(html, /换成这个地点/);
   assert.match(html, /保持原地点/);
+  assert.match(html, /role="region"/);
+});
+
+test("safe replacement moves reading focus to each newly opened decision surface", () => {
+  const source = readFileSync(experiencePath, "utf8");
+
+  assert.match(source, /useFocusedReplaceSurface/);
+  assert.match(source, /window\.scrollTo\(\{ top, behavior \}\)/);
+  assert.match(source, /root\.focus\(\{ preventScroll: true \}\)/);
 });
 
 test("unsafe preview disables apply and says the saved route was not changed", () => {
