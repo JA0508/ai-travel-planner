@@ -319,7 +319,7 @@ function RoadbookDayNote({
           : "可以先查看路线，再决定是否做局部调整。"}
       </span>
       {tight && canRepair ? (
-        <button type="button" onClick={onRelax} disabled={busy}>
+        <button type="button" data-roadbook-relax-day={load?.day} onClick={onRelax} disabled={busy}>
           {previewing ? "正在看看怎么把这一天松一点…" : busy ? "正在保存路线…" : "帮我松一点"} {!busy ? <i aria-hidden="true">→</i> : null}
         </button>
       ) : null}

@@ -4,7 +4,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ExecutableRoutePreview, focusRoadbookStopAfterReplacementDismissal } from "./ExecutableRoutePreview";
+import {
+  ExecutableRoutePreview,
+  focusRoadbookRelaxDayAfterRepairDismissal,
+  focusRoadbookStopAfterReplacementDismissal,
+} from "./ExecutableRoutePreview";
 import { buildRoadbookAdjustmentGuide } from "./SavedLivingRoadbook";
 import type { RoutePreviewItinerary } from "./routePreviewModel";
 
@@ -160,6 +164,30 @@ test("dismissing replacement exploration restores focus to the original route st
     } else {
       Reflect.deleteProperty(globalThis, "document");
     }
+  }
+});
+
+test("dismissing a route relaxation preview restores focus to that day's repair control", () => {
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  let selector = "";
+  let focused = false;
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelector(value: string) {
+        selector = value;
+        return { focus: () => { focused = true; } };
+      },
+    },
+  });
+
+  try {
+    focusRoadbookRelaxDayAfterRepairDismissal(2);
+    assert.equal(selector, '[data-roadbook-relax-day="2"]');
+    assert.equal(focused, true);
+  } finally {
+    if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+    else Reflect.deleteProperty(globalThis, "document");
   }
 });
 

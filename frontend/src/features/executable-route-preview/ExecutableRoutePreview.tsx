@@ -104,6 +104,18 @@ export function focusRoadbookStopAfterReplacementDismissal(stopId: string): void
   window.requestAnimationFrame(restoreFocus);
 }
 
+export function focusRoadbookRelaxDayAfterRepairDismissal(day: number): void {
+  if (typeof document === "undefined") return;
+  const restoreFocus = () => {
+    document.querySelector<HTMLElement>(`[data-roadbook-relax-day="${day}"]`)?.focus();
+  };
+  if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+    restoreFocus();
+    return;
+  }
+  window.requestAnimationFrame(restoreFocus);
+}
+
 export function ExecutableRoutePreview({
   itinerary,
   variant,
@@ -120,6 +132,7 @@ export function ExecutableRoutePreview({
   const previewRequestIdRef = useRef(0);
   const replaceRequestsRef = useRef(new LatestReplaceRequest());
   const replacementDismissFocusStopIdRef = useRef<string | null>(null);
+  const repairDismissFocusDayRef = useRef<number | null>(null);
   const canRepair = variant === "saved" && Boolean(tripId && baseRevisionId && onApplied);
   const replaceActive = replace.status !== "idle" && replace.status !== "restored";
 
@@ -130,6 +143,14 @@ export function ExecutableRoutePreview({
     replacementDismissFocusStopIdRef.current = null;
     focusRoadbookStopAfterReplacementDismissal(stopId);
   }, [replace.status]);
+
+  useEffect(() => {
+    if (repair.status !== "idle") return;
+    const day = repairDismissFocusDayRef.current;
+    if (day == null) return;
+    repairDismissFocusDayRef.current = null;
+    focusRoadbookRelaxDayAfterRepairDismissal(day);
+  }, [repair.status]);
 
   async function previewRelaxation(day: number) {
     if (!tripId || !baseRevisionId) return;
@@ -171,6 +192,7 @@ export function ExecutableRoutePreview({
   }
 
   function dismissRepair() {
+    repairDismissFocusDayRef.current = "day" in repair ? repair.day : null;
     previewRequestIdRef.current += 1;
     setRepair({ status: "idle" });
   }
