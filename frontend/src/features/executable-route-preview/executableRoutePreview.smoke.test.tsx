@@ -13,6 +13,7 @@ import { buildRoadbookAdjustmentGuide } from "./SavedLivingRoadbook";
 import type { RoutePreviewItinerary } from "./routePreviewModel";
 
 const componentPath = fileURLToPath(new URL("./ExecutableRoutePreview.tsx", import.meta.url));
+const savedRoadbookPath = fileURLToPath(new URL("./SavedLivingRoadbook.tsx", import.meta.url));
 const repairPreviewPath = fileURLToPath(new URL("./RoadbookRepairPreview.tsx", import.meta.url));
 const repairModelPath = fileURLToPath(new URL("./repairPreviewModel.ts", import.meta.url));
 
@@ -203,7 +204,7 @@ test("saved route offers local repair only for a rushed day", () => {
 });
 
 test("saved route preview sends only a user goal to the server-authoritative repair endpoint", () => {
-  const source = `${readFileSync(componentPath, "utf8")}\n${readFileSync(repairPreviewPath, "utf8")}\n${readFileSync(repairModelPath, "utf8")}`;
+  const source = `${readFileSync(componentPath, "utf8")}\n${readFileSync(savedRoadbookPath, "utf8")}\n${readFileSync(repairPreviewPath, "utf8")}\n${readFileSync(repairModelPath, "utf8")}`;
   assert.match(source, /previewLocalRelaxDayRepair/);
   assert.match(source, /applyPersistedMutationProposal/);
   assert.match(source, /undoPersistedRevision/);
@@ -231,6 +232,11 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /if \(replaceInteractionActive\) return;/);
   assert.match(source, /target\.stable_id \|\| repairInteractionActive\) return;/);
   assert.doesNotMatch(source, /target\.stable_id \|\| repair\.status !== "idle"/);
+  assert.match(source, /repairBlocked=\{replaceInteractionActive\}/);
+  assert.match(source, /repairInteractionActive && \(replace\.status === "idle" \|\| replace\.status === "restored"\)/);
+  assert.match(source, /replaceControlStatus: "available" \| "blocked"/);
+  assert.match(source, /blocked \? "请先完成当前调整"/);
+  assert.match(source, /blocked: "请先完成当前调整"/);
   assert.match(source, /暂时没有可验证的安排说明/);
   assert.doesNotMatch(source, /buildDayRelaxationPlan/);
   assert.doesNotMatch(source, /commands\s*:\s*\[/);

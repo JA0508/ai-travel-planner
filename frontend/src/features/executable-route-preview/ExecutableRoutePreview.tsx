@@ -388,10 +388,13 @@ export function ExecutableRoutePreview({
           loads={loads}
           canRepair={canRepair}
           repairStatus={repair.status === "applied" && repair.undoing ? "undoing" : repair.status}
+          repairBlocked={replaceInteractionActive}
           repairDay={"day" in repair ? repair.day : undefined}
           onRelaxDay={(day) => void previewRelaxation(day)}
           replaceControlStatus={
-            replace.status === "idle" || replace.status === "restored"
+            repairInteractionActive && (replace.status === "idle" || replace.status === "restored")
+              ? "blocked"
+              : replace.status === "idle" || replace.status === "restored"
               ? "available"
               : replace.status === "applied"
                 ? "applied"

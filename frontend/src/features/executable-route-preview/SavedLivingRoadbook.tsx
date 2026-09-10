@@ -28,9 +28,10 @@ type Props = {
   loads: DayLoad[];
   canRepair: boolean;
   repairStatus: "idle" | "previewing" | "review" | "applying" | "undoing" | "applied" | "restored" | "error";
+  repairBlocked: boolean;
   repairDay?: number;
   onRelaxDay: (day: number) => void;
-  replaceControlStatus: "available" | "choosing" | "processing" | "applied" | "attention";
+  replaceControlStatus: "available" | "blocked" | "choosing" | "processing" | "applied" | "attention";
   focusedStopId?: string;
   onReplaceStop: (item: RoutePreviewItem) => void;
 };
@@ -41,6 +42,7 @@ export function SavedLivingRoadbook({
   loads,
   canRepair,
   repairStatus,
+  repairBlocked,
   repairDay,
   onRelaxDay,
   replaceControlStatus,
@@ -207,6 +209,7 @@ export function SavedLivingRoadbook({
             load={selectedLoad}
             canRepair={canRepair}
             busy={repairStatus === "previewing" || repairStatus === "applying" || repairStatus === "undoing"}
+            blocked={repairBlocked}
             previewing={repairStatus === "previewing" && repairDay === selectedDay}
             onRelax={() => onRelaxDay(selectedDay)}
           />
@@ -299,12 +302,14 @@ function RoadbookDayNote({
   load,
   canRepair,
   busy,
+  blocked,
   previewing,
   onRelax,
 }: {
   load: DayLoad | null;
   canRepair: boolean;
   busy: boolean;
+  blocked: boolean;
   previewing: boolean;
   onRelax: () => void;
 }) {
@@ -319,8 +324,8 @@ function RoadbookDayNote({
           : "可以先查看路线，再决定是否做局部调整。"}
       </span>
       {tight && canRepair ? (
-        <button type="button" data-roadbook-relax-day={load?.day} onClick={onRelax} disabled={busy}>
-          {previewing ? "正在看看怎么把这一天松一点…" : busy ? "正在保存路线…" : "帮我松一点"} {!busy ? <i aria-hidden="true">→</i> : null}
+        <button type="button" data-roadbook-relax-day={load?.day} onClick={onRelax} disabled={busy || blocked}>
+          {previewing ? "正在看看怎么把这一天松一点…" : busy ? "正在保存路线…" : blocked ? "请先完成当前调整" : "帮我松一点"} {!busy && !blocked ? <i aria-hidden="true">→</i> : null}
         </button>
       ) : null}
     </aside>
@@ -390,12 +395,13 @@ function RoadbookReplaceEntry({
   onReplace,
 }: {
   item: ScheduledItemLike;
-  controlStatus: "available" | "choosing" | "processing" | "applied" | "attention";
+  controlStatus: "available" | "blocked" | "choosing" | "processing" | "applied" | "attention";
   onReplace: () => void;
 }) {
   const eligible = isSafeReplaceEligible(item);
   const controlLabel = {
     available: "换一个",
+    blocked: "请先完成当前调整",
     choosing: "选择中",
     processing: "正在处理…",
     applied: "刚刚换好",
