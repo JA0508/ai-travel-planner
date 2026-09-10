@@ -324,7 +324,7 @@ function RoadbookDayNote({
           : "可以先查看路线，再决定是否做局部调整。"}
       </span>
       {tight && canRepair ? (
-        <button type="button" data-roadbook-relax-day={load?.day} onClick={onRelax} disabled={busy || blocked}>
+        <button type="button" data-roadbook-relax-day={load?.day} aria-label={`让第 ${load?.day ?? 1} 天轻松一些`} onClick={onRelax} disabled={busy || blocked}>
           {previewing ? "正在看看怎么把这一天松一点…" : busy ? "正在保存路线…" : blocked ? "请先完成当前调整" : "帮我松一点"} {!busy && !blocked ? <i aria-hidden="true">→</i> : null}
         </button>
       ) : null}

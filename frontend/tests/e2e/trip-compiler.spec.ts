@@ -65,7 +65,7 @@ async function verifyMapEvidenceSettled(page: import("@playwright/test").Page) {
 
 async function previewRushedDayRepair(page: import("@playwright/test").Page) {
   const dayButtons = page.locator(".roadbook__masthead nav button");
-  const trigger = page.getByRole("button", { name: /帮我松一点/ });
+  const trigger = page.getByRole("button", { name: /让第 \d+ 天轻松一些/ });
   for (let index = 0; index < await dayButtons.count() && await trigger.count() === 0; index += 1) {
     await dayButtons.nth(index).click();
   }

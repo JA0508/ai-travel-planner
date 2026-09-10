@@ -201,6 +201,7 @@ test("saved route offers local repair only for a rushed day", () => {
 
   assert.match(html, /今天稍微赶了一点/);
   assert.match(html, /帮我松一点/);
+  assert.match(html, /aria-label="让第 1 天轻松一些"/);
 });
 
 test("saved route preview sends only a user goal to the server-authoritative repair endpoint", () => {

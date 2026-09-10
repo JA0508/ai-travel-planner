@@ -401,7 +401,7 @@ test("Scenario F: previews and applies a local relaxation without regenerating t
   const routePreview = page.getByRole("region", { name: "可执行路线预览" });
   await expect(routePreview.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
   const dayButtons = routePreview.getByRole("navigation", { name: "选择行程日期" }).getByRole("button");
-  const relaxButton = routePreview.getByRole("button", { name: "帮我松一点" });
+  const relaxButton = routePreview.getByRole("button", { name: /让第 \d+ 天轻松一些/ });
   for (let index = 0; index < await dayButtons.count() && await relaxButton.count() === 0; index += 1) {
     await dayButtons.nth(index).click();
   }
