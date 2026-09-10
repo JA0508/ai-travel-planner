@@ -458,7 +458,7 @@ export function ExecutableRoutePreview({
             onAction={() => void undoRelaxation(repair.day, repair.revisionId)}
           />
         ) : null}
-        {repair.status === "restored" ? <RepairFeedback message="已恢复调整前的路线。" /> : null}
+        {repair.status === "restored" ? <RepairFeedback autoFocus message="已恢复调整前的路线。" /> : null}
         {repair.status === "error" ? <RepairError message={repair.message} onDismiss={dismissRepair} /> : null}
         {replace.status === "applied" ? (
           <RepairFeedback
@@ -470,7 +470,7 @@ export function ExecutableRoutePreview({
             onAction={() => void undoReplacement(replace)}
           />
         ) : null}
-        {replace.status === "restored" ? <RepairFeedback message="已恢复原来的地点和相邻路线。" /> : null}
+        {replace.status === "restored" ? <RepairFeedback autoFocus message="已恢复原来的地点和相邻路线。" /> : null}
         {replace.status === "error" ? <RepairError message={replace.message} onDismiss={dismissReplacement} /> : null}
         <RoutePreviewStyles />
       </section>

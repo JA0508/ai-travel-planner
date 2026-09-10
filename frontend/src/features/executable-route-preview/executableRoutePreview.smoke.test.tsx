@@ -223,6 +223,8 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /rootRef\.current\?\.focus/);
   assert.match(source, /autoFocus/);
   assert.match(source, /feedbackRef\.current\?\.focus/);
+  assert.match(source, /repair\.status === "restored"\s*\?\s*<RepairFeedback autoFocus/);
+  assert.match(source, /replace\.status === "restored"\s*\?\s*<RepairFeedback autoFocus/);
   assert.match(source, /暂时没有可验证的安排说明/);
   assert.doesNotMatch(source, /buildDayRelaxationPlan/);
   assert.doesNotMatch(source, /commands\s*:\s*\[/);
