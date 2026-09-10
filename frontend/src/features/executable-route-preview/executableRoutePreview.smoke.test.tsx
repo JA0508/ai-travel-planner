@@ -37,6 +37,24 @@ test("route preview renders a readable day timeline without internal handoff met
   assert.doesNotMatch(html, /handoff ID/);
 });
 
+test("draft route preview can keep its explicit save action beside the preview", () => {
+  const html = renderToStaticMarkup(
+    <ExecutableRoutePreview
+      itinerary={itinerary}
+      variant="draft"
+      draftConfirmation={{
+        label: "确认并生成行程",
+        hint: "确认后才会保存为正式行程。",
+        disabled: false,
+        onConfirm: () => undefined,
+      }}
+    />,
+  );
+
+  assert.match(html, /确认并生成行程/);
+  assert.match(html, /data-draft-route-confirmation="true"/);
+});
+
 test("saved route uses an on-the-road workspace vocabulary", () => {
   const saved = structuredClone(itinerary);
   saved.days[0].blocks[0].items[0].is_fixed = true;

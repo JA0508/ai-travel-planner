@@ -512,7 +512,10 @@ test("Scenario I: home confirmation reveals the first route preview after the fi
   await page.setViewportSize({ width: 390, height: 844 });
   const gate = installErrorGate(page);
   gate.allowExpectedInitialIntentAbsence();
-  await createDraftThroughHome(page, "去杭州玩两天，轻松一点，想去西湖。");
+  // Saving swaps the Draft preview for the saved Roadbook, which cancels only
+  // the preview's obsolete route-segment request.
+  gate.allowExpectedRouteSegmentAbort();
+  const tripId = await createDraftThroughHome(page, "去杭州玩两天，轻松一点，想去西湖。");
   const primary = page.getByRole("button", { name: "生成路线预览" });
   const confirmationQueue = page.getByRole("region", { name: "还需确认" });
 
@@ -530,6 +533,11 @@ test("Scenario I: home confirmation reveals the first route preview after the fi
   await expect(preview).toBeVisible();
   await expect(preview).toBeFocused();
   await expect(preview.getByRole("heading", { name: "你的第一版行程" })).toBeVisible();
+  const applyResponse = page.waitForResponse((response) => response.url().includes("/preplan-handoff/runs/") && response.url().includes("/apply") && response.request().method() === "POST");
+  await preview.getByRole("button", { name: "确认并生成行程" }).click();
+  expect((await applyResponse).status()).toBe(200);
+  await expect(page.getByRole("region", { name: "可执行路线预览" })).toBeVisible();
+  expect(readDraftDatabase(tripId).trip_revision_count).toBe(1);
   await assertViewportFits(page);
   gate.assertClean();
 });

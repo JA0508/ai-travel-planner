@@ -104,8 +104,10 @@ test("first route preview is revealed and focused after it is generated", () => 
 test("ready route previews explain that confirmation creates the formal itinerary", () => {
   const source = readFileSync(componentPath, "utf8");
 
-  assert.match(source, /const primaryLabel = preview \? "确认并生成行程"/);
-  assert.match(source, /preview\s*\?\s*"确认后会保存为正式行程，之后仍可修改。"/);
+  assert.match(source, /draftConfirmation=\{\{/);
+  assert.match(source, /label: operation === "applying" \? "正在保存行程……" : "确认并生成行程"/);
+  assert.match(source, /hint: "确认后会保存为正式行程，之后仍可修改。"/);
+  assert.match(source, /onConfirm: \(\) => void apply\(\)/);
 });
 
 test("recoverable formal-itinerary saves keep the preview and expose a direct retry", () => {
