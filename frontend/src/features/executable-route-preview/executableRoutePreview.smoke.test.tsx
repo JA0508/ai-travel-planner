@@ -55,6 +55,26 @@ test("draft route preview can keep its explicit save action beside the preview",
   assert.match(html, /data-draft-route-confirmation="true"/);
 });
 
+test("draft route preview keeps a recoverable save failure beside its confirmation action", () => {
+  const html = renderToStaticMarkup(
+    <ExecutableRoutePreview
+      itinerary={itinerary}
+      variant="draft"
+      draftConfirmation={{
+        label: "重新保存正式行程",
+        hint: "确认后才会保存为正式行程。",
+        recoveryMessage: "暂时无法保存正式行程，路线预览仍在这里。",
+        disabled: false,
+        onConfirm: () => undefined,
+      }}
+    />,
+  );
+
+  assert.match(html, /role="alert"/);
+  assert.match(html, /暂时无法保存正式行程，路线预览仍在这里。/);
+  assert.match(html, /重新保存正式行程/);
+});
+
 test("saved route uses an on-the-road workspace vocabulary", () => {
   const saved = structuredClone(itinerary);
   saved.days[0].blocks[0].items[0].is_fixed = true;

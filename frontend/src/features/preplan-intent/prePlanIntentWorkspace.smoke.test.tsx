@@ -105,8 +105,9 @@ test("ready route previews explain that confirmation creates the formal itinerar
   const source = readFileSync(componentPath, "utf8");
 
   assert.match(source, /draftConfirmation=\{\{/);
-  assert.match(source, /label: operation === "applying" \? "正在保存行程……" : "确认并生成行程"/);
+  assert.match(source, /label: operation === "applying" \? "正在保存行程……" : feedback\?\.action === "retry_apply" \? "重新保存正式行程" : "确认并生成行程"/);
   assert.match(source, /hint: "确认后会保存为正式行程，之后仍可修改。"/);
+  assert.match(source, /recoveryMessage: feedback\?\.action === "retry_apply" \? feedback\.message : undefined/);
   assert.match(source, /onConfirm: \(\) => void apply\(\)/);
 });
 
@@ -115,7 +116,7 @@ test("recoverable formal-itinerary saves keep the preview and expose a direct re
 
   assert.match(source, /savePreviewUnavailableMessage\(\)/);
   assert.match(source, /action: "retry_apply"/);
-  assert.match(source, /feedback\.action === "retry_apply"[\s\S]*onClick=\{\(\) => void apply\(\)\}/);
+  assert.match(source, /feedback && !\(preview && feedback\.action === "retry_apply"\)/);
 });
 
 test("pre-plan preview exposes a matching inline edit for a repairable planning blocker", () => {

@@ -542,6 +542,49 @@ test("Scenario I: home confirmation reveals the first route preview after the fi
   gate.assertClean();
 });
 
+test("Scenario J: keeps a recoverable formal-save retry beside the route preview", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const gate = installErrorGate(page);
+  gate.allowExpectedInitialIntentAbsence();
+  gate.allowExpectedNetworkFailure();
+  gate.allowExpectedRouteSegmentAbort();
+  const tripId = await createDraftThroughHome(page, "去杭州玩两天，轻松一点，想去西湖。");
+  const primary = page.getByRole("button", { name: "生成路线预览" });
+  const confirmationQueue = page.getByRole("region", { name: "还需确认" });
+
+  const confirmation = page.waitForResponse(isDraftIntentEditResponse);
+  await confirmationQueue.getByRole("button", { name: "采用这个地点" }).click();
+  expect((await confirmation).status()).toBe(201);
+
+  const previewResponse = page.waitForResponse((response) => response.url().includes("/preplan-handoff/preview") && response.request().method() === "POST");
+  await primary.click();
+  expect((await previewResponse).status()).toBe(200);
+  const preview = page.getByRole("region", { name: "第一版路线预览" });
+  await expect(preview).toBeVisible();
+
+  let droppedFirstSave = false;
+  await page.route("**/api/trips/*/preplan-handoff/runs/*/apply", async (route) => {
+    if (!droppedFirstSave) {
+      droppedFirstSave = true;
+      await route.abort("connectionreset");
+      return;
+    }
+    await route.continue();
+  });
+  await preview.getByRole("button", { name: "确认并生成行程" }).click();
+  await expect(preview.getByText("正式行程的保存结果暂时未确认；你的路线预览和确认信息都还在。请稍后重新保存。")).toBeVisible();
+  await expect(preview.getByRole("button", { name: "重新保存正式行程" })).toBeVisible();
+  expect(readDraftDatabase(tripId).trip_revision_count).toBe(0);
+
+  const retry = page.waitForResponse((response) => response.url().includes("/preplan-handoff/runs/") && response.url().includes("/apply") && response.request().method() === "POST");
+  await preview.getByRole("button", { name: "重新保存正式行程" }).click();
+  expect((await retry).status()).toBe(200);
+  await expect(page.getByRole("region", { name: "可执行路线预览" })).toBeVisible();
+  expect(readDraftDatabase(tripId).trip_revision_count).toBe(1);
+  await assertViewportFits(page);
+  gate.assertClean();
+});
+
 async function createTripCompilerDraft(page: Page, text: string): Promise<string> {
   await page.goto("/trip-compiler");
   await page.getByLabel("这一趟，你已经知道些什么？").fill(text);
