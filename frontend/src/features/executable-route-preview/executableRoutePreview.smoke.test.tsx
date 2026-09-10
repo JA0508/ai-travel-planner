@@ -99,6 +99,22 @@ test("saved route uses an on-the-road workspace vocabulary", () => {
   assert.doesNotMatch(html, /仍可继续编辑路线/);
 });
 
+test("saved roadbook gives first-time readers a live route-reading guide", () => {
+  const html = renderToStaticMarkup(
+    <ExecutableRoutePreview
+      itinerary={itinerary}
+      variant="saved"
+      tripId="trip-1"
+      baseRevisionId="revision-1"
+      onApplied={() => undefined}
+    />,
+  );
+
+  assert.match(html, /aria-label="阅读路线提示"/);
+  assert.match(html, /正在查看第 1 天/);
+  assert.match(html, /点击时间线中的地点，即可切换当前地点；地图区域会同步显示可用的路线信息。/);
+});
+
 test("saved route offers local repair only for a rushed day", () => {
   const rushed = structuredClone(itinerary);
   const dailyLoads = rushed.planner_realism?.daily_loads;

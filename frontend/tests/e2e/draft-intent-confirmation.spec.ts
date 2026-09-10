@@ -537,6 +537,7 @@ test("Scenario I: home confirmation reveals the first route preview after the fi
   await preview.getByRole("button", { name: "确认并生成行程" }).click();
   expect((await applyResponse).status()).toBe(200);
   await expect(page.getByRole("region", { name: "可执行路线预览" })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "阅读路线提示" })).toContainText("正在查看第 1 天");
   expect(readDraftDatabase(tripId).trip_revision_count).toBe(1);
   await assertViewportFits(page);
   gate.assertClean();
