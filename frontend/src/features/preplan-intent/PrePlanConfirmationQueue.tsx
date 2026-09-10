@@ -252,8 +252,7 @@ function PlaceIdentityRecommendation({
   const alternatives = searchOpen ? options.filter((option) => option.provider_place_id !== recommended?.provider_place_id) : [];
   const reason = suggestions?.recommendation_reason ?? (recommended ? "基于地点名称和本次目的地的提供商检索排序。" : null);
 
-  async function submitSearch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function runSearch() {
     const trimmed = query.trim();
     if (!trimmed || searching || busy) return;
     setSearching(true);
@@ -274,6 +273,11 @@ function PlaceIdentityRecommendation({
     setSearchError({ message: result.message, retryable: result.retryable });
   }
 
+  function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void runSearch();
+  }
+
   return <div className="uc-place-identity-editor" aria-label={`${title}的地点确认`}>
     {recommended ? <section className="uc-place-recommendation" aria-label="系统推荐地点">
       <p>系统推荐</p>
@@ -289,7 +293,7 @@ function PlaceIdentityRecommendation({
         <label htmlFor={`place-search-${identity.stable_id}`}>搜索更具体的地点</label>
         <div><input id={`place-search-${identity.stable_id}`} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="例如：十八梯、解放碑附近" maxLength={160} disabled={busy || searching} /><button type="submit" className="uc-intent-secondary" disabled={busy || searching || !query.trim()}>{searching ? "搜索中…" : "搜索"}</button></div>
       </form>
-      {searchError ? <p className="uc-place-search-error" role="alert">{searchError.message}{searchError.retryable ? " 你可以稍后直接重新搜索，当前行程没有变化。" : " 请换一个更具体的地点名称后再试。"}</p> : null}
+      {searchError ? <><p className="uc-place-search-error" role="alert">{searchError.message}{searchError.retryable ? " 你可以直接重新搜索，当前行程没有变化。" : " 请换一个更具体的地点名称后再试。"}</p>{searchError.retryable ? <button type="button" className="uc-intent-secondary" disabled={busy || searching || !query.trim()} onClick={() => void runSearch()}>重新搜索</button> : null}</> : null}
       {searchMessage ? <p className="uc-place-search-status" role="status">{searchMessage}</p> : null}
       {alternatives.length ? <div className="uc-confirmation-choice" aria-label={`${title}的其他地点候选`}>
         {alternatives.map((option) => <button key={option.provider_place_id} type="button" disabled={busy || searching} onClick={() => onConfirm(identity, option, suggestions?.query)}><strong>{option.canonical_name}</strong><small>{option.address_summary ?? option.category ?? "提供商地点候选"}</small></button>)}
