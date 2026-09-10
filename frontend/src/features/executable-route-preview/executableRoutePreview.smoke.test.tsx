@@ -221,7 +221,9 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /previewRequestIdRef/);
   assert.match(source, /requestId !== previewRequestIdRef\.current/);
   assert.match(source, /tabIndex=\{-1\}/);
-  assert.match(source, /rootRef\.current\?\.focus/);
+  assert.match(source, /root\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(source, /window\.scrollTo\(\{ top, behavior \}\)/);
+  assert.doesNotMatch(source, /rootRef\.current\?\.scrollIntoView/);
   assert.match(source, /autoFocus/);
   assert.match(source, /feedbackRef\.current\?\.focus/);
   assert.match(source, /repair\.status === "restored"\s*\?\s*<RepairFeedback autoFocus/);

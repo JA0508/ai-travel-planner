@@ -36,8 +36,11 @@ export function RoadbookRepairPreview({
 
   useEffect(() => {
     const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
-    rootRef.current?.scrollIntoView({ behavior, block: "start" });
-    rootRef.current?.focus({ preventScroll: true });
+    const root = rootRef.current;
+    if (!root) return;
+    const top = Math.max(0, window.scrollY + root.getBoundingClientRect().top - 16);
+    window.scrollTo({ top, behavior });
+    root.focus({ preventScroll: true });
   }, []);
 
   return (
