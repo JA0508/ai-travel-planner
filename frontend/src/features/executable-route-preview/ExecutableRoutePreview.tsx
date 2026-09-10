@@ -450,6 +450,7 @@ export function ExecutableRoutePreview({
         ) : null}
         {repair.status === "applied" ? (
           <RepairFeedback
+            autoFocus
             message="这段路线已经松了一点，调整也已经保存。"
             errorMessage={repair.errorMessage}
             actionLabel={repair.undoing ? "正在恢复…" : repair.errorMessage ? "重试撤销" : "撤销刚才的调整"}
@@ -461,6 +462,7 @@ export function ExecutableRoutePreview({
         {repair.status === "error" ? <RepairError message={repair.message} onDismiss={dismissRepair} /> : null}
         {replace.status === "applied" ? (
           <RepairFeedback
+            autoFocus
             message={`这个地点已经从${replace.previousName}换成${replace.replacementName}。其他已经确认的安排没有被改动。`}
             errorMessage={replace.errorMessage}
             actionLabel={replace.undoing ? "正在恢复…" : replace.errorMessage ? "重试撤销" : "撤销刚才的替换"}
@@ -562,19 +564,49 @@ function repairImpact(preview: MutationPreviewResponse): LocalRepairImpact | und
 }
 
 function RepairFeedback({
+  autoFocus = false,
   message,
   errorMessage,
   actionLabel,
   busy = false,
   onAction,
 }: {
+  autoFocus?: boolean;
   message: string;
   errorMessage?: string;
   actionLabel?: string;
   busy?: boolean;
   onAction?: () => void;
 }) {
-  return <aside className="erp-repair-feedback" role="status"><div><p>ROUTE SAVED</p><strong>{message}</strong>{errorMessage ? <span className="erp-repair-feedback__error" role="alert">{errorMessage}</span> : null}</div>{actionLabel && onAction ? <button type="button" onClick={onAction} disabled={busy}>{actionLabel}</button> : null}</aside>;
+  const feedbackRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!autoFocus || typeof window === "undefined") {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      feedbackRef.current?.focus({ preventScroll: true });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [autoFocus]);
+
+  return (
+    <aside
+      ref={feedbackRef}
+      className="erp-repair-feedback"
+      role="status"
+      tabIndex={autoFocus ? -1 : undefined}
+    >
+      <div>
+        <p>ROUTE SAVED</p>
+        <strong>{message}</strong>
+        {errorMessage ? <span className="erp-repair-feedback__error" role="alert">{errorMessage}</span> : null}
+      </div>
+      {actionLabel && onAction ? <button type="button" onClick={onAction} disabled={busy}>{actionLabel}</button> : null}
+    </aside>
+  );
 }
 
 function RepairError({ message, onDismiss }: { message: string; onDismiss: () => void }) {

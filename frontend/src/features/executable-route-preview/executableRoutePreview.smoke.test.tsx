@@ -221,6 +221,8 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /requestId !== previewRequestIdRef\.current/);
   assert.match(source, /tabIndex=\{-1\}/);
   assert.match(source, /rootRef\.current\?\.focus/);
+  assert.match(source, /autoFocus/);
+  assert.match(source, /feedbackRef\.current\?\.focus/);
   assert.match(source, /暂时没有可验证的安排说明/);
   assert.doesNotMatch(source, /buildDayRelaxationPlan/);
   assert.doesNotMatch(source, /commands\s*:\s*\[/);

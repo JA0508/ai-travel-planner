@@ -279,6 +279,11 @@ test("Trip Compiler uses a Draft Intent revision before it creates a Planning Ru
   expect(applied.current_revision.parent_revision_id).toBe(repairPreview.current_revision.id);
   expect(applied.current_revision.source_type).toBe("route_edit");
   await expect(page.getByText("这段路线已经松了一点，调整也已经保存。")).toBeVisible();
+  await expect(
+    page
+      .locator(".erp-repair-feedback")
+      .filter({ hasText: "这段路线已经松了一点，调整也已经保存。" }),
+  ).toBeFocused();
   await expect(page.getByRole("button", { name: "撤销刚才的调整" })).toBeVisible();
   await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toHaveCount(0);
   await page.locator(".erp-repair-feedback").scrollIntoViewIfNeeded();
