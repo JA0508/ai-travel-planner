@@ -419,10 +419,14 @@ test("Safe replacement shows one useful candidate without padding", async ({ pag
   await page.setViewportSize({ width: 1440, height: 900 });
   const saved = await createSavedRoadbook(page);
   const before = await currentRevision(page, saved.trip.id);
+  const originalStop = page.locator("[data-roadbook-stop]").filter({
+    has: page.locator(".roadbook-stop__copy > strong").getByText("龙井草堂", { exact: true }),
+  });
   const candidates = await openSafeReplaceCandidates(page, "龙井草堂", 1);
   expect(candidates.options.map((option) => option.name)).toEqual(["茶人村"]);
   await expect(page.locator(".safe-replace-candidate")).toHaveCount(1);
   await page.getByRole("button", { name: "关闭候选地点" }).click();
+  await expect(originalStop).toBeFocused();
   expect((await currentRevision(page, saved.trip.id)).id).toBe(before.id);
   assertClean();
 });

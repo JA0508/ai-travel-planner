@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ExecutableRoutePreview } from "./ExecutableRoutePreview";
+import { ExecutableRoutePreview, focusRoadbookStopAfterReplacementDismissal } from "./ExecutableRoutePreview";
 import { buildRoadbookAdjustmentGuide } from "./SavedLivingRoadbook";
 import type { RoutePreviewItinerary } from "./routePreviewModel";
 
@@ -134,6 +134,33 @@ test("saved roadbook describes only adjustment paths that are currently availabl
     buildRoadbookAdjustmentGuide({ hasSafeReplacement: true, hasRelaxableDay: true }),
     "如需调整：可检查一站的安全替换，或放松偏紧的一天。",
   );
+});
+
+test("dismissing replacement exploration restores focus to the original route stop", () => {
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  let selector = "";
+  let focused = false;
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: {
+      querySelector(value: string) {
+        selector = value;
+        return { focus: () => { focused = true; } };
+      },
+    },
+  });
+
+  try {
+    focusRoadbookStopAfterReplacementDismissal('stop "quoted" \\ slash');
+    assert.equal(selector, '[data-route-stop-id="stop \\"quoted\\" \\\\ slash"]');
+    assert.equal(focused, true);
+  } finally {
+    if (originalDocument) {
+      Object.defineProperty(globalThis, "document", originalDocument);
+    } else {
+      Reflect.deleteProperty(globalThis, "document");
+    }
+  }
 });
 
 test("saved route offers local repair only for a rushed day", () => {

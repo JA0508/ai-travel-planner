@@ -1,9 +1,10 @@
 "use client";
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { postTripJson } from "@/components/trip/tripApiClient";
 import { TRIP_API_ENDPOINTS } from "@/components/trip/tripRuntimeConfig";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
+import { buildRouteStopSelector } from "@/features/trip-workspace/routeWorkspaceEditModel";
 import {
   buildDayLoads,
   buildUserFacingRisks,
@@ -85,6 +86,24 @@ type ReplaceState =
   | { status: "restored"; stopId: string }
   | { status: "error"; message: string; stopId?: string };
 
+function replacementFocusStopId(state: ReplaceState): string | null {
+  if ("target" in state) return state.target.stable_id ?? null;
+  if ("stopId" in state) return state.stopId ?? null;
+  return null;
+}
+
+export function focusRoadbookStopAfterReplacementDismissal(stopId: string): void {
+  if (typeof document === "undefined") return;
+  const restoreFocus = () => {
+    document.querySelector<HTMLElement>(buildRouteStopSelector(stopId))?.focus();
+  };
+  if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+    restoreFocus();
+    return;
+  }
+  window.requestAnimationFrame(restoreFocus);
+}
+
 export function ExecutableRoutePreview({
   itinerary,
   variant,
@@ -100,8 +119,17 @@ export function ExecutableRoutePreview({
   const [replace, setReplace] = useState<ReplaceState>({ status: "idle" });
   const previewRequestIdRef = useRef(0);
   const replaceRequestsRef = useRef(new LatestReplaceRequest());
+  const replacementDismissFocusStopIdRef = useRef<string | null>(null);
   const canRepair = variant === "saved" && Boolean(tripId && baseRevisionId && onApplied);
   const replaceActive = replace.status !== "idle" && replace.status !== "restored";
+
+  useEffect(() => {
+    if (replace.status !== "idle") return;
+    const stopId = replacementDismissFocusStopIdRef.current;
+    if (!stopId) return;
+    replacementDismissFocusStopIdRef.current = null;
+    focusRoadbookStopAfterReplacementDismissal(stopId);
+  }, [replace.status]);
 
   async function previewRelaxation(day: number) {
     if (!tripId || !baseRevisionId) return;
@@ -311,6 +339,7 @@ export function ExecutableRoutePreview({
   }
 
   function dismissReplacement() {
+    replacementDismissFocusStopIdRef.current = replacementFocusStopId(replace);
     replaceRequestsRef.current.cancel();
     setReplace({ status: "idle" });
   }
