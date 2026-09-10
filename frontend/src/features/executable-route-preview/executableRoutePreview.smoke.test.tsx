@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ExecutableRoutePreview } from "./ExecutableRoutePreview";
+import { buildRoadbookAdjustmentGuide } from "./SavedLivingRoadbook";
 import type { RoutePreviewItinerary } from "./routePreviewModel";
 
 const componentPath = fileURLToPath(new URL("./ExecutableRoutePreview.tsx", import.meta.url));
@@ -82,7 +83,7 @@ test("saved route uses an on-the-road workspace vocabulary", () => {
   const html = renderToStaticMarkup(<ExecutableRoutePreview itinerary={saved} variant="saved" tripId="trip-1" baseRevisionId="revision-1" onApplied={() => undefined} />);
   assert.match(html, /这份行程已保存为正式路线/);
   assert.match(html, /role="status"/);
-  assert.match(html, /已保存为正式路线。可以继续调整。/);
+  assert.match(html, /已保存为正式路线。可继续查看路线。/);
   assert.match(html, /LIVING ROADBOOK/);
   assert.match(html, /DAY 01/);
   assert.match(html, /LOCKED/);
@@ -113,6 +114,26 @@ test("saved roadbook gives first-time readers a live route-reading guide", () =>
   assert.match(html, /aria-label="阅读路线提示"/);
   assert.match(html, /正在查看第 1 天/);
   assert.match(html, /点击时间线中的地点，即可切换当前地点；地图区域会同步显示可用的路线信息。/);
+  assert.match(html, /当前没有需要调整的项目；已明确的安排会按原计划保留。/);
+});
+
+test("saved roadbook describes only adjustment paths that are currently available", () => {
+  assert.equal(
+    buildRoadbookAdjustmentGuide({ hasSafeReplacement: false, hasRelaxableDay: false }),
+    "当前没有需要调整的项目；已明确的安排会按原计划保留。",
+  );
+  assert.equal(
+    buildRoadbookAdjustmentGuide({ hasSafeReplacement: true, hasRelaxableDay: false }),
+    "如需调整：可先检查一站是否有安全替换。",
+  );
+  assert.equal(
+    buildRoadbookAdjustmentGuide({ hasSafeReplacement: false, hasRelaxableDay: true }),
+    "如需调整：可请求放松偏紧的一天；已经留好的时间不会移动。",
+  );
+  assert.equal(
+    buildRoadbookAdjustmentGuide({ hasSafeReplacement: true, hasRelaxableDay: true }),
+    "如需调整：可检查一站的安全替换，或放松偏紧的一天。",
+  );
 });
 
 test("saved route offers local repair only for a rushed day", () => {
