@@ -458,7 +458,7 @@ export function ExecutableRoutePreview({
             onAction={() => void undoRelaxation(repair.day, repair.revisionId)}
           />
         ) : null}
-        {repair.status === "restored" ? <RepairFeedback autoFocus message="已恢复调整前的路线。" /> : null}
+        {repair.status === "restored" ? <RepairFeedback autoFocus eyebrow="ROUTE RESTORED" message="已恢复调整前的路线。" /> : null}
         {repair.status === "error" ? <RepairError message={repair.message} onDismiss={dismissRepair} /> : null}
         {replace.status === "applied" ? (
           <RepairFeedback
@@ -470,7 +470,7 @@ export function ExecutableRoutePreview({
             onAction={() => void undoReplacement(replace)}
           />
         ) : null}
-        {replace.status === "restored" ? <RepairFeedback autoFocus message="已恢复原来的地点和相邻路线。" /> : null}
+        {replace.status === "restored" ? <RepairFeedback autoFocus eyebrow="ROUTE RESTORED" message="已恢复原来的地点和相邻路线。" /> : null}
         {replace.status === "error" ? <RepairError message={replace.message} onDismiss={dismissReplacement} /> : null}
         <RoutePreviewStyles />
       </section>
@@ -565,6 +565,7 @@ function repairImpact(preview: MutationPreviewResponse): LocalRepairImpact | und
 
 function RepairFeedback({
   autoFocus = false,
+  eyebrow = "ROUTE SAVED",
   message,
   errorMessage,
   actionLabel,
@@ -572,6 +573,7 @@ function RepairFeedback({
   onAction,
 }: {
   autoFocus?: boolean;
+  eyebrow?: string;
   message: string;
   errorMessage?: string;
   actionLabel?: string;
@@ -600,7 +602,7 @@ function RepairFeedback({
       tabIndex={autoFocus ? -1 : undefined}
     >
       <div>
-        <p>ROUTE SAVED</p>
+        <p>{eyebrow}</p>
         <strong>{message}</strong>
         {errorMessage ? <span className="erp-repair-feedback__error" role="alert">{errorMessage}</span> : null}
       </div>

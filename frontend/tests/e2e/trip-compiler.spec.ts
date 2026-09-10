@@ -364,6 +364,11 @@ test("Trip Compiler keeps the Draft Intent to candidate flow usable on mobile", 
       .locator(".erp-repair-feedback")
       .filter({ hasText: "已恢复调整前的路线。" }),
   ).toBeFocused();
+  await expect(
+    page
+      .locator(".erp-repair-feedback")
+      .filter({ hasText: "已恢复调整前的路线。" }),
+  ).toContainText("ROUTE RESTORED");
   await expect(page.locator(".roadbook__timeline").getByText(repairPreview.impact_summary.local_repair.stop_name, { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByText("LIVING ROADBOOK / SAVED ROUTE")).toBeVisible();
