@@ -148,7 +148,7 @@ function RepairItem({ item, side }: { item: RepairRouteItem; side: "before" | "a
         <span aria-hidden="true" />
         <div>
           <strong>{item.name}</strong>
-          {item.changed ? <small>{side === "before" ? "从这里调整" : "调整后的位置"}</small> : item.fixed ? <small>LOCKED · 已经留好的时间</small> : item.mustVisit ? <small>MUST GO · 你明确想去</small> : null}
+          {item.changed ? <small>{side === "before" ? "从这里调整" : "调整后的安排"}</small> : item.fixed ? <small>已锁定 · 已预留时间</small> : item.mustVisit ? <small>必去 · 你明确想去</small> : null}
         </div>
       </div>
     </div>

@@ -214,6 +214,10 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /target_day: day, goal: "relax_day"/);
   assert.match(source, /应用这次调整/);
   assert.match(source, /保持原路线/);
+  assert.match(source, /调整后的安排/);
+  assert.match(source, /已锁定 · 已预留时间/);
+  assert.match(source, /必去 · 你明确想去/);
+  assert.doesNotMatch(source, /调整后的位置|LOCKED ·|MUST GO ·/);
   assert.match(source, /撤销刚才的调整/);
   assert.match(source, /重试撤销/);
   assert.match(source, /errorMessage/);
