@@ -15,12 +15,12 @@ export function DesktopRouteLeftRail({
 }) {
   const completionCopy = completionPriority === "secondary"
     ? {
-        eyebrow: "Optional completion",
+        eyebrow: "可选补全",
         title: "路线之外还能补什么",
         description: "先处理上方路线风险；这些建议可在随后按需采用。",
       }
     : {
-        eyebrow: "Completion Intelligence",
+        eyebrow: "补全建议",
         title: "优先修哪里",
         description: "只保留最能提升可执行性的建议，证据按需展开。",
       };

@@ -15,6 +15,7 @@ test("describes completion tasks as secondary when a route risk needs attention 
   );
 
   assert.match(html, /路线之外还能补什么/);
+  assert.match(html, /可选补全/);
   assert.match(html, /先处理上方路线风险/);
   assert.doesNotMatch(html, /优先修哪里/);
 });
@@ -25,4 +26,5 @@ test("keeps completion tasks primary when no route risk is present", () => {
   );
 
   assert.match(html, /优先修哪里/);
+  assert.match(html, /补全建议/);
 });
