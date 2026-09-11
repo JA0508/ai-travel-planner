@@ -1,16 +1,30 @@
 "use client";
 
-import { ReactNode } from "react";
+import React, { ReactNode } from "react";
 
 export function DesktopRouteLeftRail({
   commandCenter,
+  completionPriority = "primary",
   completion,
   brief,
 }: {
   commandCenter?: ReactNode;
+  completionPriority?: "primary" | "secondary";
   completion: ReactNode;
   brief: ReactNode;
 }) {
+  const completionCopy = completionPriority === "secondary"
+    ? {
+        eyebrow: "Optional completion",
+        title: "路线之外还能补什么",
+        description: "先处理上方路线风险；这些建议可在随后按需采用。",
+      }
+    : {
+        eyebrow: "Completion Intelligence",
+        title: "优先修哪里",
+        description: "只保留最能提升可执行性的建议，证据按需展开。",
+      };
+
   return (
     <div className="desktop-route-left-rail">
       {commandCenter ? (
@@ -21,9 +35,9 @@ export function DesktopRouteLeftRail({
 
       <section className="desktop-route-left-rail__section">
         <div className="desktop-route-left-rail__heading">
-          <p>Completion Intelligence</p>
-          <h3>优先修哪里</h3>
-          <span>只保留最能提升可执行性的建议，证据按需展开。</span>
+          <p>{completionCopy.eyebrow}</p>
+          <h3>{completionCopy.title}</h3>
+          <span>{completionCopy.description}</span>
         </div>
         {completion}
       </section>

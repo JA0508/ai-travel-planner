@@ -110,6 +110,7 @@ export function RouteWorkspaceContainer({
         desktopLeftRail={
           <DesktopRouteLeftRail
             commandCenter={commandCenter}
+            completionPriority={viewModel.shell.completionPriority}
             completion={completionRail}
             brief={briefRail}
           />

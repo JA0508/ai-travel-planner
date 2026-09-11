@@ -59,6 +59,7 @@ test("prioritizes route risks ahead of unrelated completion tasks", () => {
     label: "补全",
     hint: "其他项",
   });
+  assert.equal(viewModel.shell.completionPriority, "secondary");
   assert.equal(viewModel.shell.sheetTitle, "补全其他信息");
   assert.equal(
     viewModel.shell.sheetDescription,

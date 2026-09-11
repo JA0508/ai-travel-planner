@@ -56,6 +56,7 @@ export type RouteWorkspaceShellViewModel = {
     label: string;
     hint: string;
   };
+  completionPriority: "primary" | "secondary";
   sheetTitle?: string;
   sheetDescription?: string;
 };
@@ -125,6 +126,7 @@ export function buildRouteWorkspaceShellViewModel({
         ? { headerLabel: "其他补全", label: "补全", hint: "其他项" }
         : { headerLabel: "修复空缺", label: "补全", hint: "修空缺" }
       : { headerLabel: "检查路线", label: "检查", hint: "路线" },
+    completionPriority: hasRouteRisk ? "secondary" : "primary",
     sheetTitle: sheetCopy.title,
     sheetDescription: sheetCopy.description,
   };
