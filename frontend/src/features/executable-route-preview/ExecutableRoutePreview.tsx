@@ -159,7 +159,7 @@ export function ExecutableRoutePreview({
 
   async function previewRelaxation(day: number) {
     if (!tripId || !baseRevisionId) return;
-    if (replaceInteractionActive) return;
+    if (repairInteractionActive || replaceInteractionActive) return;
     if (!loads.some((load) => load.day === day)) {
       setRepair({ status: "error", message: "暂时无法读取这一天的行程负载，当前行程没有被修改。" });
       return;

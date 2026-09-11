@@ -236,7 +236,7 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /eyebrow="ROUTE RESTORED"/);
   assert.match(source, /const repairInteractionActive =/);
   assert.match(source, /const replaceInteractionActive =/);
-  assert.match(source, /if \(replaceInteractionActive\) return;/);
+  assert.match(source, /if \(repairInteractionActive \|\| replaceInteractionActive\) return;/);
   assert.match(source, /target\.stable_id \|\| repairInteractionActive\) return;/);
   assert.doesNotMatch(source, /target\.stable_id \|\| repair\.status !== "idle"/);
   assert.match(source, /repairBlocked=\{replaceInteractionActive\}/);
