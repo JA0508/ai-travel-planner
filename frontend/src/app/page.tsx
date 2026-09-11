@@ -1296,6 +1296,8 @@ export default function HomePage() {
     toggleRouteEditMode,
     setRouteEditMode,
     setActiveRouteSheet,
+    focusRouteDay,
+    routeFocusRequest,
   } = useRouteWorkspaceUiState();
   const [completionTaskCandidatePreviews, setCompletionTaskCandidatePreviews] =
     useState<Record<string, CompletionTaskCandidatePreviewResponse>>({});
@@ -4881,6 +4883,7 @@ function buildRegenerationSemanticsViewModel(
             parsedIntent={result.trip_intent?.parsed_intent ?? parsedIntent}
             editing={routeEditMode}
             activeSheet={activeRouteSheet}
+            focusRequest={routeFocusRequest}
             autoFilledCount={commandCenterAutoFilledCount}
             intentLine={commandCenterIntentLines[0] ?? null}
             executionLine={commandCenterSystemLines[0] ?? null}
@@ -5443,7 +5446,18 @@ function buildRegenerationSemanticsViewModel(
               tripReadinessViewModel ? (
                 <TripReadinessPanel
                   viewModel={tripReadinessViewModel}
-                  onPrimaryAction={() => setActiveRouteSheet("completion")}
+                  onPrimaryAction={(action) => {
+                    if (action.kind === "focus-day") {
+                      setActiveRouteSheet(null);
+                      focusRouteDay(action.day);
+                      return;
+                    }
+                    if (action.kind === "review-route") {
+                      setActiveRouteSheet(null);
+                      return;
+                    }
+                    setActiveRouteSheet("completion");
+                  }}
                 />
               ) : null
             }

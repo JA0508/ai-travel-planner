@@ -1,13 +1,13 @@
 "use client";
 
-import type { TripReadinessViewModel } from "./tripReadinessModel";
+import type { TripReadinessAction, TripReadinessViewModel } from "./tripReadinessModel";
 
 export function TripReadinessPanel({
   viewModel,
   onPrimaryAction,
 }: {
   viewModel: TripReadinessViewModel;
-  onPrimaryAction?: () => void;
+  onPrimaryAction?: (action: TripReadinessAction) => void;
 }) {
   return (
     <section className={`trip-readiness-panel trip-readiness-panel--${viewModel.status}`}>
@@ -48,8 +48,12 @@ export function TripReadinessPanel({
         </article>
       )}
 
-      <button type="button" className="trip-readiness-panel__action" onClick={onPrimaryAction}>
-        {viewModel.priorityAction}
+      <button
+        type="button"
+        className="trip-readiness-panel__action"
+        onClick={() => onPrimaryAction?.(viewModel.priorityAction)}
+      >
+        {viewModel.priorityAction.label}
       </button>
 
       <div className="trip-readiness-panel__boundaries">

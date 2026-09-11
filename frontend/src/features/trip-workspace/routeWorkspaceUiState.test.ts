@@ -44,3 +44,18 @@ test("route workspace UI reducer keeps sheet state isolated from edit state", ()
   assert.equal(withoutSheet.editing, true);
   assert.equal(withoutSheet.activeSheet, null);
 });
+
+test("route workspace focus requests preserve the current editing and sheet state", () => {
+  const withSheet = reduceRouteWorkspaceUiState(initialRouteWorkspaceUiState, {
+    type: "set_active_sheet",
+    sheet: "completion",
+  });
+  const focused = reduceRouteWorkspaceUiState(withSheet, {
+    type: "focus_day",
+    day: 3,
+  });
+
+  assert.equal(focused.activeSheet, "completion");
+  assert.equal(focused.editing, false);
+  assert.deepEqual(focused.focusRequest, { day: 3, requestId: 1 });
+});

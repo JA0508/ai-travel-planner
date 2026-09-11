@@ -142,6 +142,7 @@ type MobileEditRouteWorkspaceProps = {
   parsedIntent?: ParsedTripIntentLike | null;
   overview?: RouteWorkspaceOverview | null;
   mode?: "browse" | "edit";
+  focusRequest?: { day: number; requestId: number } | null;
   routePreviewEndpoint?: string;
   poiDetailEndpoint?: string;
   initialRoutePreviewMap?: RoutePreviewMap;
@@ -671,6 +672,7 @@ export function MobileEditRouteWorkspace({
   parsedIntent,
   overview,
   mode = "edit",
+  focusRequest,
   routePreviewEndpoint,
   poiDetailEndpoint,
   initialRoutePreviewMap,
@@ -737,6 +739,21 @@ export function MobileEditRouteWorkspace({
     handleToggleMapDayVisibility,
     handleShowAllMapDays,
   } = workspace;
+
+  useEffect(() => {
+    const requestedDay = focusRequest?.day;
+    if (!requestedDay || !editableDays.some((day) => day.day === requestedDay)) {
+      return;
+    }
+    setSelectedDay(requestedDay);
+    setShowOverview(false);
+    setShowUnplanned(false);
+    setActiveStopId(null);
+    const frame = window.requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(`[data-route-day="${requestedDay}"]`)?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusRequest?.day, focusRequest?.requestId]);
   const [isPanelLayout, setIsPanelLayout] = useState(false);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const lastActiveStopIdRef = useRef<string | null>(null);
@@ -941,6 +958,7 @@ export function MobileEditRouteWorkspace({
             <button
               key={`edit-day-tab-${day.day}`}
               type="button"
+              data-route-day={day.day}
               onClick={() => {
                 setSelectedDay(day.day);
                 setShowUnplanned(false);

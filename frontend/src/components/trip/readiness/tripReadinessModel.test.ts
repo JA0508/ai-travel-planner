@@ -94,6 +94,11 @@ test("planner realism high warnings make the trip not ready", () => {
 
   assert.equal(model.status, "not-ready");
   assert.equal(model.primaryIssue?.severity, "high");
+  assert.deepEqual(model.priorityAction, {
+    kind: "focus-day",
+    day: 1,
+    label: "查看 Day 1 路线",
+  });
 });
 
 test("protected boundaries are surfaced when fixed events exist", () => {

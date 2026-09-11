@@ -24,6 +24,7 @@ export type RouteWorkspaceContainerProps = {
   parsedIntent?: ParsedTripIntentLike | null;
   editing: boolean;
   activeSheet: RouteWorkspaceSheetKey | null;
+  focusRequest?: { day: number; requestId: number } | null;
   autoFilledCount: number;
   intentLine?: string | null;
   executionLine?: string | null;
@@ -49,6 +50,7 @@ export function RouteWorkspaceContainer({
   parsedIntent,
   editing,
   activeSheet,
+  focusRequest,
   autoFilledCount,
   intentLine,
   executionLine,
@@ -97,6 +99,7 @@ export function RouteWorkspaceContainer({
     >
       <MobileEditRouteWorkspace
         mode={editing ? "edit" : "browse"}
+        focusRequest={focusRequest}
         itinerary={itinerary}
         parsedIntent={parsedIntent}
         overview={viewModel.overview}

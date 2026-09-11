@@ -16,6 +16,8 @@ export function FixtureResultWorkspace({ fixtureKey }: { fixtureKey: string }) {
     activeRouteSheet,
     toggleRouteEditMode,
     setActiveRouteSheet,
+    focusRouteDay,
+    routeFocusRequest,
   } = useRouteWorkspaceUiState();
   const fixture = getResultWorkspaceFixture(fixtureKey);
   const readiness = useMemo(
@@ -56,6 +58,7 @@ export function FixtureResultWorkspace({ fixtureKey }: { fixtureKey: string }) {
         editing={routeEditMode}
         onToggleEditing={toggleRouteEditMode}
         activeSheet={activeRouteSheet}
+        focusRequest={routeFocusRequest}
         onSheetChange={setActiveRouteSheet}
         autoFilledCount={fixture.completion?.auto_filled_scenic_count ?? 0}
         intentLine={fixture.planningAssumptions.summary_lines?.[0] ?? null}
@@ -70,7 +73,23 @@ export function FixtureResultWorkspace({ fixtureKey }: { fixtureKey: string }) {
             </p>
           </section>
         }
-        commandCenter={<TripReadinessPanel viewModel={readiness} onPrimaryAction={() => setActiveRouteSheet("completion")} />}
+        commandCenter={(
+          <TripReadinessPanel
+            viewModel={readiness}
+            onPrimaryAction={(action) => {
+              if (action.kind === "focus-day") {
+                setActiveRouteSheet(null);
+                focusRouteDay(action.day);
+                return;
+              }
+              if (action.kind === "review-route") {
+                setActiveRouteSheet(null);
+                return;
+              }
+              setActiveRouteSheet("completion");
+            }}
+          />
+        )}
         completionRail={
           <p style={{ margin: 0, color: "var(--ec-slate)", lineHeight: 1.55 }}>
             Fixture: {fixture.completion?.action_tasks?.[0]?.reason ?? "No urgent completion suggestion."}

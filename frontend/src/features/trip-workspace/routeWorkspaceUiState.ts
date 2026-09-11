@@ -4,17 +4,20 @@ import type { RouteWorkspaceSheetKey } from "@/components/trip/RouteWorkspaceShe
 export type RouteWorkspaceUiState = {
   editing: boolean;
   activeSheet: RouteWorkspaceSheetKey | null;
+  focusRequest: { day: number; requestId: number } | null;
 };
 
 export type RouteWorkspaceUiAction =
   | { type: "toggle_editing" }
   | { type: "set_editing"; editing: boolean }
   | { type: "set_active_sheet"; sheet: RouteWorkspaceSheetKey | null }
+  | { type: "focus_day"; day: number }
   | { type: "close_active_sheet" };
 
 export const initialRouteWorkspaceUiState: RouteWorkspaceUiState = {
   editing: false,
   activeSheet: null,
+  focusRequest: null,
 };
 
 export function reduceRouteWorkspaceUiState(
@@ -42,6 +45,16 @@ export function reduceRouteWorkspaceUiState(
     };
   }
 
+  if (action.type === "focus_day") {
+    return {
+      ...state,
+      focusRequest: {
+        day: action.day,
+        requestId: (state.focusRequest?.requestId ?? 0) + 1,
+      },
+    };
+  }
+
   return {
     ...state,
     activeSheet: null,
@@ -60,6 +73,8 @@ export function useRouteWorkspaceUiState(
     setRouteEditMode: (editing: boolean) => dispatch({ type: "set_editing", editing }),
     setActiveRouteSheet: (sheet: RouteWorkspaceSheetKey | null) =>
       dispatch({ type: "set_active_sheet", sheet }),
+    focusRouteDay: (day: number) => dispatch({ type: "focus_day", day }),
     closeActiveRouteSheet: () => dispatch({ type: "close_active_sheet" }),
+    routeFocusRequest: state.focusRequest,
   };
 }

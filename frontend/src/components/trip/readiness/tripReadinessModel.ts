@@ -4,12 +4,18 @@ export type TripReadinessStatus = "ready" | "minor-gaps" | "needs-attention" | "
 
 export type ReadinessIssue = {
   key: string;
+  source: "realism" | "completion" | "score" | "fallback";
   title: string;
   reason: string;
   impact: string;
   scope?: string;
   severity: "low" | "medium" | "high";
 };
+
+export type TripReadinessAction =
+  | { kind: "focus-day"; day: number; label: string }
+  | { kind: "open-completion"; label: string }
+  | { kind: "review-route"; label: string };
 
 export type ProtectedBoundary = {
   key: string;
@@ -25,7 +31,7 @@ export type TripReadinessViewModel = {
   primaryIssue?: ReadinessIssue;
   secondaryIssues: ReadinessIssue[];
   protectedBoundaries: ProtectedBoundary[];
-  priorityAction: string;
+  priorityAction: TripReadinessAction;
   confidenceLabel: string;
   metrics: Array<{
     label: string;
@@ -221,6 +227,7 @@ function deriveReadinessStatus({
 function buildRealismIssues(issues: PlannerRealismIssueLike[]): ReadinessIssue[] {
   return issues.map((issue, index) => ({
     key: `realism-${issue.code ?? index}`,
+    source: "realism",
     title: issue.title ?? "路线现实性需要确认",
     reason: issue.detail ?? "调度器发现当前安排可能影响真实执行。",
     impact: issue.severity === "high" ? "可能阻止直接照走" : "会影响当天节奏和路线可信度",
@@ -232,6 +239,7 @@ function buildRealismIssues(issues: PlannerRealismIssueLike[]): ReadinessIssue[]
 function buildCompletionIssues(tasks: CompletionTaskLike[], sparseBlocks: string[]): ReadinessIssue[] {
   const taskIssues = tasks.slice(0, 4).map((task, index) => ({
     key: `completion-${task.task_instance_key ?? task.task_id ?? index}`,
+    source: "completion" as const,
     title: normalizeSentence(task.title),
     reason: normalizeSentence(task.reason),
     impact: task.priority === "high" ? "优先处理后，路线更接近可执行版本" : "处理后可提升行程连贯性",
@@ -246,6 +254,7 @@ function buildCompletionIssues(tasks: CompletionTaskLike[], sparseBlocks: string
   return [
     {
       key: "completion-sparse-blocks",
+      source: "completion",
       title: "存在未补齐时间段",
       reason: sparseBlocks.slice(0, 3).join("、"),
       impact: "用户出行时会遇到需要临时决策的空白段",
@@ -272,6 +281,7 @@ function buildScoreBreakdownIssues(score: CompletionScoreBreakdownLike | null): 
     }
     return [{
       key: `score-${key}`,
+      source: "score",
       title,
       reason,
       impact: "补齐这个维度可以提高路线可执行性",
@@ -287,6 +297,7 @@ function buildFallbackDensityIssues(days: DayLike[]): ReadinessIssue[] {
     .slice(0, 2)
     .map((day) => ({
       key: `fallback-density-day-${day.day}`,
+      source: "fallback" as const,
       title: `Day ${day.day} 内容偏少`,
       reason: "当前天的已排停留点很少，可能需要用户临时补决定。",
       impact: "适合优先查看补全建议或确认是否刻意留白",
@@ -378,14 +389,28 @@ function buildSummary(
   return "系统已经生成路线骨架，但后端没有返回更细的 readiness 证据。";
 }
 
-function buildPriorityAction(primaryIssue: ReadinessIssue | undefined, taskCount: number): string {
+function buildPriorityAction(
+  primaryIssue: ReadinessIssue | undefined,
+  taskCount: number,
+): TripReadinessAction {
+  if (primaryIssue?.source === "realism" && primaryIssue.scope) {
+    const day = dayFromScope(primaryIssue.scope);
+    if (day !== null) {
+      return { kind: "focus-day", day, label: `查看 Day ${day} 路线` };
+    }
+  }
   if (primaryIssue) {
-    return `先处理：${primaryIssue.title}`;
+    return { kind: "open-completion", label: `先处理：${primaryIssue.title}` };
   }
   if (taskCount > 0) {
-    return "先查看最高优先级补全建议";
+    return { kind: "open-completion", label: "先查看最高优先级补全建议" };
   }
-  return "进入地图和时间线做最后检查";
+  return { kind: "review-route", label: "进入地图和时间线做最后检查" };
+}
+
+function dayFromScope(scope: string): number | null {
+  const match = scope.match(/^Day\s+(\d+)$/);
+  return match ? Number(match[1]) : null;
 }
 
 function buildConfidenceLabel(
