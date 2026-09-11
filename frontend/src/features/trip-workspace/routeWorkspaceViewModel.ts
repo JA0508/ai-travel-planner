@@ -101,7 +101,7 @@ export function buildRouteWorkspaceShellViewModel({
   const status = itinerary.planner_realism?.status;
   const hasCompletionTasks = (itinerary.completion_intelligence?.action_tasks?.length ?? 0) > 0;
   const hasRouteRisk = status === "needs_repair";
-  const sheetCopy = buildRouteWorkspaceSheetCopy(activeSheet, hasCompletionTasks);
+  const sheetCopy = buildRouteWorkspaceSheetCopy(activeSheet, hasCompletionTasks, hasRouteRisk);
 
   return {
     city,
@@ -155,7 +155,11 @@ export function buildRouteWorkspaceOverview({
   };
 }
 
-export function buildRouteWorkspaceSheetCopy(activeSheet: RouteWorkspaceSheetKey | null, hasCompletionTasks = true): {
+export function buildRouteWorkspaceSheetCopy(
+  activeSheet: RouteWorkspaceSheetKey | null,
+  hasCompletionTasks = true,
+  hasRouteRisk = false,
+): {
   title?: string;
   description?: string;
 } {
@@ -164,6 +168,12 @@ export function buildRouteWorkspaceSheetCopy(activeSheet: RouteWorkspaceSheetKey
       return {
         title: "路线检查",
         description: "当前没有待补齐项目；可以按需查看路线依据和已保护边界。",
+      };
+    }
+    if (hasRouteRisk) {
+      return {
+        title: "补全其他信息",
+        description: "这些是路线风险之外的空缺；处理它们不会替代路线风险确认。",
       };
     }
     return {
