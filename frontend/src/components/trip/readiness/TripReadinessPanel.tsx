@@ -12,7 +12,7 @@ export function TripReadinessPanel({
   return (
     <section className={`trip-readiness-panel trip-readiness-panel--${viewModel.status}`}>
       <div className="trip-readiness-panel__header">
-        <span className="trip-readiness-panel__kicker">Trip Readiness</span>
+        <span className="trip-readiness-panel__kicker">行程就绪度</span>
         <div className="trip-readiness-panel__title-row">
           <h3>{viewModel.statusLabel}</h3>
           <span>{viewModel.confidenceLabel}</span>
@@ -57,7 +57,7 @@ export function TripReadinessPanel({
       </button>
 
       <div className="trip-readiness-panel__boundaries">
-        <span>Protected boundaries</span>
+        <span>已保护的边界</span>
         {viewModel.protectedBoundaries.map((boundary) => (
           <div key={boundary.key}>
             <strong>{boundary.label}</strong>

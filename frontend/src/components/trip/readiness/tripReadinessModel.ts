@@ -450,15 +450,15 @@ function normalizeSeverity(value?: string): ReadinessIssue["severity"] {
 
 function statusLabel(status: TripReadinessStatus): string {
   if (status === "ready") {
-    return "Ready to follow";
+    return "路线已就绪";
   }
   if (status === "minor-gaps") {
-    return "Usable with minor gaps";
+    return "可参考，仍有空缺";
   }
   if (status === "needs-attention") {
-    return "Needs attention";
+    return "需要先处理";
   }
-  return "Not ready yet";
+  return "暂不建议照走";
 }
 
 function clampPercent(value?: number | null): number | null {

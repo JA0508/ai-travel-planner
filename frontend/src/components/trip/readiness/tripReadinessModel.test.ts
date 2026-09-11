@@ -31,6 +31,7 @@ test("marks complete trips without major risks as ready", () => {
   });
 
   assert.equal(model.status, "ready");
+  assert.equal(model.statusLabel, "路线已就绪");
   assert.equal(model.primaryIssue, undefined);
 });
 
@@ -51,6 +52,7 @@ test("keeps minor gaps distinct from severe readiness failures", () => {
   });
 
   assert.equal(model.status, "minor-gaps");
+  assert.equal(model.statusLabel, "可参考，仍有空缺");
 });
 
 test("elevates obvious sparse schedules to needs attention", () => {
@@ -69,6 +71,7 @@ test("elevates obvious sparse schedules to needs attention", () => {
   });
 
   assert.equal(model.status, "needs-attention");
+  assert.equal(model.statusLabel, "需要先处理");
   assert.equal(model.primaryIssue?.title, "存在未补齐时间段");
 });
 
@@ -93,6 +96,7 @@ test("planner realism high warnings make the trip not ready", () => {
   });
 
   assert.equal(model.status, "not-ready");
+  assert.equal(model.statusLabel, "暂不建议照走");
   assert.equal(model.primaryIssue?.severity, "high");
   assert.deepEqual(model.priorityAction, {
     kind: "focus-day",
