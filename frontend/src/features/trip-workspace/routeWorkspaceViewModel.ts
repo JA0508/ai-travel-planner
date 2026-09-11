@@ -51,6 +51,11 @@ export type RouteWorkspaceShellViewModel = {
   statusLabel: string;
   statusTone: "stable" | "attention";
   subtitle: string;
+  completionAction: {
+    headerLabel: string;
+    label: string;
+    hint: string;
+  };
   sheetTitle?: string;
   sheetDescription?: string;
 };
@@ -94,7 +99,8 @@ export function buildRouteWorkspaceShellViewModel({
   activeSheet,
 }: Pick<RouteWorkspaceContainerViewModelInput, "city" | "itinerary" | "editing" | "activeSheet">): RouteWorkspaceShellViewModel {
   const status = itinerary.planner_realism?.status;
-  const sheetCopy = buildRouteWorkspaceSheetCopy(activeSheet);
+  const hasCompletionTasks = (itinerary.completion_intelligence?.action_tasks?.length ?? 0) > 0;
+  const sheetCopy = buildRouteWorkspaceSheetCopy(activeSheet, hasCompletionTasks);
 
   return {
     city,
@@ -109,6 +115,9 @@ export function buildRouteWorkspaceShellViewModel({
     subtitle: editing
       ? "拖动、锁定、删除或先放进待规划，完成后这版会成为当前计划。"
       : "先顺着路线看一遍。想改顺序、删点或继续补全时，再进入编辑。",
+    completionAction: hasCompletionTasks
+      ? { headerLabel: "修复空缺", label: "补全", hint: "修空缺" }
+      : { headerLabel: "检查路线", label: "检查", hint: "路线" },
     sheetTitle: sheetCopy.title,
     sheetDescription: sheetCopy.description,
   };
@@ -139,11 +148,17 @@ export function buildRouteWorkspaceOverview({
   };
 }
 
-export function buildRouteWorkspaceSheetCopy(activeSheet: RouteWorkspaceSheetKey | null): {
+export function buildRouteWorkspaceSheetCopy(activeSheet: RouteWorkspaceSheetKey | null, hasCompletionTasks = true): {
   title?: string;
   description?: string;
 } {
   if (activeSheet === "completion") {
+    if (!hasCompletionTasks) {
+      return {
+        title: "路线检查",
+        description: "当前没有待补齐项目；可以按需查看路线依据和已保护边界。",
+      };
+    }
     return {
       title: "补全这条路线",
       description: "只看还缺什么、下一步怎么补，不把解释压在主路线前面。",

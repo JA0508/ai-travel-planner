@@ -85,6 +85,7 @@ export function RouteWorkspaceContainer({
       statusLabel={viewModel.shell.statusLabel}
       statusTone={viewModel.shell.statusTone}
       subtitle={viewModel.shell.subtitle}
+      completionAction={viewModel.shell.completionAction}
       editing={editing}
       onToggleEditing={onToggleEditing}
       activeSheet={activeSheet}

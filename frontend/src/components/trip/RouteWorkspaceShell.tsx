@@ -10,6 +10,11 @@ type RouteWorkspaceShellProps = {
   statusLabel: string;
   statusTone?: "stable" | "attention";
   subtitle: string;
+  completionAction: {
+    headerLabel: string;
+    label: string;
+    hint: string;
+  };
   editing: boolean;
   onToggleEditing: () => void;
   children: ReactNode;
@@ -21,12 +26,11 @@ type RouteWorkspaceShellProps = {
   headerUtility?: ReactNode;
 };
 
-const ACTIONS: Array<{
+const SECONDARY_ACTIONS: Array<{
   key: RouteWorkspaceSheetKey;
   label: string;
   hint: string;
 }> = [
-  { key: "completion", label: "补全", hint: "修空缺" },
   { key: "adjust", label: "改线", hint: "一句话" },
   { key: "share", label: "导出", hint: "分享" },
   { key: "more", label: "依据", hint: "边界" },
@@ -38,6 +42,7 @@ export function RouteWorkspaceShell({
   statusLabel,
   statusTone = "stable",
   subtitle,
+  completionAction,
   editing,
   onToggleEditing,
   children,
@@ -77,9 +82,9 @@ export function RouteWorkspaceShell({
               activeSheet === "completion" ? "is-active" : ""
             }`}
           >
-            修复空缺
+            {completionAction.headerLabel}
           </button>
-          {ACTIONS.filter((action) => action.key !== "completion").map((action) => {
+          {SECONDARY_ACTIONS.map((action) => {
             const active = activeSheet === action.key;
             return (
               <button
@@ -108,7 +113,7 @@ export function RouteWorkspaceShell({
       <div className="route-workspace-shell__body">{children}</div>
 
       <nav className="route-workspace-shell__dock" aria-label="路线操作">
-        {ACTIONS.map((action) => {
+        {[{ key: "completion" as const, label: completionAction.label, hint: completionAction.hint }, ...SECONDARY_ACTIONS].map((action) => {
           const active = activeSheet === action.key;
           return (
             <button
