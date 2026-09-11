@@ -100,6 +100,7 @@ export function buildRouteWorkspaceShellViewModel({
 }: Pick<RouteWorkspaceContainerViewModelInput, "city" | "itinerary" | "editing" | "activeSheet">): RouteWorkspaceShellViewModel {
   const status = itinerary.planner_realism?.status;
   const hasCompletionTasks = (itinerary.completion_intelligence?.action_tasks?.length ?? 0) > 0;
+  const hasRouteRisk = status === "needs_repair";
   const sheetCopy = buildRouteWorkspaceSheetCopy(activeSheet, hasCompletionTasks);
 
   return {
@@ -108,15 +109,21 @@ export function buildRouteWorkspaceShellViewModel({
     statusLabel:
       status === "executable"
         ? "骨架可走"
+        : hasRouteRisk
+          ? "先看风险"
         : status === "unstable"
           ? "需要重排"
           : "还有空缺",
     statusTone: status === "executable" ? "stable" : "attention",
-    subtitle: editing
-      ? "拖动、锁定、删除或先放进待规划，完成后这版会成为当前计划。"
-      : "先顺着路线看一遍。想改顺序、删点或继续补全时，再进入编辑。",
+    subtitle: hasRouteRisk
+      ? "先确认路线风险，再拖动、锁定、删除或补全其他信息。"
+      : editing
+        ? "拖动、锁定、删除或先放进待规划，完成后这版会成为当前计划。"
+        : "先顺着路线看一遍。想改顺序、删点或继续补全时，再进入编辑。",
     completionAction: hasCompletionTasks
-      ? { headerLabel: "修复空缺", label: "补全", hint: "修空缺" }
+      ? hasRouteRisk
+        ? { headerLabel: "其他补全", label: "补全", hint: "其他项" }
+        : { headerLabel: "修复空缺", label: "补全", hint: "修空缺" }
       : { headerLabel: "检查路线", label: "检查", hint: "路线" },
     sheetTitle: sheetCopy.title,
     sheetDescription: sheetCopy.description,

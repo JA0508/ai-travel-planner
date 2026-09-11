@@ -38,7 +38,7 @@ test("builds stable shell and overview state for an executable fixture", () => {
   assert.equal(viewModel.overview.intentLine, "西湖文化线");
 });
 
-test("keeps route-risk fixtures in attention state without changing the itinerary contract", () => {
+test("prioritizes route risks ahead of unrelated completion tasks", () => {
   const fixture = getResultWorkspaceFixture("route-risk");
   const viewModel = buildRouteWorkspaceContainerViewModel({
     city: fixture.city,
@@ -51,15 +51,19 @@ test("keeps route-risk fixtures in attention state without changing the itinerar
     weakestDay: { day: 3, reason: "离开前跨区移动偏长" },
   });
 
-  assert.equal(viewModel.shell.statusLabel, "还有空缺");
+  assert.equal(viewModel.shell.statusLabel, "先看风险");
   assert.equal(viewModel.shell.statusTone, "attention");
-  assert.equal(viewModel.shell.subtitle, "拖动、锁定、删除或先放进待规划，完成后这版会成为当前计划。");
+  assert.equal(viewModel.shell.subtitle, "先确认路线风险，再拖动、锁定、删除或补全其他信息。");
   assert.deepEqual(viewModel.shell.completionAction, {
-    headerLabel: "修复空缺",
+    headerLabel: "其他补全",
     label: "补全",
-    hint: "修空缺",
+    hint: "其他项",
   });
-  assert.equal(viewModel.shell.sheetTitle, "补全这条路线");
+  assert.equal(viewModel.shell.sheetTitle, "补全其他信息");
+  assert.equal(
+    viewModel.shell.sheetDescription,
+    "这些是路线风险之外的空缺；处理它们不会替代路线风险确认。",
+  );
   assert.equal(viewModel.overview.realismStatus, "needs_repair");
   assert.deepEqual(viewModel.overview.weakestDay, { day: 3, reason: "离开前跨区移动偏长" });
 });
@@ -83,6 +87,10 @@ test("documents every workspace action sheet copy", () => {
   assert.deepEqual(buildRouteWorkspaceSheetCopy("completion", false), {
     title: "路线检查",
     description: "当前没有待补齐项目；可以按需查看路线依据和已保护边界。",
+  });
+  assert.deepEqual(buildRouteWorkspaceSheetCopy("completion", true, true), {
+    title: "补全其他信息",
+    description: "这些是路线风险之外的空缺；处理它们不会替代路线风险确认。",
   });
 });
 
