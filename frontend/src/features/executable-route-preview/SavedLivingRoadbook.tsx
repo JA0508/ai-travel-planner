@@ -20,6 +20,10 @@ import {
   type RoutePreviewItinerary,
   type RoutePreviewItem,
 } from "./routePreviewModel";
+import {
+  buildRoadbookRelaxAction,
+  type RoadbookRepairStatus,
+} from "./roadbookRepairAction";
 import { isSafeReplaceEligible } from "./safeReplaceModel";
 
 type Props = {
@@ -27,7 +31,7 @@ type Props = {
   destination?: string | null;
   loads: DayLoad[];
   canRepair: boolean;
-  repairStatus: "idle" | "previewing" | "review" | "applying" | "undoing" | "applied" | "restored" | "error";
+  repairStatus: RoadbookRepairStatus;
   repairBlocked: boolean;
   repairDay?: number;
   onRelaxDay: (day: number) => void;
@@ -208,9 +212,9 @@ export function SavedLivingRoadbook({
           <RoadbookDayNote
             load={selectedLoad}
             canRepair={canRepair}
-            busy={repairStatus === "previewing" || repairStatus === "applying" || repairStatus === "undoing"}
+            repairStatus={repairStatus}
             blocked={repairBlocked}
-            previewing={repairStatus === "previewing" && repairDay === selectedDay}
+            repairDay={repairDay}
             onRelax={() => onRelaxDay(selectedDay)}
           />
         </section>
@@ -301,19 +305,25 @@ function RoadbookLeg({ item }: { item: ScheduledItemLike }) {
 function RoadbookDayNote({
   load,
   canRepair,
-  busy,
+  repairStatus,
   blocked,
-  previewing,
+  repairDay,
   onRelax,
 }: {
   load: DayLoad | null;
   canRepair: boolean;
-  busy: boolean;
+  repairStatus: RoadbookRepairStatus;
   blocked: boolean;
-  previewing: boolean;
+  repairDay?: number;
   onRelax: () => void;
 }) {
   const tight = load?.pace === "rushed" || load?.pace === "infeasible";
+  const action = buildRoadbookRelaxAction({
+    day: load?.day ?? 1,
+    repairStatus,
+    repairDay,
+    blocked,
+  });
   return (
     <aside className={`roadbook-day-note ${tight ? "is-tight" : ""}`}>
       <p>DAY {String(load?.day ?? 1).padStart(2, "0")} / {tight ? "A LITTLE TIGHT" : "FIELD NOTE"}</p>
@@ -324,8 +334,8 @@ function RoadbookDayNote({
           : "可以先查看路线，再决定是否做局部调整。"}
       </span>
       {tight && canRepair ? (
-        <button type="button" data-roadbook-relax-day={load?.day} aria-label={`让第 ${load?.day ?? 1} 天轻松一些`} onClick={onRelax} disabled={busy || blocked}>
-          {previewing ? "正在看看怎么把这一天松一点…" : busy ? "正在保存路线…" : blocked ? "请先完成当前调整" : "帮我松一点"} {!busy && !blocked ? <i aria-hidden="true">→</i> : null}
+        <button type="button" data-roadbook-relax-day={load?.day} aria-label={action.ariaLabel} onClick={onRelax} disabled={action.disabled}>
+          {action.label} {action.showArrow ? <i aria-hidden="true">→</i> : null}
         </button>
       ) : null}
     </aside>

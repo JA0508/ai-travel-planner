@@ -242,7 +242,7 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /repairBlocked=\{replaceInteractionActive\}/);
   assert.match(source, /repairInteractionActive && \(replace\.status === "idle" \|\| replace\.status === "restored"\)/);
   assert.match(source, /replaceControlStatus: "available" \| "blocked"/);
-  assert.match(source, /blocked \? "请先完成当前调整"/);
+  assert.match(source, /buildRoadbookRelaxAction/);
   assert.match(source, /blocked: "请先完成当前调整"/);
   assert.match(source, /暂时没有可验证的安排说明/);
   assert.doesNotMatch(source, /buildDayRelaxationPlan/);
