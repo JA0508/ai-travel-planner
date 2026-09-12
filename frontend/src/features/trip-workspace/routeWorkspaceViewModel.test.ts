@@ -259,6 +259,10 @@ test("documents every workspace action sheet copy", () => {
   assert.match(buildRouteWorkspaceSheetCopy("adjust").description ?? "", /一句话/);
   assert.match(buildRouteWorkspaceSheetCopy("share").title ?? "", /分享/);
   assert.match(buildRouteWorkspaceSheetCopy("more").description ?? "", /住宿/);
+  assert.deepEqual(buildRouteWorkspaceSheetCopy("more", true, true), {
+    title: "路线风险依据",
+    description: "先核对系统发现的路线风险；没有可靠日期时，不把风险伪装成某一天的问题。",
+  });
   assert.deepEqual(buildRouteWorkspaceSheetCopy("completion", false), {
     title: "路线检查",
     description: "当前没有待补齐项目；可以按需查看路线依据和已保护边界。",

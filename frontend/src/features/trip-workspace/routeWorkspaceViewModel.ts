@@ -273,6 +273,12 @@ export function buildRouteWorkspaceSheetCopy(
   }
 
   if (activeSheet === "more") {
+    if (hasRouteRisk) {
+      return {
+        title: "路线风险依据",
+        description: "先核对系统发现的路线风险；没有可靠日期时，不把风险伪装成某一天的问题。",
+      };
+    }
     return {
       title: "更多旅行信息",
       description: "查看系统理解、住宿离开建议和当前计划。",

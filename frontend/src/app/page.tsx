@@ -5370,6 +5370,9 @@ function buildRegenerationSemanticsViewModel(
                 </div>
               ) : activeRouteSheet === "more" ? (
                 <div style={{ display: "grid", gap: 14 }}>
+                  {result.planner_realism?.status === "needs_repair" || result.planner_realism?.status === "unstable" ? (
+                    <PlannerRealismCard plannerRealism={result.planner_realism} />
+                  ) : null}
                   {itineraryValueSummary ? (
                     <ExplainabilityCard
                       title="来自你的输入"
