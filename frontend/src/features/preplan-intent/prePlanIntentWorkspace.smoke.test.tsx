@@ -148,7 +148,8 @@ test("pre-plan preview can take a blocked direct place to its confirmation contr
   assert.match(source, /feedback\.action === "focus_place_confirmation"[\s\S]*requestPlaceConfirmationFocus\("must_place", \{ stableId: feedback\.actionPlaceStableId \}\)/);
   assert.match(source, /placeFocusRequest=\{placeConfirmationFocusRequest \?\? undefined\}/);
   assert.match(queueSource, /placeFocusRequest/);
-  assert.match(queueSource, /scrollIntoView/);
+  assert.match(queueSource, /window\.scrollTo/);
+  assert.doesNotMatch(queueSource, /scrollIntoView/);
   assert.match(source, /plannerHandoffRecoveryPlaceStableId\(action, result\.context\)/);
   assert.match(queueSource, /item\.identityId === placeFocusRequest\.stableId/);
 });
@@ -173,6 +174,7 @@ test("blocked place recovery focuses the next confirmation action instead of the
 
   assert.match(queueSource, /focusPlaceConfirmationAction\(target\)/);
   assert.match(queueSource, /\.uc-place-accept, \.uc-place-search-toggle, input, \.uc-confirmation-item-action/);
+  assert.match(queueSource, /focus\(\{ preventScroll: true \}\)/);
   assert.doesNotMatch(queueSource, /target\?\.querySelector<HTMLButtonElement>\("button"\)\?\.focus\(\)/);
 });
 

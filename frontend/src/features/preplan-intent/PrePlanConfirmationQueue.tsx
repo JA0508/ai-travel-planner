@@ -17,6 +17,20 @@ export function shouldKeepPreviousPlaceSearchSuggestions(
   return suggestions?.query === query.trim();
 }
 
+export function centeredConfirmationScrollTop(
+  target: Pick<DOMRect, "top" | "height">,
+  currentScrollY: number,
+  viewportHeight: number,
+): number {
+  const safeCurrentScrollY = Number.isFinite(currentScrollY) ? Math.max(0, currentScrollY) : 0;
+  const safeViewportHeight = Number.isFinite(viewportHeight) ? Math.max(0, viewportHeight) : 0;
+  const safeTargetTop = Number.isFinite(target.top) ? target.top : 0;
+  const safeTargetHeight = Number.isFinite(target.height) ? Math.max(0, target.height) : 0;
+  const centeredOffset = Math.max(0, (safeViewportHeight - safeTargetHeight) / 2);
+
+  return Math.max(0, Math.round(safeCurrentScrollY + safeTargetTop - centeredOffset));
+}
+
 type Props = {
   items: ConfirmationItem[];
   confirmedItems: ConfirmedItem[];
@@ -115,8 +129,12 @@ export function PrePlanConfirmationQueue({
     setExpandedItemId(placeFocusItemId);
     const frame = window.requestAnimationFrame(() => {
       const target = document.getElementById(`confirmation-item-${placeFocusItemId}`);
-      target?.scrollIntoView({ behavior: "smooth", block: "center" });
-      if (target) focusPlaceConfirmationAction(target);
+      if (!target) return;
+      window.scrollTo({
+        top: centeredConfirmationScrollTop(target.getBoundingClientRect(), window.scrollY, window.innerHeight),
+        behavior: "smooth",
+      });
+      focusPlaceConfirmationAction(target);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [placeFocusItemId, placeFocusRequest?.requestId]);
@@ -173,7 +191,9 @@ export function PrePlanConfirmationQueue({
 }
 
 function focusPlaceConfirmationAction(target: HTMLElement) {
-  target.querySelector<HTMLElement>(".uc-place-accept, .uc-place-search-toggle, input, .uc-confirmation-item-action")?.focus();
+  target
+    .querySelector<HTMLElement>(".uc-place-accept, .uc-place-search-toggle, input, .uc-confirmation-item-action")
+    ?.focus({ preventScroll: true });
 }
 
 function ConfirmationItemCard({
