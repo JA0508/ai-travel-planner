@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode } from "react";
+import React, { ReactNode } from "react";
 
 export type RouteWorkspaceSheetKey = "completion" | "adjust" | "share" | "more";
 
@@ -62,6 +62,14 @@ export function RouteWorkspaceShell({
   sheetContent,
   headerUtility,
 }: RouteWorkspaceShellProps) {
+  const secondaryActions = showCompletionHeader
+    ? SECONDARY_ACTIONS
+    : SECONDARY_ACTIONS.map((action) => (
+      action.key === "more"
+        ? { ...action, label: "风险依据", hint: "查看" }
+        : action
+    ));
+
   return (
     <section className="route-workspace-shell">
       <div className="route-workspace-shell__chrome" />
@@ -103,7 +111,7 @@ export function RouteWorkspaceShell({
               {completionAction.headerLabel}
             </button>
           ) : null}
-          {SECONDARY_ACTIONS.map((action) => {
+          {secondaryActions.map((action) => {
             const active = activeSheet === action.key;
             return (
               <button
@@ -132,7 +140,7 @@ export function RouteWorkspaceShell({
       <div className="route-workspace-shell__body">{children}</div>
 
       <nav className="route-workspace-shell__dock" aria-label="路线操作">
-        {[{ key: "completion" as const, label: completionAction.label, hint: completionAction.hint }, ...SECONDARY_ACTIONS].map((action) => {
+        {[{ key: "completion" as const, label: completionAction.label, hint: completionAction.hint }, ...secondaryActions].map((action) => {
           const active = activeSheet === action.key;
           return (
             <button
