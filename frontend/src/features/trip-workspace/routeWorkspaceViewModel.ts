@@ -7,6 +7,12 @@ import type { RouteWorkspaceSheetKey } from "@/components/trip/RouteWorkspaceShe
 type RouteWorkspacePlannerRealism = {
   status?: "executable" | "needs_repair" | "unstable" | string | null;
   headline?: string | null;
+  issues?: Array<{
+    day?: number | null;
+    severity?: "low" | "medium" | "high" | string | null;
+    title?: string | null;
+    detail?: string | null;
+  }> | null;
 } | null;
 
 type RouteWorkspaceCompletionIntelligence = {
@@ -71,6 +77,11 @@ export type RouteWorkspaceContainerViewModel = {
   overview: RouteWorkspaceOverview;
 };
 
+type RouteRiskFocus = {
+  day: number;
+  summary: string;
+};
+
 export function buildRouteWorkspaceContainerViewModel({
   city,
   itinerary,
@@ -110,6 +121,10 @@ export function buildRouteWorkspaceShellViewModel({
   const hasCompletionTasks = (itinerary.completion_intelligence?.action_tasks?.length ?? 0) > 0;
   const hasRouteRisk = status === "needs_repair";
   const sheetCopy = buildRouteWorkspaceSheetCopy(activeSheet, hasCompletionTasks, hasRouteRisk);
+  const routeRiskFocus = hasRouteRisk
+    ? buildRouteRiskFocus(itinerary.planner_realism, itinerary.trip_days)
+    : undefined;
+  const routeRiskSubtitle = buildRouteRiskSubtitle(routeRiskFocus);
 
   return {
     city,
@@ -124,7 +139,7 @@ export function buildRouteWorkspaceShellViewModel({
           : "还有空缺",
     statusTone: status === "executable" ? "stable" : "attention",
     subtitle: hasRouteRisk
-      ? "先确认路线风险，再拖动、锁定、删除或补全其他信息。"
+      ? routeRiskSubtitle
       : editing
         ? "拖动、锁定、删除或先放进待规划，完成后这版会成为当前计划。"
         : "先顺着路线看一遍。想改顺序、删点或继续补全时，再进入编辑。",
@@ -136,12 +151,59 @@ export function buildRouteWorkspaceShellViewModel({
     completionPriority: hasRouteRisk ? "secondary" : "primary",
     showCompletionHeader: !hasRouteRisk,
     primaryRouteFocus:
-      hasRouteRisk && weakestDay
-        ? { day: weakestDay.day, label: `查看第 ${weakestDay.day} 天风险` }
+      routeRiskFocus
+        ? { day: routeRiskFocus.day, label: `查看第 ${routeRiskFocus.day} 天风险` }
         : undefined,
     sheetTitle: sheetCopy.title,
     sheetDescription: sheetCopy.description,
   };
+}
+
+function buildRouteRiskSubtitle(routeRiskFocus: RouteRiskFocus | undefined): string {
+  if (!routeRiskFocus) {
+    return "路线有待复核的风险；暂时无法定位到具体日期，先查看路线依据再决定是否调整。";
+  }
+
+  return `第 ${routeRiskFocus.day} 天：${routeRiskFocus.summary}`;
+}
+
+function buildRouteRiskFocus(
+  plannerRealism: RouteWorkspacePlannerRealism | undefined,
+  tripDays: number,
+): RouteRiskFocus | undefined {
+  const issue = [...(plannerRealism?.issues ?? [])]
+    .filter(
+      (candidate) =>
+        typeof candidate.day === "number" &&
+        Number.isInteger(candidate.day) &&
+        candidate.day > 0 &&
+        candidate.day <= tripDays,
+    )
+    .sort((left, right) => {
+      const severityDifference = routeRiskSeverityWeight(right.severity) - routeRiskSeverityWeight(left.severity);
+      return severityDifference || (left.day ?? 0) - (right.day ?? 0);
+    })[0];
+  const title = issue?.title?.trim();
+  const detail = issue?.detail?.trim();
+  const summary = [title, detail].filter((value): value is string => Boolean(value)).join("。");
+
+  if (issue?.day && summary) {
+    return { day: issue.day, summary };
+  }
+  return undefined;
+}
+
+function routeRiskSeverityWeight(severity: string | null | undefined): number {
+  if (severity === "high") {
+    return 3;
+  }
+  if (severity === "medium") {
+    return 2;
+  }
+  if (severity === "low") {
+    return 1;
+  }
+  return 0;
 }
 
 export function buildRouteWorkspaceOverview({

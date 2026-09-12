@@ -53,7 +53,10 @@ test("prioritizes route risks ahead of unrelated completion tasks", () => {
 
   assert.equal(viewModel.shell.statusLabel, "先看风险");
   assert.equal(viewModel.shell.statusTone, "attention");
-  assert.equal(viewModel.shell.subtitle, "先确认路线风险，再拖动、锁定、删除或补全其他信息。");
+  assert.equal(
+    viewModel.shell.subtitle,
+    "第 3 天：离开前移动偏长。良渚博物院到杭州东站的路线段较长，可能压缩离站缓冲。",
+  );
   assert.deepEqual(viewModel.shell.completionAction, {
     headerLabel: "其他补全",
     label: "补全",
@@ -76,9 +79,21 @@ test("prioritizes route risks ahead of unrelated completion tasks", () => {
 
 test("does not promote completion when a route risk has no reliable target day", () => {
   const fixture = getResultWorkspaceFixture("route-risk");
+  const itinerary = adaptFixture(fixture);
   const viewModel = buildRouteWorkspaceContainerViewModel({
     city: fixture.city,
-    itinerary: adaptFixture(fixture),
+    itinerary: {
+      ...itinerary,
+      planner_realism: {
+        status: "needs_repair",
+        headline: "路线需要复核",
+        issues: [{
+          severity: "high",
+          title: "跨区移动偏长",
+          detail: "有一段跨区移动需要复核。",
+        }],
+      },
+    },
     editing: false,
     activeSheet: null,
     autoFilledCount: 4,
@@ -88,12 +103,106 @@ test("does not promote completion when a route risk has no reliable target day",
   });
 
   assert.equal(viewModel.shell.statusLabel, "先看风险");
+  assert.equal(
+    viewModel.shell.subtitle,
+    "路线有待复核的风险；暂时无法定位到具体日期，先查看路线依据再决定是否调整。",
+  );
   assert.equal(viewModel.shell.showCompletionHeader, false);
   assert.equal(viewModel.shell.primaryRouteFocus, undefined);
   assert.deepEqual(viewModel.shell.completionAction, {
     headerLabel: "其他补全",
     label: "补全",
     hint: "其他项",
+  });
+});
+
+test("does not fabricate a focus day when structured risk detail is unavailable", () => {
+  const fixture = getResultWorkspaceFixture("route-risk");
+  const itinerary = adaptFixture(fixture);
+  const viewModel = buildRouteWorkspaceContainerViewModel({
+    city: fixture.city,
+    itinerary: {
+      ...itinerary,
+      planner_realism: {
+        status: "needs_repair",
+        headline: "路线需要复核",
+        issues: [],
+      },
+    },
+    editing: false,
+    activeSheet: null,
+    autoFilledCount: 4,
+    intentLine: null,
+    executionLine: null,
+    weakestDay: { day: 3, reason: "1 个路线风险还没收口，先修这里最能提升整趟体验。" },
+  });
+
+  assert.equal(
+    viewModel.shell.subtitle,
+    "路线有待复核的风险；暂时无法定位到具体日期，先查看路线依据再决定是否调整。",
+  );
+  assert.equal(viewModel.shell.primaryRouteFocus, undefined);
+});
+
+test("does not focus an invalid route-risk day", () => {
+  const fixture = getResultWorkspaceFixture("route-risk");
+  const itinerary = adaptFixture(fixture);
+  const viewModel = buildRouteWorkspaceContainerViewModel({
+    city: fixture.city,
+    itinerary: {
+      ...itinerary,
+      planner_realism: {
+        status: "needs_repair",
+        headline: "路线需要复核",
+        issues: [{
+          day: 4,
+          severity: "high",
+          title: "跨区移动偏长",
+          detail: "有一段跨区移动需要复核。",
+        }],
+      },
+    },
+    editing: false,
+    activeSheet: null,
+    autoFilledCount: 4,
+    intentLine: null,
+    executionLine: null,
+    weakestDay: null,
+  });
+
+  assert.equal(viewModel.shell.primaryRouteFocus, undefined);
+});
+
+test("uses the day named by route-risk evidence instead of a completion-heavy fallback", () => {
+  const fixture = getResultWorkspaceFixture("route-risk");
+  const itinerary = adaptFixture(fixture);
+  const viewModel = buildRouteWorkspaceContainerViewModel({
+    city: fixture.city,
+    itinerary: {
+      ...itinerary,
+      planner_realism: {
+        status: "needs_repair",
+        headline: "路线需要复核",
+        issues: [{
+          day: 2,
+          severity: "high",
+          title: "跨区移动偏长",
+          detail: "下午安排跨区，可能压缩晚间缓冲。",
+        }],
+      },
+    },
+    editing: false,
+    activeSheet: null,
+    autoFilledCount: 4,
+    intentLine: null,
+    executionLine: null,
+    weakestDay: { day: 1, reason: "3 个待补任务还没收口。" },
+  });
+
+  assert.equal(viewModel.shell.subtitle, "第 2 天：跨区移动偏长。下午安排跨区，可能压缩晚间缓冲。");
+  assert.deepEqual(viewModel.shell.primaryRouteFocus, {
+    day: 2,
+    label: "查看第 2 天风险",
   });
 });
 
