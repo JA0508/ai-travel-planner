@@ -206,6 +206,43 @@ test("uses the day named by route-risk evidence instead of a completion-heavy fa
   });
 });
 
+test("prioritizes an unstable route over completion work", () => {
+  const fixture = getResultWorkspaceFixture("route-risk");
+  const itinerary = adaptFixture(fixture);
+  const viewModel = buildRouteWorkspaceContainerViewModel({
+    city: fixture.city,
+    itinerary: {
+      ...itinerary,
+      planner_realism: {
+        status: "unstable",
+        headline: "路线需要重排",
+        issues: [{
+          day: 2,
+          severity: "high",
+          title: "跨区移动不可行",
+          detail: "上午到下午的路线跨度过大。",
+        }],
+      },
+    },
+    editing: false,
+    activeSheet: "completion",
+    autoFilledCount: 4,
+    intentLine: null,
+    executionLine: null,
+    weakestDay: { day: 1, reason: "3 个待补任务还没收口。" },
+  });
+
+  assert.equal(viewModel.shell.statusLabel, "需要重排");
+  assert.equal(viewModel.shell.completionPriority, "secondary");
+  assert.equal(viewModel.shell.showCompletionHeader, false);
+  assert.equal(viewModel.shell.subtitle, "第 2 天：跨区移动不可行。上午到下午的路线跨度过大。");
+  assert.deepEqual(viewModel.shell.primaryRouteFocus, {
+    day: 2,
+    label: "查看第 2 天风险",
+  });
+  assert.equal(viewModel.shell.sheetTitle, "补全其他信息");
+});
+
 test("fixture workspace covers complete, sparse, route-risk, and missing-data cases", () => {
   assert.deepEqual(
     resultWorkspaceFixtures.map((fixture) => fixture.key),

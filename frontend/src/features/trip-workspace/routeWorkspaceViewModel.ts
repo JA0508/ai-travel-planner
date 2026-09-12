@@ -119,9 +119,9 @@ export function buildRouteWorkspaceShellViewModel({
 }: Pick<RouteWorkspaceContainerViewModelInput, "city" | "itinerary" | "editing" | "activeSheet" | "weakestDay">): RouteWorkspaceShellViewModel {
   const status = itinerary.planner_realism?.status;
   const hasCompletionTasks = (itinerary.completion_intelligence?.action_tasks?.length ?? 0) > 0;
-  const hasRouteRisk = status === "needs_repair";
-  const sheetCopy = buildRouteWorkspaceSheetCopy(activeSheet, hasCompletionTasks, hasRouteRisk);
-  const routeRiskFocus = hasRouteRisk
+  const requiresRouteAttention = status === "needs_repair" || status === "unstable";
+  const sheetCopy = buildRouteWorkspaceSheetCopy(activeSheet, hasCompletionTasks, requiresRouteAttention);
+  const routeRiskFocus = requiresRouteAttention
     ? buildRouteRiskFocus(itinerary.planner_realism, itinerary.trip_days)
     : undefined;
   const routeRiskSubtitle = buildRouteRiskSubtitle(routeRiskFocus);
@@ -132,24 +132,24 @@ export function buildRouteWorkspaceShellViewModel({
     statusLabel:
       status === "executable"
         ? "骨架可走"
-        : hasRouteRisk
-          ? "先看风险"
         : status === "unstable"
           ? "需要重排"
-          : "还有空缺",
+          : requiresRouteAttention
+            ? "先看风险"
+            : "还有空缺",
     statusTone: status === "executable" ? "stable" : "attention",
-    subtitle: hasRouteRisk
+    subtitle: requiresRouteAttention
       ? routeRiskSubtitle
       : editing
         ? "拖动、锁定、删除或先放进待规划，完成后这版会成为当前计划。"
         : "先顺着路线看一遍。想改顺序、删点或继续补全时，再进入编辑。",
     completionAction: hasCompletionTasks
-      ? hasRouteRisk
+      ? requiresRouteAttention
         ? { headerLabel: "其他补全", label: "补全", hint: "其他项" }
         : { headerLabel: "修复空缺", label: "补全", hint: "修空缺" }
       : { headerLabel: "检查路线", label: "检查", hint: "路线" },
-    completionPriority: hasRouteRisk ? "secondary" : "primary",
-    showCompletionHeader: !hasRouteRisk,
+    completionPriority: requiresRouteAttention ? "secondary" : "primary",
+    showCompletionHeader: !requiresRouteAttention,
     primaryRouteFocus:
       routeRiskFocus
         ? { day: routeRiskFocus.day, label: `查看第 ${routeRiskFocus.day} 天风险` }
