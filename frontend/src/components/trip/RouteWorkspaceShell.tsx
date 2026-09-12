@@ -15,6 +15,11 @@ type RouteWorkspaceShellProps = {
     label: string;
     hint: string;
   };
+  primaryRouteFocus?: {
+    day: number;
+    label: string;
+  };
+  onPrimaryRouteFocus?: (day: number) => void;
   editing: boolean;
   onToggleEditing: () => void;
   children: ReactNode;
@@ -43,6 +48,8 @@ export function RouteWorkspaceShell({
   statusTone = "stable",
   subtitle,
   completionAction,
+  primaryRouteFocus,
+  onPrimaryRouteFocus,
   editing,
   onToggleEditing,
   children,
@@ -74,16 +81,26 @@ export function RouteWorkspaceShell({
           <p>{subtitle}</p>
         </div>
         <div className="route-workspace-shell__header-actions">
-          <button
-            type="button"
-            aria-pressed={activeSheet === "completion"}
-            onClick={() => onSheetChange(activeSheet === "completion" ? null : "completion")}
-            className={`ec-interactive-pill route-workspace-shell__repair-action ${
-              activeSheet === "completion" ? "is-active" : ""
-            }`}
-          >
-            {completionAction.headerLabel}
-          </button>
+          {primaryRouteFocus && onPrimaryRouteFocus ? (
+            <button
+              type="button"
+              onClick={() => onPrimaryRouteFocus(primaryRouteFocus.day)}
+              className="ec-interactive-pill route-workspace-shell__repair-action"
+            >
+              {primaryRouteFocus.label}
+            </button>
+          ) : (
+            <button
+              type="button"
+              aria-pressed={activeSheet === "completion"}
+              onClick={() => onSheetChange(activeSheet === "completion" ? null : "completion")}
+              className={`ec-interactive-pill route-workspace-shell__repair-action ${
+                activeSheet === "completion" ? "is-active" : ""
+              }`}
+            >
+              {completionAction.headerLabel}
+            </button>
+          )}
           {SECONDARY_ACTIONS.map((action) => {
             const active = activeSheet === action.key;
             return (

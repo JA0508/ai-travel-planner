@@ -4884,6 +4884,7 @@ function buildRegenerationSemanticsViewModel(
             editing={routeEditMode}
             activeSheet={activeRouteSheet}
             focusRequest={routeFocusRequest}
+            onFocusRouteDay={focusRouteDay}
             autoFilledCount={commandCenterAutoFilledCount}
             intentLine={commandCenterIntentLines[0] ?? null}
             executionLine={commandCenterSystemLines[0] ?? null}

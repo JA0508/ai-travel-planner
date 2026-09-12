@@ -40,6 +40,7 @@ export type RouteWorkspaceContainerProps = {
   briefRail: ReactNode;
   onToggleEditing: () => void;
   onSheetChange: (sheet: RouteWorkspaceSheetKey | null) => void;
+  onFocusRouteDay?: (day: number) => void;
   onApplyEdits?: MobileWorkspaceProps["onApplyEdits"];
   onClose: () => void;
 };
@@ -66,6 +67,7 @@ export function RouteWorkspaceContainer({
   briefRail,
   onToggleEditing,
   onSheetChange,
+  onFocusRouteDay,
   onApplyEdits,
   onClose,
 }: RouteWorkspaceContainerProps) {
@@ -88,6 +90,11 @@ export function RouteWorkspaceContainer({
       statusTone={viewModel.shell.statusTone}
       subtitle={viewModel.shell.subtitle}
       completionAction={viewModel.shell.completionAction}
+      primaryRouteFocus={onFocusRouteDay ? viewModel.shell.primaryRouteFocus : undefined}
+      onPrimaryRouteFocus={(day) => {
+        onSheetChange(null);
+        onFocusRouteDay?.(day);
+      }}
       editing={editing}
       onToggleEditing={onToggleEditing}
       activeSheet={activeSheet}

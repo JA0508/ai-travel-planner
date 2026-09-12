@@ -57,6 +57,10 @@ export type RouteWorkspaceShellViewModel = {
     hint: string;
   };
   completionPriority: "primary" | "secondary";
+  primaryRouteFocus?: {
+    day: number;
+    label: string;
+  };
   sheetTitle?: string;
   sheetDescription?: string;
 };
@@ -82,6 +86,7 @@ export function buildRouteWorkspaceContainerViewModel({
       itinerary,
       editing,
       activeSheet,
+      weakestDay,
     }),
     overview: buildRouteWorkspaceOverview({
       itinerary,
@@ -98,7 +103,8 @@ export function buildRouteWorkspaceShellViewModel({
   itinerary,
   editing,
   activeSheet,
-}: Pick<RouteWorkspaceContainerViewModelInput, "city" | "itinerary" | "editing" | "activeSheet">): RouteWorkspaceShellViewModel {
+  weakestDay,
+}: Pick<RouteWorkspaceContainerViewModelInput, "city" | "itinerary" | "editing" | "activeSheet" | "weakestDay">): RouteWorkspaceShellViewModel {
   const status = itinerary.planner_realism?.status;
   const hasCompletionTasks = (itinerary.completion_intelligence?.action_tasks?.length ?? 0) > 0;
   const hasRouteRisk = status === "needs_repair";
@@ -127,6 +133,10 @@ export function buildRouteWorkspaceShellViewModel({
         : { headerLabel: "修复空缺", label: "补全", hint: "修空缺" }
       : { headerLabel: "检查路线", label: "检查", hint: "路线" },
     completionPriority: hasRouteRisk ? "secondary" : "primary",
+    primaryRouteFocus:
+      hasRouteRisk && weakestDay
+        ? { day: weakestDay.day, label: `查看第 ${weakestDay.day} 天风险` }
+        : undefined,
     sheetTitle: sheetCopy.title,
     sheetDescription: sheetCopy.description,
   };

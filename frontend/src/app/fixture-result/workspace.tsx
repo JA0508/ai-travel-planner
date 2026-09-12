@@ -60,7 +60,13 @@ export function FixtureResultWorkspace({ fixtureKey }: { fixtureKey: string }) {
         activeSheet={activeRouteSheet}
         focusRequest={routeFocusRequest}
         onSheetChange={setActiveRouteSheet}
+        onFocusRouteDay={focusRouteDay}
         autoFilledCount={fixture.completion?.auto_filled_scenic_count ?? 0}
+        weakestDay={
+          readiness.priorityAction.kind === "focus-day"
+            ? { day: readiness.priorityAction.day, reason: readiness.priorityAction.label }
+            : null
+        }
         intentLine={fixture.planningAssumptions.summary_lines?.[0] ?? null}
         executionLine={fixture.plannerRealism?.headline ?? null}
         initialRoutePreviewMap={fixture.routePreviewMap}

@@ -60,6 +60,10 @@ test("prioritizes route risks ahead of unrelated completion tasks", () => {
     hint: "其他项",
   });
   assert.equal(viewModel.shell.completionPriority, "secondary");
+  assert.deepEqual(viewModel.shell.primaryRouteFocus, {
+    day: 3,
+    label: "查看第 3 天风险",
+  });
   assert.equal(viewModel.shell.sheetTitle, "补全其他信息");
   assert.equal(
     viewModel.shell.sheetDescription,
