@@ -60,6 +60,7 @@ test("prioritizes route risks ahead of unrelated completion tasks", () => {
     hint: "其他项",
   });
   assert.equal(viewModel.shell.completionPriority, "secondary");
+  assert.equal(viewModel.shell.showCompletionHeader, false);
   assert.deepEqual(viewModel.shell.primaryRouteFocus, {
     day: 3,
     label: "查看第 3 天风险",
@@ -71,6 +72,29 @@ test("prioritizes route risks ahead of unrelated completion tasks", () => {
   );
   assert.equal(viewModel.overview.realismStatus, "needs_repair");
   assert.deepEqual(viewModel.overview.weakestDay, { day: 3, reason: "离开前跨区移动偏长" });
+});
+
+test("does not promote completion when a route risk has no reliable target day", () => {
+  const fixture = getResultWorkspaceFixture("route-risk");
+  const viewModel = buildRouteWorkspaceContainerViewModel({
+    city: fixture.city,
+    itinerary: adaptFixture(fixture),
+    editing: false,
+    activeSheet: null,
+    autoFilledCount: 4,
+    intentLine: null,
+    executionLine: null,
+    weakestDay: null,
+  });
+
+  assert.equal(viewModel.shell.statusLabel, "先看风险");
+  assert.equal(viewModel.shell.showCompletionHeader, false);
+  assert.equal(viewModel.shell.primaryRouteFocus, undefined);
+  assert.deepEqual(viewModel.shell.completionAction, {
+    headerLabel: "其他补全",
+    label: "补全",
+    hint: "其他项",
+  });
 });
 
 test("fixture workspace covers complete, sparse, route-risk, and missing-data cases", () => {

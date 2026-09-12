@@ -15,6 +15,7 @@ type RouteWorkspaceShellProps = {
     label: string;
     hint: string;
   };
+  showCompletionHeader?: boolean;
   primaryRouteFocus?: {
     day: number;
     label: string;
@@ -48,6 +49,7 @@ export function RouteWorkspaceShell({
   statusTone = "stable",
   subtitle,
   completionAction,
+  showCompletionHeader = true,
   primaryRouteFocus,
   onPrimaryRouteFocus,
   editing,
@@ -89,7 +91,7 @@ export function RouteWorkspaceShell({
             >
               {primaryRouteFocus.label}
             </button>
-          ) : (
+          ) : showCompletionHeader ? (
             <button
               type="button"
               aria-pressed={activeSheet === "completion"}
@@ -100,7 +102,7 @@ export function RouteWorkspaceShell({
             >
               {completionAction.headerLabel}
             </button>
-          )}
+          ) : null}
           {SECONDARY_ACTIONS.map((action) => {
             const active = activeSheet === action.key;
             return (

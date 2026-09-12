@@ -90,6 +90,7 @@ export function RouteWorkspaceContainer({
       statusTone={viewModel.shell.statusTone}
       subtitle={viewModel.shell.subtitle}
       completionAction={viewModel.shell.completionAction}
+      showCompletionHeader={viewModel.shell.showCompletionHeader}
       primaryRouteFocus={onFocusRouteDay ? viewModel.shell.primaryRouteFocus : undefined}
       onPrimaryRouteFocus={(day) => {
         onSheetChange(null);
