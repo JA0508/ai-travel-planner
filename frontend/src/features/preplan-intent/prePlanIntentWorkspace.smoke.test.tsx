@@ -151,7 +151,8 @@ test("pre-plan preview can take a blocked direct place to its confirmation contr
   assert.match(queueSource, /window\.scrollTo/);
   assert.doesNotMatch(queueSource, /scrollIntoView/);
   assert.match(source, /plannerHandoffRecoveryPlaceStableId\(action, result\.context\)/);
-  assert.match(queueSource, /item\.identityId === placeFocusRequest\.stableId/);
+  assert.match(queueSource, /findPlaceFocusItem\(actionableItems, placeFocusRequest, events\)/);
+  assert.match(queueSource, /item\.identityId === request\.stableId/);
 });
 
 test("pre-plan preview names the still-current must-place that blocks it", () => {
@@ -164,9 +165,9 @@ test("pre-plan preview can take a blocked fixed arrangement to its location conf
   const source = readFileSync(componentPath, "utf8");
   const queueSource = readFileSync(queuePath, "utf8");
   assert.match(source, /feedback\.action === "focus_fixed_place_confirmation"[\s\S]*requestPlaceConfirmationFocus\("fixed_place", \{ fieldId: feedback\.actionFieldId \}\)/);
-  assert.match(queueSource, /item\.kind === placeFocusRequest\.kind/);
+  assert.match(queueSource, /item\.kind !== request\.kind/);
   assert.match(source, /plannerHandoffRecoveryFieldId\(action, result\.context\)/);
-  assert.match(queueSource, /event\?\.metadata\.field_id === placeFocusRequest\.fieldId/);
+  assert.match(queueSource, /event\?\.metadata\.field_id === request\.fieldId/);
 });
 
 test("blocked place recovery focuses the next confirmation action instead of the collapse control", () => {

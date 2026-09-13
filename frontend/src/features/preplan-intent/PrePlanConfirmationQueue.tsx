@@ -31,6 +31,32 @@ export function centeredConfirmationScrollTop(
   return Math.max(0, Math.round(safeCurrentScrollY + safeTargetTop - centeredOffset));
 }
 
+export function findPlaceFocusItem(
+  items: ConfirmationItem[],
+  request: PlaceConfirmationFocusRequest | undefined,
+  events: FixedEventIntent[],
+): ConfirmationItem | null {
+  if (!request) return null;
+
+  if (request.stableId) {
+    return items.find((item) => (
+      item.kind === "must_place"
+      && request.kind === "must_place"
+      && item.identityId === request.stableId
+    )) ?? null;
+  }
+
+  if (request.fieldId) {
+    return items.find((item) => {
+      if (item.kind !== request.kind) return false;
+      const event = item.kind === "fixed_place" ? events.find((candidate) => candidate.event_id === item.eventId) : null;
+      return event?.metadata.field_id === request.fieldId;
+    }) ?? null;
+  }
+
+  return items.find((item) => item.kind === request.kind) ?? null;
+}
+
 type Props = {
   items: ConfirmationItem[];
   confirmedItems: ConfirmedItem[];
@@ -106,22 +132,7 @@ export function PrePlanConfirmationQueue({
     completedPlaceItemIdRef.current = itemId;
   }
 
-  const sameTypeFocusItem = placeFocusRequest
-    ? actionableItems.find((item) => item.kind === placeFocusRequest.kind) ?? null
-    : null;
-  const placeFocusItem = placeFocusRequest?.stableId
-    ? actionableItems.find((item) => (
-      item.kind === "must_place"
-      && placeFocusRequest.kind === "must_place"
-      && item.identityId === placeFocusRequest.stableId
-    )) ?? sameTypeFocusItem
-    : placeFocusRequest?.fieldId
-    ? actionableItems.find((item) => {
-      if (item.kind !== placeFocusRequest.kind) return false;
-      const event = item.kind === "fixed_place" ? events.find((candidate) => candidate.event_id === item.eventId) : null;
-      return event?.metadata.field_id === placeFocusRequest.fieldId;
-    }) ?? sameTypeFocusItem
-    : sameTypeFocusItem;
+  const placeFocusItem = findPlaceFocusItem(actionableItems, placeFocusRequest, events);
   const placeFocusItemId = placeFocusItem?.id ?? null;
 
   useEffect(() => {
