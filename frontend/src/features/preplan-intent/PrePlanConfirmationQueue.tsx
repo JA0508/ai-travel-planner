@@ -57,6 +57,15 @@ export function findPlaceFocusItem(
   return items.find((item) => item.kind === request.kind) ?? null;
 }
 
+export function placeFocusUnavailableMessage(
+  request: PlaceConfirmationFocusRequest | undefined,
+  item: ConfirmationItem | null,
+): string | null {
+  if (!request || item || (!request.stableId && !request.fieldId)) return null;
+
+  return "要确认的地点已更新，系统没有替你改选其他地点。请查看当前仍待确认的项目。";
+}
+
 type Props = {
   items: ConfirmationItem[];
   confirmedItems: ConfirmedItem[];
@@ -134,9 +143,15 @@ export function PrePlanConfirmationQueue({
 
   const placeFocusItem = findPlaceFocusItem(actionableItems, placeFocusRequest, events);
   const placeFocusItemId = placeFocusItem?.id ?? null;
+  const placeFocusNotice = placeFocusUnavailableMessage(placeFocusRequest, placeFocusItem);
 
   useEffect(() => {
-    if (!placeFocusRequest || !placeFocusItemId) return;
+    if (!placeFocusRequest) return;
+    if (!placeFocusItemId) {
+      if (!placeFocusNotice) return;
+      const frame = window.requestAnimationFrame(() => confirmationHeadingRef.current?.focus());
+      return () => window.cancelAnimationFrame(frame);
+    }
     setExpandedItemId(placeFocusItemId);
     const frame = window.requestAnimationFrame(() => {
       const target = document.getElementById(`confirmation-item-${placeFocusItemId}`);
@@ -148,7 +163,7 @@ export function PrePlanConfirmationQueue({
       focusPlaceConfirmationAction(target);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [placeFocusItemId, placeFocusRequest?.requestId]);
+  }, [placeFocusItemId, placeFocusNotice, placeFocusRequest?.requestId]);
 
   return (
     <section className="uc-confirmation-workbench" aria-label="确认清单">
@@ -159,6 +174,7 @@ export function PrePlanConfirmationQueue({
         <div>
           <p>确认清单</p>
           <h2 ref={confirmationHeadingRef} tabIndex={-1}>{remainingCopy}</h2>
+          {placeFocusNotice ? <p className="uc-confirmation-muted" role="status">{placeFocusNotice}</p> : null}
         </div>
         <span>{items.length ? "每完成一项，路线就更可靠" : blockedWithoutAction ? "请先补齐路线条件" : "关键信息已齐备"}</span>
       </div>

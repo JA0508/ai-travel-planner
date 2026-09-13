@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { FixedEventIntent } from "@/features/intent-confirmation/intentTypes";
-import { centeredConfirmationScrollTop, findPlaceFocusItem } from "./PrePlanConfirmationQueue";
+import { centeredConfirmationScrollTop, findPlaceFocusItem, placeFocusUnavailableMessage } from "./PrePlanConfirmationQueue";
 
 test("centers a requested confirmation item within the current page scroll", () => {
   assert.equal(
@@ -75,4 +75,12 @@ test("does not redirect a specific fixed-arrangement recovery to another arrange
     findPlaceFocusItem(items, { requestId: 1, kind: "fixed_place", fieldId: "fixed:airport" }, events),
     null,
   );
+});
+
+test("explains when a named recovery target is no longer in the current confirmation list", () => {
+  assert.equal(
+    placeFocusUnavailableMessage({ requestId: 1, kind: "must_place", stableId: "must:shancheng" }, null),
+    "要确认的地点已更新，系统没有替你改选其他地点。请查看当前仍待确认的项目。",
+  );
+  assert.equal(placeFocusUnavailableMessage({ requestId: 2, kind: "must_place" }, null), null);
 });

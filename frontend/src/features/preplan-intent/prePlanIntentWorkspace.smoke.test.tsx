@@ -153,6 +153,8 @@ test("pre-plan preview can take a blocked direct place to its confirmation contr
   assert.match(source, /plannerHandoffRecoveryPlaceStableId\(action, result\.context\)/);
   assert.match(queueSource, /findPlaceFocusItem\(actionableItems, placeFocusRequest, events\)/);
   assert.match(queueSource, /item\.identityId === request\.stableId/);
+  assert.match(queueSource, /placeFocusUnavailableMessage\(placeFocusRequest, placeFocusItem\)/);
+  assert.match(queueSource, /要确认的地点已更新/);
 });
 
 test("pre-plan preview names the still-current must-place that blocks it", () => {
