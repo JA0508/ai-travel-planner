@@ -458,6 +458,10 @@ test("Saved Roadbook exposes a safe adjustment index before a user hunts through
   const adjustmentIndex = page.getByRole("region", { name: "调整这份行程" });
   await expect(adjustmentIndex).toBeVisible();
   await expect(adjustmentIndex).toContainText("可以安全检查的小调整");
+  const adjustmentToggle = adjustmentIndex.locator("summary");
+  const replaceEntry = adjustmentIndex.getByRole("button", { name: "检查「湖畔小馆」能否安全替换" });
+  await expect(replaceEntry).not.toBeVisible();
+  await adjustmentToggle.click();
   const previewRequests: string[] = [];
   page.on("request", (request) => {
     if (request.url().includes("preview-completion-task-candidates") || request.url().includes("local-repairs/relax-day/preview")) {
@@ -465,7 +469,7 @@ test("Saved Roadbook exposes a safe adjustment index before a user hunts through
     }
   });
 
-  await adjustmentIndex.getByRole("button", { name: "检查「湖畔小馆」能否安全替换" }).click();
+  await replaceEntry.click();
 
   await expect(page.getByRole("button", { name: "换一个" })).toBeFocused();
   expect(previewRequests).toEqual([]);

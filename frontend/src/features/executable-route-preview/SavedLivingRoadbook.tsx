@@ -480,13 +480,16 @@ function RoadbookAdjustmentIndex({
         <span>{index.summary}</span>
       </div>
       {index.actions.length ? (
-        <div className="roadbook-adjustment-index__actions">
-          {index.actions.map((action) => (
-            <button key={action.kind === "relax_day" ? `relax-${action.day}` : action.stopId} type="button" onClick={() => onChoose(action)}>
-              {action.label}<i aria-hidden="true">→</i>
-            </button>
-          ))}
-        </div>
+        <details>
+          <summary>查看所有安全调整 <i aria-hidden="true">+</i></summary>
+          <div className="roadbook-adjustment-index__actions">
+            {index.actions.map((action) => (
+              <button key={action.kind === "relax_day" ? `relax-${action.day}` : action.stopId} type="button" onClick={() => onChoose(action)}>
+                {action.label}<i aria-hidden="true">→</i>
+              </button>
+            ))}
+          </div>
+        </details>
       ) : <small>固定安排和你明确要去的地点会继续按原计划保留。</small>}
       <RoadbookAdjustmentIndexStyles />
     </section>
@@ -496,8 +499,8 @@ function RoadbookAdjustmentIndex({
 function RoadbookAdjustmentIndexStyles() {
   return <style>{`
     .roadbook-adjustment-index{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(0,1.2fr);gap:28px;align-items:center;border-top:1px solid var(--roadbook-line);border-bottom:1px solid var(--roadbook-line);padding:19px 8px;background:var(--roadbook-paper-deep)}
-    .roadbook-adjustment-index>div{display:grid;gap:5px}.roadbook-adjustment-index p{margin:0;color:var(--roadbook-orange);font-size:10px;font-weight:900;letter-spacing:.14em}.roadbook-adjustment-index h2{margin:0;font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:25px;line-height:1}.roadbook-adjustment-index span,.roadbook-adjustment-index>small{color:var(--roadbook-muted);font-size:12px;line-height:1.5}.roadbook-adjustment-index__actions{display:flex!important;flex-wrap:wrap;justify-content:flex-end;gap:10px}.roadbook-adjustment-index button{min-height:44px;border:1px solid var(--roadbook-ink);border-radius:2px;background:var(--roadbook-paper);padding:9px 13px;color:var(--roadbook-ink);font:inherit;font-size:12px;font-weight:900;cursor:pointer}.roadbook-adjustment-index button i{margin-left:8px;color:var(--roadbook-orange);font-style:normal}.roadbook-adjustment-index button:focus-visible{outline:3px solid rgba(230,90,40,.38);outline-offset:3px}.roadbook-adjustment-index>small{max-width:440px;justify-self:end;text-align:right}
-    @media(max-width:620px){.roadbook-adjustment-index{grid-template-columns:1fr;gap:14px;padding:19px 18px}.roadbook-adjustment-index__actions{justify-content:start}.roadbook-adjustment-index button{width:100%;text-align:left}.roadbook-adjustment-index>small{justify-self:start;text-align:left}}
+    .roadbook-adjustment-index>div{display:grid;gap:5px}.roadbook-adjustment-index p{margin:0;color:var(--roadbook-orange);font-size:10px;font-weight:900;letter-spacing:.14em}.roadbook-adjustment-index h2{margin:0;font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:25px;line-height:1}.roadbook-adjustment-index span,.roadbook-adjustment-index>small{color:var(--roadbook-muted);font-size:12px;line-height:1.5}.roadbook-adjustment-index details{justify-self:end;max-width:100%}.roadbook-adjustment-index summary{display:flex;align-items:center;justify-content:space-between;gap:18px;min-height:44px;border-bottom:1px solid var(--roadbook-ink);color:var(--roadbook-ink);font-size:12px;font-weight:900;cursor:pointer;list-style:none}.roadbook-adjustment-index summary::-webkit-details-marker{display:none}.roadbook-adjustment-index summary i{color:var(--roadbook-orange);font-size:18px;font-style:normal}.roadbook-adjustment-index details[open] summary i{transform:rotate(45deg)}.roadbook-adjustment-index summary:focus-visible,.roadbook-adjustment-index button:focus-visible{outline:3px solid rgba(230,90,40,.38);outline-offset:3px}.roadbook-adjustment-index__actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px;margin-top:12px}.roadbook-adjustment-index button{min-height:44px;border:1px solid var(--roadbook-ink);border-radius:2px;background:var(--roadbook-paper);padding:9px 13px;color:var(--roadbook-ink);font:inherit;font-size:12px;font-weight:900;cursor:pointer}.roadbook-adjustment-index button i{margin-left:8px;color:var(--roadbook-orange);font-style:normal}.roadbook-adjustment-index>small{max-width:440px;justify-self:end;text-align:right}
+    @media(max-width:620px){.roadbook-adjustment-index{grid-template-columns:1fr;gap:14px;padding:19px 18px}.roadbook-adjustment-index details{justify-self:stretch}.roadbook-adjustment-index summary{width:100%}.roadbook-adjustment-index__actions{justify-content:start}.roadbook-adjustment-index button{width:100%;text-align:left}.roadbook-adjustment-index>small{justify-self:start;text-align:left}}
   `}</style>;
 }
 
