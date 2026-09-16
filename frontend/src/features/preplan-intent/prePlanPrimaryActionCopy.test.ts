@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { prePlanPrimaryActionLabel } from "./prePlanPrimaryActionCopy";
+import { prePlanPrimaryAction, prePlanPrimaryActionLabel } from "./prePlanPrimaryActionCopy";
 
 test("names the next required confirmation count on a disabled preview action", () => {
   assert.equal(
@@ -24,6 +24,27 @@ test("names request editing instead of implying a preview can start for a confli
       remainingActionableConfirmationCount: 0,
     }),
     "请先修改旅行信息",
+  );
+});
+
+test("turns the primary action into request recovery only for a confirmed editing conflict", () => {
+  assert.deepEqual(
+    prePlanPrimaryAction({
+      sourcesChanged: false,
+      canGeneratePreview: false,
+      requiresTravelInformationEdit: true,
+      remainingActionableConfirmationCount: 0,
+    }),
+    { kind: "modify_request", label: "请先修改旅行信息" },
+  );
+  assert.equal(
+    prePlanPrimaryAction({
+      sourcesChanged: true,
+      canGeneratePreview: false,
+      requiresTravelInformationEdit: true,
+      remainingActionableConfirmationCount: 0,
+    }).kind,
+    "blocked",
   );
 });
 

@@ -5,9 +5,18 @@ export type PrePlanPrimaryActionState = {
   remainingActionableConfirmationCount: number;
 };
 
+export type PrePlanPrimaryAction = {
+  kind: "preview" | "modify_request" | "blocked";
+  label: string;
+};
+
+export function prePlanPrimaryAction(state: PrePlanPrimaryActionState): PrePlanPrimaryAction {
+  if (state.sourcesChanged) return { kind: "blocked", label: "请先重新整理旅行信息" };
+  if (state.requiresTravelInformationEdit) return { kind: "modify_request", label: "请先修改旅行信息" };
+  if (!state.canGeneratePreview) return { kind: "blocked", label: `还差 ${state.remainingActionableConfirmationCount} 项待确认` };
+  return { kind: "preview", label: "生成路线预览" };
+}
+
 export function prePlanPrimaryActionLabel(state: PrePlanPrimaryActionState): string {
-  if (state.sourcesChanged) return "请先重新整理旅行信息";
-  if (state.requiresTravelInformationEdit) return "请先修改旅行信息";
-  if (!state.canGeneratePreview) return `还差 ${state.remainingActionableConfirmationCount} 项待确认`;
-  return "生成路线预览";
+  return prePlanPrimaryAction(state).label;
 }

@@ -234,6 +234,14 @@ test("confirmation recovery carries an existing conflict reason back to the requ
   assert.match(queueSource, /onClick=\{\(\) => onModifyRequest\(recoveryNotice \?\? undefined\)\}/);
 });
 
+test("a request-editing conflict makes the primary action recoverable instead of disabled", () => {
+  const source = readFileSync(componentPath, "utf8");
+
+  assert.match(source, /primaryAction\.kind === "modify_request"/);
+  assert.match(source, /onCancel\(blockedConfirmationRecoveryNotice\(view\.confirmationItems\) \?\? undefined\)/);
+  assert.match(source, /primaryAction\.kind === "blocked"/);
+});
+
 test("place search retains only same-query candidates after a recoverable retry", () => {
   const suggestions = {
     place_stable_id: "must:shancheng",

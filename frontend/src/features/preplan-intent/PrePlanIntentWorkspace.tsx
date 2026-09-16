@@ -7,8 +7,8 @@ import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace"
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
 import { resolvePrePlanCompileAttempt, type PrePlanCompileAttempt } from "./prePlanCompileAttempt";
-import { prePlanPrimaryActionLabel } from "./prePlanPrimaryActionCopy";
-import { PrePlanConfirmationQueue, type PlaceConfirmationFocusRequest } from "./PrePlanConfirmationQueue";
+import { prePlanPrimaryAction } from "./prePlanPrimaryActionCopy";
+import { blockedConfirmationRecoveryNotice, PrePlanConfirmationQueue, type PlaceConfirmationFocusRequest } from "./PrePlanConfirmationQueue";
 import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, plannerHandoffRecoveryFieldId, plannerHandoffRecoveryPlaceStableId, previewTimedOutMessage, previewUnavailableMessage, savePreviewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
 import type { TripMetadata, TripRevisionMetadata } from "@/features/trip-workspace/tripPersistence";
@@ -531,13 +531,13 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     }));
   }
 
-  const primaryLabel = prePlanPrimaryActionLabel({
+  const primaryAction = prePlanPrimaryAction({
     sourcesChanged,
     canGeneratePreview,
     requiresTravelInformationEdit: Boolean(view?.requiresTravelInformationEdit),
     remainingActionableConfirmationCount: view?.remainingActionableConfirmationCount ?? 0,
   });
-  const primaryDisabled = busy || !canGeneratePreview;
+  const primaryDisabled = busy || primaryAction.kind === "blocked";
   const primaryHint = sourcesChanged
     ? "导入资料已更新，请先重新整理旅行信息。"
     : previewHasExecutionConflict
@@ -545,6 +545,15 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       : preview
         ? "确认后会保存为正式行程，之后仍可修改。"
       : view?.actionHint ?? "正在整理你的旅行需求。";
+
+  function handlePrimaryAction() {
+    if (!view) return;
+    if (primaryAction.kind === "modify_request") {
+      onCancel(blockedConfirmationRecoveryNotice(view.confirmationItems) ?? undefined);
+      return;
+    }
+    if (primaryAction.kind === "preview") void buildPreview();
+  }
 
   return (
     <main className="uc-intent-shell" data-preplan-intent-workspace="true">
@@ -593,7 +602,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       {feedback && !(preview && feedback.action === "retry_apply") ? <div className="uc-intent-feedback-area"><p role={feedback.tone === "error" ? "alert" : "status"} className={feedback.tone === "error" ? "uc-intent-feedback uc-intent-feedback--error" : "uc-intent-feedback"}>{feedback.message}</p>{feedback.action === "retry_preview" ? <button type="button" className="uc-intent-secondary" onClick={() => void buildPreview()} disabled={busy || !canGeneratePreview}>重新生成路线预览</button> : null}{feedback.action === "retry_apply" ? <button type="button" className="uc-intent-secondary" onClick={() => void apply()} disabled={busy || !canApplyPreview}>重新保存正式行程</button> : null}{feedback.action === "refresh_intent" ? <button type="button" className="uc-intent-secondary" onClick={() => void compileIntent({ startNewAttempt: true })} disabled={busy}>重新整理旅行信息</button> : null}{feedback.action === "focus_place_confirmation" ? <button type="button" className="uc-intent-secondary" onClick={() => requestPlaceConfirmationFocus("must_place", { stableId: feedback.actionPlaceStableId })} disabled={busy}>前往确认该地点</button> : null}{feedback.action === "focus_fixed_place_confirmation" ? <button type="button" className="uc-intent-secondary" onClick={() => requestPlaceConfirmationFocus("fixed_place", { fieldId: feedback.actionFieldId })} disabled={busy}>前往确认预约地点</button> : null}{feedback.action === "edit_date_policy" ? <button type="button" className="uc-intent-secondary" onClick={() => openEditor("date_policy")} disabled={busy || draftVersion === null}>调整旅行时间</button> : null}{feedback.action === "edit_destination" ? <button type="button" className="uc-intent-secondary" onClick={() => openEditor("destination")} disabled={busy || draftVersion === null}>补充目的地</button> : null}</div> : null}
       {retryableRequest && editorError ? <button type="button" className="uc-intent-secondary" onClick={retryNetworkRequest} disabled={Boolean(pendingEdit)}>重新提交</button> : null}
 
-      {view ? <footer className="uc-intent-actions"><button type="button" className="uc-intent-secondary" onClick={() => onCancel()} disabled={busy}>修改原始需求</button><div><p>{preview ? "确认操作已在首版路线预览顶部。" : primaryHint}</p>{preview ? null : <button id="preplan-primary-action" type="button" className="uc-intent-primary" onClick={() => void buildPreview()} disabled={primaryDisabled}>{operation === "previewing" ? "正在生成预览……" : primaryLabel}</button>}</div></footer> : null}
+      {view ? <footer className="uc-intent-actions"><button type="button" className="uc-intent-secondary" onClick={() => onCancel()} disabled={busy}>修改原始需求</button><div><p>{preview ? "确认操作已在首版路线预览顶部。" : primaryHint}</p>{preview ? null : <button id="preplan-primary-action" type="button" className="uc-intent-primary" onClick={handlePrimaryAction} disabled={primaryDisabled}>{operation === "previewing" ? "正在生成预览……" : primaryAction.label}</button>}</div></footer> : null}
     </main>
   );
 }
