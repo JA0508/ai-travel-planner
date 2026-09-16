@@ -129,8 +129,8 @@ test("translates stale and failed operations without exposing protocol codes", (
   const staleUndo = repairFailureMessage("undo_target_not_current", "undo");
   const failed = repairFailureMessage(undefined, "apply");
 
-  assert.equal(stale, "路线刚刚发生了变化。请基于最新版本重新看看调整建议。");
-  assert.equal(staleUndo, "路线刚刚发生了变化。请基于最新版本重新看看调整建议。");
+  assert.equal(stale, "路线刚刚发生了变化。这次调整没有保存，原路线保持不变。请基于最新版本重新看看调整建议。");
+  assert.equal(staleUndo, "路线刚刚发生了变化。这次调整没有保存，原路线保持不变。请基于最新版本重新看看调整建议。");
   assert.equal(failed, "这次调整没有保存。你的原路线仍然保持不变。");
   assert.doesNotMatch(`${stale}${staleUndo}${failed}`, /409|422|stale_|proposal_|undo_target/);
 });

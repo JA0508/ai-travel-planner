@@ -110,7 +110,7 @@ export function repairFailureMessage(
   phase: "preview" | "apply" | "undo",
 ): string {
   if (isRepairStaleCode(code)) {
-    return "路线刚刚发生了变化。请基于最新版本重新看看调整建议。";
+    return "路线刚刚发生了变化。这次调整没有保存，原路线保持不变。请基于最新版本重新看看调整建议。";
   }
   if (phase === "preview") return "暂时找不到一个安全的小调整。原路线不会被改变。";
   if (phase === "apply") return "这次调整没有保存。你的原路线仍然保持不变。";

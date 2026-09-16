@@ -199,7 +199,7 @@ export function safeReplaceFailureMessage(
 ): string {
   const reasonCode = typeof context?.reason_code === "string" ? context.reason_code : code;
   if (reasonCode && ["stale_mutation_proposal", "proposal_base_revision_mismatch", "undo_target_not_current"].includes(reasonCode)) {
-    return "路线刚刚发生了变化。请基于最新路线重新选择一个地点。";
+    return "路线刚刚发生了变化。这次替换没有保存，原路线保持不变。请基于最新路线重新选择一个地点。";
   }
   if (reasonCode === "replacement_breaks_fixed_event") {
     return "这个地点可能赶不上后面的固定安排。你的原路线没有被改变。";
