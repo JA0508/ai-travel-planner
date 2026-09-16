@@ -13,3 +13,13 @@ test("first formal route handoff restores keyboard focus without affecting later
   assert.match(source, /target\.focus\(\{ preventScroll: true \}\)/);
   assert.match(source, /<section\s+ref=\{resultSectionRef\}\s+className="ec-result-entry"\s+tabIndex=\{-1\}/);
 });
+
+test("returning from confirmation places focus back in the original travel request", () => {
+  const source = readFileSync(pagePath, "utf8");
+
+  assert.match(source, /restoreTripTextFocus/);
+  assert.match(source, /document\.getElementById\("trip-text"\)/);
+  assert.match(source, /input\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(source, /onCancel=\{returnToOriginalRequest\}/);
+  assert.doesNotMatch(source, /trip-text"\)\?\.scrollIntoView/);
+});

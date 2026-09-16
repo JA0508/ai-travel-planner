@@ -1276,6 +1276,7 @@ export default function HomePage() {
   const [tripPersistence, setTripPersistence] = useState<TripPersistenceState>({
     status: "none",
   });
+  const [restoreTripTextFocus, setRestoreTripTextFocus] = useState(false);
   const [revisionHistory, setRevisionHistory] = useState<TripRevisionMetadata[]>([]);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [quickPreviewMode, setQuickPreviewMode] = useState<QuickPreviewMode>("original_parse");
@@ -2131,6 +2132,24 @@ export default function HomePage() {
 
     return () => window.clearTimeout(revealTimer);
   }, [result]);
+
+  useEffect(() => {
+    if (!restoreTripTextFocus || tripPersistence.status !== "none") {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const input = document.getElementById("trip-text") as HTMLTextAreaElement | null;
+      input?.focus({ preventScroll: true });
+      if (input) {
+        const targetTop = Math.max(0, input.getBoundingClientRect().top + window.scrollY - 96);
+        window.scrollTo({ top: targetTop, behavior: "smooth" });
+      }
+      setRestoreTripTextFocus(false);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [restoreTripTextFocus, tripPersistence.status]);
 
   useEffect(() => {
     if (!copyStatus) {
@@ -4068,6 +4087,11 @@ function buildRegenerationSemanticsViewModel(
     }
   }
 
+  function returnToOriginalRequest() {
+    setTripPersistence({ status: "none" });
+    setRestoreTripTextFocus(true);
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -4201,7 +4225,7 @@ function buildRegenerationSemanticsViewModel(
         <PrePlanIntentWorkspace
           tripId={tripPersistence.tripId}
           directUserText={tripText}
-          onCancel={() => setTripPersistence({ status: "none" })}
+          onCancel={returnToOriginalRequest}
           onApplied={(applied) => {
             setResult(applied.itinerary);
             rememberPersistedTrip(applied.trip, applied.current_revision);
