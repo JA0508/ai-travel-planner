@@ -71,7 +71,7 @@ type RepairState =
   | { status: "previewing"; day: number }
   | { status: "review"; day: number; before: RoutePreviewItinerary; preview: MutationPreviewResponse }
   | { status: "applying"; day: number; before: RoutePreviewItinerary; preview: MutationPreviewResponse }
-  | { status: "applied"; day: number; revisionId: string; undoing: boolean; errorMessage?: string }
+  | { status: "applied"; day: number; revisionId: string; revisionNumber: number; undoing: boolean; errorMessage?: string }
   | { status: "restored" }
   | { status: "error"; message: string };
 
@@ -82,7 +82,7 @@ type ReplaceState =
   | { status: "unsafe"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate }
   | { status: "review"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate; before: RoutePreviewItinerary; preview: MutationPreviewResponse; model: SafeReplacePreviewModel }
   | { status: "applying"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate; before: RoutePreviewItinerary; preview: MutationPreviewResponse; model: SafeReplacePreviewModel }
-  | { status: "applied"; stopId: string; previousName: string; replacementName: string; revisionId: string; undoing: boolean; errorMessage?: string }
+  | { status: "applied"; stopId: string; previousName: string; replacementName: string; revisionId: string; revisionNumber: number; undoing: boolean; errorMessage?: string }
   | { status: "restored"; stopId: string }
   | { status: "error"; message: string; stopId?: string };
 
@@ -222,12 +222,18 @@ export function ExecutableRoutePreview({
     }
     setReplace({ status: "idle" });
     onApplied(response.data);
-    setRepair({ status: "applied", day, revisionId: response.data.current_revision.id, undoing: false });
+    setRepair({
+      status: "applied",
+      day,
+      revisionId: response.data.current_revision.id,
+      revisionNumber: response.data.current_revision.revision_number,
+      undoing: false,
+    });
   }
 
-  async function undoRelaxation(day: number, revisionId: string) {
+  async function undoRelaxation(day: number, revisionId: string, revisionNumber: number) {
     if (!tripId || !onApplied) return;
-    setRepair({ status: "applied", day, revisionId, undoing: true });
+    setRepair({ status: "applied", day, revisionId, revisionNumber, undoing: true });
     const response = await postTripJson<MutationApplyResponse>(
       TRIP_API_ENDPOINTS.undoPersistedRevision(tripId, revisionId),
       { base_revision_id: revisionId },
@@ -239,7 +245,7 @@ export function ExecutableRoutePreview({
       const message = repairFailureMessage(response.code, "undo");
       setRepair(isRepairStaleCode(response.code)
         ? { status: "error", message }
-        : { status: "applied", day, revisionId, undoing: false, errorMessage: message });
+        : { status: "applied", day, revisionId, revisionNumber, undoing: false, errorMessage: message });
       return;
     }
     onApplied(response.data);
@@ -345,6 +351,7 @@ export function ExecutableRoutePreview({
       previousName: state.target.name,
       replacementName: state.candidate.name,
       revisionId: response.data.current_revision.id,
+      revisionNumber: response.data.current_revision.revision_number,
       undoing: false,
     });
   }
@@ -461,11 +468,11 @@ export function ExecutableRoutePreview({
         {repair.status === "applied" ? (
           <RepairFeedback
             autoFocus
-            message="这段路线已经松了一点，调整也已经保存。"
+            message={`这段路线已经松了一点，调整已保存为版本 ${repair.revisionNumber}。`}
             errorMessage={repair.errorMessage}
             actionLabel={repair.undoing ? "正在恢复…" : repair.errorMessage ? "重试撤销" : "撤销刚才的调整"}
             busy={repair.undoing}
-            onAction={() => void undoRelaxation(repair.day, repair.revisionId)}
+            onAction={() => void undoRelaxation(repair.day, repair.revisionId, repair.revisionNumber)}
           />
         ) : null}
         {repair.status === "restored" ? <RepairFeedback autoFocus eyebrow="ROUTE RESTORED" message="已恢复调整前的路线。" /> : null}
@@ -473,7 +480,7 @@ export function ExecutableRoutePreview({
         {replace.status === "applied" ? (
           <RepairFeedback
             autoFocus
-            message={`这个地点已经从${replace.previousName}换成${replace.replacementName}。其他已经确认的安排没有被改动。`}
+            message={`这个地点已经从${replace.previousName}换成${replace.replacementName}，并保存为版本 ${replace.revisionNumber}。其他已经确认的安排没有被改动。`}
             errorMessage={replace.errorMessage}
             actionLabel={replace.undoing ? "正在恢复…" : replace.errorMessage ? "重试撤销" : "撤销刚才的替换"}
             busy={replace.undoing}
