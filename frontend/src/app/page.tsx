@@ -1618,6 +1618,35 @@ export default function HomePage() {
     }
   }
 
+  async function loadLatestSavedRoute(): Promise<string | null> {
+    if (tripPersistence.status !== "saved") {
+      return "暂时无法确定需要载入哪一份路线。当前页面没有改动任何路线。";
+    }
+    const response = await getTripJson<TripCurrentResponse>(
+      TRIP_API_ENDPOINTS.getTrip(tripPersistence.tripId),
+      "载入最新路线失败",
+      "后端暂时不可用，当前页面没有改动任何路线。",
+    );
+    if (!response.ok) {
+      return "暂时无法载入最新路线。当前页面没有改动任何路线。";
+    }
+    const current = response.data;
+    setResult(current.itinerary);
+    rememberPersistedTrip(current.trip, current.current_revision);
+    setGenerationContext(
+      current.itinerary.trip_intent?.current_intent
+        ? buildGenerationContextFromRegenerationIntent(current.itinerary.trip_intent.current_intent)
+        : generationContext,
+    );
+    syncFormStateWithRegenerationIntent(
+      current.itinerary.trip_intent?.current_intent
+        ?? current.itinerary.planning_assumptions?.regeneration_intent
+        ?? null,
+    );
+    await refreshRevisionHistory(current.trip.id);
+    return null;
+  }
+
   async function refreshCandidates(tripId: string) {
     setCandidateWorkspace({ status: "loading" });
     const response = await getTripJson<CandidateListResponse>(
@@ -4907,6 +4936,7 @@ function buildRegenerationSemanticsViewModel(
                   rememberPersistedTrip(applied.trip, applied.current_revision);
                   void refreshRevisionHistory(applied.trip.id);
                 }}
+                onReloadLatest={loadLatestSavedRoute}
               />
             ) : null}
             <RouteWorkspaceContainer

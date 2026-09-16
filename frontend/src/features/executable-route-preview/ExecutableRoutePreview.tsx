@@ -56,6 +56,7 @@ type Props = {
   tripId?: string;
   baseRevisionId?: string;
   onApplied?: (response: MutationApplyResponse) => void;
+  onReloadLatest?: () => Promise<string | null>;
   destination?: string | null;
   draftConfirmation?: {
     label: string;
@@ -73,7 +74,8 @@ type RepairState =
   | { status: "applying"; day: number; before: RoutePreviewItinerary; preview: MutationPreviewResponse }
   | { status: "applied"; day: number; revisionId: string; revisionNumber: number; undoing: boolean; errorMessage?: string }
   | { status: "restored" }
-  | { status: "error"; message: string };
+  | { status: "reloaded" }
+  | { status: "error"; message: string; reloadable?: boolean };
 
 type ReplaceState =
   | { status: "idle" }
@@ -84,7 +86,8 @@ type ReplaceState =
   | { status: "applying"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate; before: RoutePreviewItinerary; preview: MutationPreviewResponse; model: SafeReplacePreviewModel }
   | { status: "applied"; stopId: string; previousName: string; replacementName: string; revisionId: string; revisionNumber: number; undoing: boolean; errorMessage?: string }
   | { status: "restored"; stopId: string }
-  | { status: "error"; message: string; stopId?: string };
+  | { status: "reloaded"; stopId: string }
+  | { status: "error"; message: string; stopId?: string; reloadable?: boolean };
 
 function replacementFocusStopId(state: ReplaceState): string | null {
   if ("target" in state) return state.target.stable_id ?? null;
@@ -122,6 +125,7 @@ export function ExecutableRoutePreview({
   tripId,
   baseRevisionId,
   onApplied,
+  onReloadLatest,
   destination,
   draftConfirmation,
 }: Props) {
@@ -129,6 +133,7 @@ export function ExecutableRoutePreview({
   const risks = useMemo(() => buildUserFacingRisks(itinerary, loads), [itinerary, loads]);
   const [repair, setRepair] = useState<RepairState>({ status: "idle" });
   const [replace, setReplace] = useState<ReplaceState>({ status: "idle" });
+  const [reloadingLatest, setReloadingLatest] = useState(false);
   const previewRequestIdRef = useRef(0);
   const replaceRequestsRef = useRef(new LatestReplaceRequest());
   const replacementDismissFocusStopIdRef = useRef<string | null>(null);
@@ -217,7 +222,11 @@ export function ExecutableRoutePreview({
       { headers: { "X-Idempotency-Key": `day-relax:${preview.proposal.id}:${preview.proposal.proposal_digest.slice(0, 16)}` } },
     );
     if (!response.ok) {
-      setRepair({ status: "error", message: repairFailureMessage(response.code, "apply") });
+      setRepair({
+        status: "error",
+        message: repairFailureMessage(response.code, "apply"),
+        reloadable: isStaleRouteMutation(response.code, response.context),
+      });
       return;
     }
     setReplace({ status: "idle" });
@@ -244,7 +253,7 @@ export function ExecutableRoutePreview({
     if (!response.ok) {
       const message = repairFailureMessage(response.code, "undo");
       setRepair(isRepairStaleCode(response.code)
-        ? { status: "error", message }
+        ? { status: "error", message, reloadable: true }
         : { status: "applied", day, revisionId, revisionNumber, undoing: false, errorMessage: message });
       return;
     }
@@ -340,7 +349,12 @@ export function ExecutableRoutePreview({
       { headers: { "X-Idempotency-Key": `safe-replace:${state.preview.proposal.id}:${state.preview.proposal.proposal_digest.slice(0, 16)}` } },
     );
     if (!response.ok) {
-      setReplace({ status: "error", message: safeReplaceFailureMessage(response.code, "apply", response.context), stopId: state.target.stable_id ?? undefined });
+      setReplace({
+        status: "error",
+        message: safeReplaceFailureMessage(response.code, "apply", response.context),
+        stopId: state.target.stable_id ?? undefined,
+        reloadable: isStaleRouteMutation(response.code, response.context),
+      });
       return;
     }
     setRepair({ status: "idle" });
@@ -367,7 +381,12 @@ export function ExecutableRoutePreview({
       { headers: { "X-Idempotency-Key": `undo-safe-replace:${state.revisionId}` } },
     );
     if (!response.ok) {
-      setReplace({ ...state, undoing: false, errorMessage: safeReplaceFailureMessage(response.code, "undo", response.context) });
+      const message = safeReplaceFailureMessage(response.code, "undo", response.context);
+      if (isStaleRouteMutation(response.code, response.context)) {
+        setReplace({ status: "error", message, stopId: state.stopId, reloadable: true });
+      } else {
+        setReplace({ ...state, undoing: false, errorMessage: message });
+      }
       return;
     }
     onApplied(response.data);
@@ -378,6 +397,21 @@ export function ExecutableRoutePreview({
     replacementDismissFocusStopIdRef.current = replacementFocusStopId(replace);
     replaceRequestsRef.current.cancel();
     setReplace({ status: "idle" });
+  }
+
+  async function reloadLatestRoute(kind: "repair" | "replace", message: string, stopId?: string) {
+    if (!onReloadLatest || reloadingLatest) return;
+    setReloadingLatest(true);
+    const reloadError = await onReloadLatest();
+    setReloadingLatest(false);
+    if (reloadError) {
+      const state = { status: "error" as const, message: `${message} ${reloadError}`, reloadable: true };
+      if (kind === "repair") setRepair(state);
+      else setReplace({ ...state, stopId });
+      return;
+    }
+    if (kind === "repair") setRepair({ status: "reloaded" });
+    else setReplace({ status: "reloaded", stopId: stopId ?? "" });
   }
 
   function showOtherCandidates() {
@@ -476,7 +510,8 @@ export function ExecutableRoutePreview({
           />
         ) : null}
         {repair.status === "restored" ? <RepairFeedback autoFocus eyebrow="ROUTE RESTORED" message="已恢复调整前的路线。" /> : null}
-        {repair.status === "error" ? <RepairError message={repair.message} onDismiss={dismissRepair} /> : null}
+        {repair.status === "reloaded" ? <RepairFeedback autoFocus eyebrow="LATEST ROUTE LOADED" message="已载入最新保存版本；没有应用刚才的调整。" /> : null}
+        {repair.status === "error" ? <RepairError message={repair.message} onDismiss={dismissRepair} actionLabel={repair.reloadable ? "载入最新路线" : undefined} busy={reloadingLatest} onAction={repair.reloadable ? () => void reloadLatestRoute("repair", repair.message) : undefined} /> : null}
         {replace.status === "applied" ? (
           <RepairFeedback
             autoFocus
@@ -488,7 +523,8 @@ export function ExecutableRoutePreview({
           />
         ) : null}
         {replace.status === "restored" ? <RepairFeedback autoFocus eyebrow="ROUTE RESTORED" message="已恢复原来的地点和相邻路线。" /> : null}
-        {replace.status === "error" ? <RepairError message={replace.message} onDismiss={dismissReplacement} /> : null}
+        {replace.status === "reloaded" ? <RepairFeedback autoFocus eyebrow="LATEST ROUTE LOADED" message="已载入最新保存版本；没有应用刚才的替换。" /> : null}
+        {replace.status === "error" ? <RepairError message={replace.message} onDismiss={dismissReplacement} actionLabel={replace.reloadable ? "载入最新路线" : undefined} busy={reloadingLatest} onAction={replace.reloadable ? () => void reloadLatestRoute("replace", replace.message, replace.stopId) : undefined} /> : null}
         <RoutePreviewStyles />
       </section>
     );
@@ -580,6 +616,20 @@ function repairImpact(preview: MutationPreviewResponse): LocalRepairImpact | und
   return stopId ? { ...impact, stop_id: stopId } : impact;
 }
 
+function isStaleRouteMutation(code: string | undefined, context?: Record<string, unknown>): boolean {
+  const staleCodes = [
+    "stale_base_revision",
+    "stale_mutation_proposal",
+    "mutation_proposal_expired",
+    "mutation_proposal_invalidated",
+    "proposal_base_revision_mismatch",
+    "undo_target_not_current",
+  ];
+  return [code, context?.reason_code]
+    .filter((value): value is string => typeof value === "string")
+    .some((value) => staleCodes.includes(value));
+}
+
 function RepairFeedback({
   autoFocus = false,
   eyebrow = "ROUTE SAVED",
@@ -628,8 +678,20 @@ function RepairFeedback({
   );
 }
 
-function RepairError({ message, onDismiss }: { message: string; onDismiss: () => void }) {
-  return <aside className="erp-repair-error" role="alert"><div><p>这次没有改动路线</p><strong>{message}</strong></div><button type="button" onClick={onDismiss} aria-label="关闭调整提示">×</button></aside>;
+function RepairError({
+  message,
+  onDismiss,
+  actionLabel,
+  busy = false,
+  onAction,
+}: {
+  message: string;
+  onDismiss: () => void;
+  actionLabel?: string;
+  busy?: boolean;
+  onAction?: () => void;
+}) {
+  return <aside className="erp-repair-error" role="alert"><div><p>这次没有改动路线</p><strong>{message}</strong></div><div style={{ display: "flex", alignItems: "center", gap: 16 }}>{actionLabel && onAction ? <button type="button" onClick={onAction} disabled={busy}>{busy ? "正在载入…" : actionLabel}</button> : null}<button type="button" style={{ border: 0, fontSize: 24 }} onClick={onDismiss} aria-label="关闭调整提示">×</button></div></aside>;
 }
 
 function RoutePreviewStyles() {

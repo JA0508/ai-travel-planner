@@ -6,6 +6,7 @@ export type RoadbookRepairStatus =
   | "undoing"
   | "applied"
   | "restored"
+  | "reloaded"
   | "error";
 
 type RoadbookRelaxActionInput = {

@@ -453,6 +453,36 @@ test("Safe replacement shows one useful candidate without padding", async ({ pag
   assertClean();
 });
 
+test("Stale saved replacement lets the traveler load the latest route without retrying the old proposal", async ({ page }) => {
+  const assertClean = installNetworkGate(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const saved = await createSavedRoadbook(page);
+  const preview = await openSafeReplaceCandidates(page, "湖畔小馆", 2);
+  await selectReplacementCandidate(page, "茶人村");
+  await expect(page.getByRole("heading", { name: "换成这里以后，这一段会这样走" })).toBeVisible();
+
+  let applyRequests = 0;
+  let latestRouteReads = 0;
+  page.on("request", (request) => {
+    if (request.url().includes("/mutation-proposals/") && request.url().endsWith("/apply")) applyRequests += 1;
+    if (request.url().endsWith(`/api/trips/${saved.trip.id}`) && request.method() === "GET") latestRouteReads += 1;
+  });
+  await page.route("**/api/trips/*/mutation-proposals/*/apply", (route) => route.fulfill({
+    status: 409,
+    contentType: "application/json",
+    body: JSON.stringify({ error: { code: "stale_mutation_proposal", message: "The mutation proposal is based on a stale revision." } }),
+  }));
+
+  await page.getByRole("button", { name: "换成这个地点" }).click();
+  await expect(page.getByText("这次替换没有保存，原路线保持不变。", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "载入最新路线" }).click();
+
+  await expect(page.getByText("已载入最新保存版本；没有应用刚才的替换。")).toBeVisible();
+  expect(latestRouteReads).toBe(1);
+  expect(applyRequests).toBe(1);
+  assertClean();
+});
+
 test("Saved Roadbook exposes a safe adjustment index before a user hunts through place details", async ({ page }) => {
   const assertClean = installNetworkGate(page);
   await page.setViewportSize({ width: 1440, height: 900 });
