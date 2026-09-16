@@ -7,6 +7,7 @@ import { ImportReviewWorkspace } from "@/features/imports/ImportReviewWorkspace"
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption, SourceLinkedTripIntentEnvelope } from "@/features/intent-confirmation/intentTypes";
 import { buildPrePlanConfirmationViewModel } from "./prePlanConfirmationModel";
 import { resolvePrePlanCompileAttempt, type PrePlanCompileAttempt } from "./prePlanCompileAttempt";
+import { prePlanPrimaryActionLabel } from "./prePlanPrimaryActionCopy";
 import { PrePlanConfirmationQueue, type PlaceConfirmationFocusRequest } from "./PrePlanConfirmationQueue";
 import { isStalePrePlanIntentError, plannerHandoffRecoveryAction, plannerHandoffRecoveryFieldId, plannerHandoffRecoveryPlaceStableId, previewTimedOutMessage, previewUnavailableMessage, savePreviewUnavailableMessage, userFacingPrePlanRequestError } from "./prePlanRequestError";
 import { ExecutableRoutePreview } from "@/features/executable-route-preview/ExecutableRoutePreview";
@@ -530,7 +531,12 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     }));
   }
 
-  const primaryLabel = "生成路线预览";
+  const primaryLabel = prePlanPrimaryActionLabel({
+    sourcesChanged,
+    canGeneratePreview,
+    requiresTravelInformationEdit: Boolean(view?.requiresTravelInformationEdit),
+    remainingActionableConfirmationCount: view?.remainingActionableConfirmationCount ?? 0,
+  });
   const primaryDisabled = busy || !canGeneratePreview;
   const primaryHint = sourcesChanged
     ? "导入资料已更新，请先重新整理旅行信息。"
