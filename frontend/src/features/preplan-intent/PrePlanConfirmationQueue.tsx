@@ -98,16 +98,18 @@ export function PrePlanConfirmationQueue({
   renderClarification,
 }: Props) {
   const questionById = useMemo(() => new Map(questions.map((question) => [question.question_id, question])), [questions]);
-  const blockedWithoutAction = !canGeneratePreview && items.length === 0;
-  const remainingCopy = items.length
-    ? `还需确认 ${items.length} 项`
-    : blockedWithoutAction
-      ? "还需要检查需求"
-      : "可以生成首版路线";
   const actionableItems = useMemo(
     () => items.filter((item) => isActionableItem(item, identities, events, questionById)),
     [events, identities, items, questionById],
   );
+  const blockedWithoutAction = !canGeneratePreview && actionableItems.length === 0;
+  const remainingCopy = actionableItems.length
+    ? `还需确认 ${actionableItems.length} 项`
+    : blockedWithoutAction
+      ? "请修改旅行信息"
+      : "可以生成首版路线";
+  const pendingLaneLabel = blockedWithoutAction ? "需要修改" : "还需确认";
+  const pendingLaneHeading = blockedWithoutAction ? "请先调整旅行信息再继续" : "只处理会影响这版路线的项目";
   const [expandedItemId, setExpandedItemId] = useState<string | null>(() => actionableItems[0]?.id ?? null);
   const completedPlaceItemIdRef = useRef<string | null>(null);
   const confirmationHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -176,13 +178,13 @@ export function PrePlanConfirmationQueue({
           <h2 ref={confirmationHeadingRef} tabIndex={-1}>{remainingCopy}</h2>
           {placeFocusNotice ? <p className="uc-confirmation-muted" role="status">{placeFocusNotice}</p> : null}
         </div>
-        <span>{items.length ? "每完成一项，路线就更可靠" : blockedWithoutAction ? "请先补齐路线条件" : "关键信息已齐备"}</span>
+        <span>{actionableItems.length ? "每完成一项，路线就更可靠" : blockedWithoutAction ? "请先调整旅行信息" : "关键信息已齐备"}</span>
       </div>
 
-      {blockedWithoutAction ? <div className="uc-confirmation-recovery"><p className="uc-confirmation-muted">当前没有可直接确认的项目。请补充或校正路线条件后再继续。</p><button type="button" className="uc-intent-secondary" onClick={onModifyRequest} disabled={busy}>修改原始需求</button></div> : null}
+      {blockedWithoutAction ? <div className="uc-confirmation-recovery"><p className="uc-confirmation-muted">目前没有可直接确认的项目。请修改旅行信息后再继续。</p><button type="button" className="uc-intent-secondary" onClick={onModifyRequest} disabled={busy}>修改旅行信息</button></div> : null}
 
-      {items.length ? <section className="uc-confirmation-lane uc-confirmation-lane--todo" aria-label="还需确认">
-        <div className="uc-confirmation-lane-heading"><span>01</span><div><p>还需确认</p><h3>只处理会影响这版路线的项目</h3></div></div>
+      {items.length ? <section className="uc-confirmation-lane uc-confirmation-lane--todo" aria-label={pendingLaneLabel}>
+        <div className="uc-confirmation-lane-heading"><span>01</span><div><p>{pendingLaneLabel}</p><h3>{pendingLaneHeading}</h3></div></div>
         <div className="uc-confirmation-items">
           {items.map((item) => <ConfirmationItemCard
             key={item.id}
@@ -204,7 +206,7 @@ export function PrePlanConfirmationQueue({
       </section> : null}
 
       <section className="uc-confirmation-lane uc-confirmation-lane--confirmed" aria-label="已确认">
-        <div className="uc-confirmation-lane-heading"><span>{items.length ? "02" : "01"}</span><div><p>已确认</p><h3>这些信息会作为路线依据保留</h3></div></div>
+        <div className="uc-confirmation-lane-heading"><span>{actionableItems.length ? "02" : "01"}</span><div><p>已确认</p><h3>这些信息会作为路线依据保留</h3></div></div>
         {confirmedItems.length ? (
           <ul className="uc-confirmation-confirmed-list">
             {confirmedItems.map((item) => <li key={item.id}><strong>{item.title}</strong><span>{item.detail}</span></li>)}

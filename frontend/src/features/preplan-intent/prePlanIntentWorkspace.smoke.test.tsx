@@ -415,10 +415,40 @@ test("confirmation queue never calls a blocked zero-item Draft ready", () => {
     />,
   );
 
-  assert.match(html, /还需要检查需求/);
-  assert.match(html, /当前没有可直接确认的项目/);
-  assert.match(html, /<button[^>]*>修改原始需求<\/button>/);
+  assert.match(html, /请修改旅行信息/);
+  assert.match(html, /目前没有可直接确认的项目/);
+  assert.match(html, /<button[^>]*>修改旅行信息<\/button>/);
   assert.doesNotMatch(html, /关键信息已齐备/);
+});
+
+test("confirmation queue tells travelers to revise the request when no displayed blocker can be handled here", () => {
+  const html = renderToStaticMarkup(
+    <PrePlanConfirmationQueue
+      items={[{
+        id: "conflict:dates",
+        kind: "conflict",
+        title: "到达时间不能晚于离开时间",
+        detail: "请调整到达或离开的时间后再继续。",
+        questionId: null,
+        tone: "conflict",
+      }]}
+      confirmedItems={[]}
+      identities={[]}
+      events={[]}
+      questions={[]}
+      busy={false}
+      canGeneratePreview={false}
+      onModifyRequest={() => undefined}
+      onConfirmPlace={() => undefined}
+      onSearchPlace={async () => ({ kind: "failed", message: "地点服务暂时不可用。", retryable: true })}
+      onUpdateFixedLocation={() => undefined}
+      renderClarification={() => null}
+    />,
+  );
+
+  assert.match(html, /请修改旅行信息/);
+  assert.match(html, /目前没有可直接确认的项目/);
+  assert.doesNotMatch(html, /还需确认 1 项/);
 });
 
 test("pre-plan confirmation controls retain a visible keyboard focus ring", () => {
