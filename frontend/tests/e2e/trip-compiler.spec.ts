@@ -451,6 +451,31 @@ test("Safe replacement shows one useful candidate without padding", async ({ pag
   assertClean();
 });
 
+test("Saved Roadbook exposes a safe adjustment index before a user hunts through place details", async ({ page }) => {
+  const assertClean = installNetworkGate(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await createSavedRoadbook(page);
+  const adjustmentIndex = page.getByRole("region", { name: "调整这份行程" });
+  await expect(adjustmentIndex).toBeVisible();
+  await expect(adjustmentIndex).toContainText("可以安全检查的小调整");
+  const previewRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("preview-completion-task-candidates") || request.url().includes("local-repairs/relax-day/preview")) {
+      previewRequests.push(request.url());
+    }
+  });
+
+  await adjustmentIndex.getByRole("button", { name: "检查「湖畔小馆」能否安全替换" }).click();
+
+  await expect(page.getByRole("button", { name: "换一个" })).toBeFocused();
+  expect(previewRequests).toEqual([]);
+
+  await adjustmentIndex.getByRole("button", { name: /查看第 \d+ 天的放松方案/ }).click();
+  await expect(page.getByRole("button", { name: /让第 \d+ 天轻松一些/ })).toBeFocused();
+  expect(previewRequests).toEqual([]);
+  assertClean();
+});
+
 test("Safe replacement remains usable and undoable on mobile", async ({ page }) => {
   const assertClean = installNetworkGate(page);
   await page.setViewportSize({ width: 390, height: 844 });

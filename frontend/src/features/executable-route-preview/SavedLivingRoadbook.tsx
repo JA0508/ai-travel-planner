@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   PlaceDetailPanelContainer,
   type ItineraryLike,
@@ -24,6 +24,10 @@ import {
   buildRoadbookRelaxAction,
   type RoadbookRepairStatus,
 } from "./roadbookRepairAction";
+import {
+  buildRoadbookAdjustmentIndex,
+  type RoadbookAdjustmentAction,
+} from "./roadbookAdjustmentIndexModel";
 import { isSafeReplaceEligible } from "./safeReplaceModel";
 
 type Props = {
@@ -54,6 +58,7 @@ export function SavedLivingRoadbook({
   onReplaceStop,
 }: Props) {
   const workspaceItinerary = useMemo(() => toWorkspaceItinerary(itinerary), [itinerary]);
+  const [adjustmentFocus, setAdjustmentFocus] = useState<RoadbookAdjustmentAction | null>(null);
   const workspace = useEditableRouteWorkspaceState({
     itinerary: workspaceItinerary,
     routePreviewEndpoint: TRIP_API_ENDPOINTS.previewRouteSegments,
@@ -104,6 +109,11 @@ export function SavedLivingRoadbook({
   const hasSafeReplacement = editableDays.some((day) => day.stops.some((stop) => isSafeReplaceEligible(stop.item)));
   const hasRelaxableDay = canRepair && loads.some((load) => load.pace === "rushed" || load.pace === "infeasible");
   const adjustmentGuide = buildRoadbookAdjustmentGuide({ hasSafeReplacement, hasRelaxableDay });
+  const adjustmentIndex = useMemo(() => buildRoadbookAdjustmentIndex({
+    canRepair,
+    loads,
+    stops: editableDays.flatMap((day) => day.stops.map((stop) => ({ ...stop.item, day: day.day }))),
+  }), [canRepair, editableDays, loads]);
   const city = destination
     ?? editableDays.flatMap((day) => day.stops).find((stop) => stop.item.city)?.item.city
     ?? "这次旅行";
@@ -119,6 +129,26 @@ export function SavedLivingRoadbook({
     setSelectedDay(dayNumber);
     setActiveStopId(day?.stops[0]?.id ?? null);
   }
+
+  function revealAdjustment(action: RoadbookAdjustmentAction) {
+    const day = editableDays.find((entry) => entry.day === action.day);
+    setSelectedDay(action.day);
+    setActiveStopId(action.kind === "replace_stop" ? action.stopId : day?.stops[0]?.id ?? null);
+    setAdjustmentFocus(action);
+  }
+
+  useEffect(() => {
+    if (!adjustmentFocus) return;
+    const focusTarget = () => {
+      const target = adjustmentFocus.kind === "relax_day"
+        ? document.querySelector<HTMLButtonElement>(`[data-roadbook-relax-day="${adjustmentFocus.day}"]`)
+        : Array.from(document.querySelectorAll<HTMLButtonElement>("[data-roadbook-replace-stop]"))
+          .find((entry) => entry.dataset.roadbookReplaceStop === adjustmentFocus.stopId);
+      target?.focus();
+      setAdjustmentFocus(null);
+    };
+    window.requestAnimationFrame(focusTarget);
+  }, [activeStopId, adjustmentFocus, selectedDay]);
 
   return (
     <div className="roadbook" data-roadbook-layout="living">
@@ -162,6 +192,8 @@ export function SavedLivingRoadbook({
           <small>{adjustmentGuide}</small>
         </div>
       </aside>
+
+      <RoadbookAdjustmentIndex index={adjustmentIndex} onChoose={revealAdjustment} />
 
       <div className="roadbook__mobile-current" aria-label="当前和下一站">
         <div><span>当前</span><strong>{activeStop?.item.name ?? selectedDayView?.stops[0]?.item.name ?? "待规划"}</strong></div>
@@ -425,12 +457,48 @@ function RoadbookReplaceEntry({
         {eligible ? <span>只换这一站，前后路线会先重新检查。</span> : null}
       </div>
       {eligible ? (
-        <button type="button" onClick={onReplace} disabled={controlStatus !== "available"}>
+        <button type="button" data-roadbook-replace-stop={item.stable_id} onClick={onReplace} disabled={controlStatus !== "available"}>
           {controlLabel} {controlStatus === "available" ? <i aria-hidden="true">→</i> : null}
         </button>
       ) : null}
     </section>
   );
+}
+
+function RoadbookAdjustmentIndex({
+  index,
+  onChoose,
+}: {
+  index: ReturnType<typeof buildRoadbookAdjustmentIndex>;
+  onChoose: (action: RoadbookAdjustmentAction) => void;
+}) {
+  return (
+    <section className="roadbook-adjustment-index" aria-label="调整这份行程">
+      <div>
+        <p>LOCAL REPAIR / START HERE</p>
+        <h2>想调整一下？</h2>
+        <span>{index.summary}</span>
+      </div>
+      {index.actions.length ? (
+        <div className="roadbook-adjustment-index__actions">
+          {index.actions.map((action) => (
+            <button key={action.kind === "relax_day" ? `relax-${action.day}` : action.stopId} type="button" onClick={() => onChoose(action)}>
+              {action.label}<i aria-hidden="true">→</i>
+            </button>
+          ))}
+        </div>
+      ) : <small>固定安排和你明确要去的地点会继续按原计划保留。</small>}
+      <RoadbookAdjustmentIndexStyles />
+    </section>
+  );
+}
+
+function RoadbookAdjustmentIndexStyles() {
+  return <style>{`
+    .roadbook-adjustment-index{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(0,1.2fr);gap:28px;align-items:center;border-top:1px solid var(--roadbook-line);border-bottom:1px solid var(--roadbook-line);padding:19px 8px;background:var(--roadbook-paper-deep)}
+    .roadbook-adjustment-index>div{display:grid;gap:5px}.roadbook-adjustment-index p{margin:0;color:var(--roadbook-orange);font-size:10px;font-weight:900;letter-spacing:.14em}.roadbook-adjustment-index h2{margin:0;font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:25px;line-height:1}.roadbook-adjustment-index span,.roadbook-adjustment-index>small{color:var(--roadbook-muted);font-size:12px;line-height:1.5}.roadbook-adjustment-index__actions{display:flex!important;flex-wrap:wrap;justify-content:flex-end;gap:10px}.roadbook-adjustment-index button{min-height:44px;border:1px solid var(--roadbook-ink);border-radius:2px;background:var(--roadbook-paper);padding:9px 13px;color:var(--roadbook-ink);font:inherit;font-size:12px;font-weight:900;cursor:pointer}.roadbook-adjustment-index button i{margin-left:8px;color:var(--roadbook-orange);font-style:normal}.roadbook-adjustment-index button:focus-visible{outline:3px solid rgba(230,90,40,.38);outline-offset:3px}.roadbook-adjustment-index>small{max-width:440px;justify-self:end;text-align:right}
+    @media(max-width:620px){.roadbook-adjustment-index{grid-template-columns:1fr;gap:14px;padding:19px 18px}.roadbook-adjustment-index__actions{justify-content:start}.roadbook-adjustment-index button{width:100%;text-align:left}.roadbook-adjustment-index>small{justify-self:start;text-align:left}}
+  `}</style>;
 }
 
 export function buildRoadbookAdjustmentGuide({
