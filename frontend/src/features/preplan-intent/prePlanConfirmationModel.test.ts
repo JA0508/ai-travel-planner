@@ -159,3 +159,37 @@ test("fixed events retain their own identity state in the queue", () => {
     detail: "museum 已确认地点 · 时间已保留",
   }]);
 });
+
+test("a conflict that cannot be resolved in the queue asks the traveler to revise information", () => {
+  const base = envelope();
+  const view = buildPrePlanConfirmationViewModel(envelope({
+    planner_ready_status: "needs_clarification",
+    clarification_queue: [{
+      question_id: "arrival-departure-conflict",
+      field_paths: ["trip.arrival", "trip.departure"],
+      answer_field_path: "trip.date_policy",
+      answer_value_type: "string",
+      resolution_kind: "inline_answer",
+      editor_field_path: "trip.date_policy",
+      question: "到达时间不能晚于离开时间。",
+      priority: 1,
+      blocking: true,
+      impact: "planner_blocking",
+      reason_code: "arrival_after_departure",
+      options: [],
+    }],
+    formal_contract: {
+      ...base.formal_contract,
+      readiness: {
+        ...base.formal_contract.readiness,
+        status: "needs_clarification",
+        planner_contract_complete: false,
+        blocking_issue_codes: ["arrival_after_departure"],
+      },
+    },
+  }));
+
+  assert.equal(view.remainingActionableConfirmationCount, 0);
+  assert.equal(view.requiresTravelInformationEdit, true);
+  assert.equal(view.actionHint, "请先修改旅行信息，再生成首版路线。");
+});

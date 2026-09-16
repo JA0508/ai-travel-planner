@@ -553,7 +553,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
 
       {view && intent ? <>
         <section className="uc-intent-card uc-intent-trip-brief" aria-label="已理解">
-          <div className="uc-intent-section-heading"><div><p>已理解</p><h2>我先按你的描述整理好了</h2></div><span className={view.canGeneratePreview ? "uc-intent-status uc-intent-status--ready" : "uc-intent-status uc-intent-status--blocked"}>{view.canGeneratePreview ? "可以开始规划" : `还差 ${view.remainingConfirmationCount} 项`}</span></div>
+          <div className="uc-intent-section-heading"><div><p>已理解</p><h2>我先按你的描述整理好了</h2></div><span className={view.canGeneratePreview ? "uc-intent-status uc-intent-status--ready" : "uc-intent-status uc-intent-status--blocked"}>{view.canGeneratePreview ? "可以开始规划" : view.requiresTravelInformationEdit ? "请修改旅行信息" : `还差 ${view.remainingActionableConfirmationCount} 项`}</span></div>
           <div className="uc-intent-summary">{view.summary.map((item) => <EditableSummaryItem key={item.label} label={item.label} value={item.value} editable={summaryEditor(item.label)} onEdit={openEditor} disabled={busy || draftVersion === null} />)}</div>
           <p className="uc-intent-brief-note">{view.mustPlaces.length ? `已记录 ${view.mustPlaces.length} 个想去的地点；确认具体地点后才会进入路线。` : "路线会依据目的地、时间和旅行节奏安排；你仍可补充想去的地点。"}</p>
           {activeEditor && formDraft ? <CriticalEditorForm editor={activeEditor} draft={formDraft} pending={Boolean(pendingEdit)} error={editorError} onChange={setFormDraft} onSave={saveEditor} onCancel={closeEditor} /> : null}

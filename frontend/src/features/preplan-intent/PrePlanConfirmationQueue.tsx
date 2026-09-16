@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { FixedEventIntent, IntentClarification, PlaceIdentity, PlaceResolutionOption } from "@/features/intent-confirmation/intentTypes";
-import type { ConfirmationItem, ConfirmedItem } from "./prePlanConfirmationModel";
+import { getActionableConfirmationItems, type ConfirmationItem, type ConfirmedItem } from "./prePlanConfirmationModel";
 import type { PlaceIdentitySuggestionSearchResult, PrePlanPlaceIdentitySuggestionsResponse } from "./draftIntentEditApi";
 
 export type PlaceConfirmationFocusRequest = {
@@ -99,8 +99,8 @@ export function PrePlanConfirmationQueue({
 }: Props) {
   const questionById = useMemo(() => new Map(questions.map((question) => [question.question_id, question])), [questions]);
   const actionableItems = useMemo(
-    () => items.filter((item) => isActionableItem(item, identities, events, questionById)),
-    [events, identities, items, questionById],
+    () => getActionableConfirmationItems(items, identities, events, questions),
+    [events, identities, items, questions],
   );
   const blockedWithoutAction = !canGeneratePreview && actionableItems.length === 0;
   const remainingCopy = actionableItems.length
@@ -280,19 +280,6 @@ function ConfirmationItemCard({
       {item.kind === "fixed_place" && event && !identity ? <FixedLocationPrompt event={event} busy={busy} onSave={onUpdateFixedLocation} /> : null}
     </div> : null}
   </article>;
-}
-
-function isActionableItem(
-  item: ConfirmationItem,
-  identities: PlaceIdentity[],
-  events: FixedEventIntent[],
-  questionById: Map<string, IntentClarification>,
-): boolean {
-  if (item.kind === "conflict") return false;
-  if (item.kind === "clarification") return Boolean(item.questionId && questionById.has(item.questionId));
-  if (item.kind === "must_place") return identities.some((identity) => identity.stable_id === item.identityId);
-  if (item.kind === "fixed_place") return events.some((event) => event.event_id === item.eventId);
-  return false;
 }
 
 function ConfirmationItemCopy({ item }: { item: ConfirmationItem }) {

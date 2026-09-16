@@ -28,6 +28,13 @@ test("pre-plan workspace starts with a plain-language confirmation surface", () 
   assert.doesNotMatch(html, /provenance graph/i);
 });
 
+test("the summary does not promise an in-page confirmation when only request edits can resolve a blocker", () => {
+  const source = readFileSync(componentPath, "utf8");
+
+  assert.match(source, /view\.requiresTravelInformationEdit \? "请修改旅行信息"/);
+  assert.doesNotMatch(source, /view\.canGeneratePreview \? "可以开始规划" : `还差 \$\{view\.remainingConfirmationCount\} 项`/);
+});
+
 test("pre-plan bootstrap restores an existing intent before compiling a new Draft revision", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /autoCompileTripRef/);

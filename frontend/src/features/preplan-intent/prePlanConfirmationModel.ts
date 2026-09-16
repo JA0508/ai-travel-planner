@@ -52,6 +52,8 @@ export type PrePlanConfirmationViewModel = {
   confirmationItems: ConfirmationItem[];
   confirmedItems: ConfirmedItem[];
   remainingConfirmationCount: number;
+  remainingActionableConfirmationCount: number;
+  requiresTravelInformationEdit: boolean;
   assumptions: Array<{ title: string; detail: string }>;
   fixedArrangements: Array<{ title: string; detail: string }>;
   sourceLines: Array<{ label: string; source: string }>;
@@ -109,6 +111,14 @@ export function buildPrePlanConfirmationViewModel(
   // browser from issuing a request that the server must reject, while the server
   // remains the authority for every new immutable revision.
   const canGeneratePreview = isPlannerReady(envelope.planner_ready_status) && unresolvedFixedEventIds.length === 0;
+  const actionableConfirmationItems = getActionableConfirmationItems(
+    confirmationItems,
+    identities,
+    formal.fixed_events,
+    envelope.clarification_queue,
+  );
+  const remainingActionableConfirmationCount = actionableConfirmationItems.length;
+  const requiresTravelInformationEdit = !canGeneratePreview && remainingActionableConfirmationCount === 0;
 
   return {
     heading: canGeneratePreview ? "可以开始规划" : "还需要补充信息",
@@ -124,6 +134,8 @@ export function buildPrePlanConfirmationViewModel(
     confirmationItems,
     confirmedItems: confirmedItems(formal.fixed_events, identities),
     remainingConfirmationCount: confirmationItems.length,
+    remainingActionableConfirmationCount,
+    requiresTravelInformationEdit,
     assumptions,
     fixedArrangements: formal.fixed_events.map(fixedArrangementCopy),
     sourceLines: envelope.fields
@@ -136,10 +148,25 @@ export function buildPrePlanConfirmationViewModel(
       ? assumptions.length
         ? `将按 ${assumptions.length} 项暂定设置生成，之后仍可修改。`
         : "关键信息已确认，可以先查看第一版路线。"
-      : confirmationItems.length
-        ? `还差 ${confirmationItems.length} 项即可生成首版路线。`
-        : "请先补充会影响路线安排的关键信息。",
+      : requiresTravelInformationEdit
+        ? "请先修改旅行信息，再生成首版路线。"
+        : `还差 ${remainingActionableConfirmationCount} 项即可生成首版路线。`,
   };
+}
+
+export function getActionableConfirmationItems(
+  items: ConfirmationItem[],
+  identities: PlaceIdentity[],
+  events: FixedEventIntent[],
+  questions: IntentClarification[],
+): ConfirmationItem[] {
+  const questionIds = new Set(questions.map((question) => question.question_id));
+  return items.filter((item) => {
+    if (item.kind === "conflict") return false;
+    if (item.kind === "clarification") return Boolean(item.questionId && questionIds.has(item.questionId));
+    if (item.kind === "must_place") return identities.some((identity) => identity.stable_id === item.identityId);
+    return item.kind === "fixed_place" && events.some((event) => event.event_id === item.eventId);
+  });
 }
 
 function requiredConfirmationItems(
