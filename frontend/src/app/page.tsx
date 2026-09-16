@@ -1276,6 +1276,7 @@ export default function HomePage() {
   const [tripPersistence, setTripPersistence] = useState<TripPersistenceState>({
     status: "none",
   });
+  const [returnToTripTextNotice, setReturnToTripTextNotice] = useState<string | null>(null);
   const [restoreTripTextFocus, setRestoreTripTextFocus] = useState(false);
   const [revisionHistory, setRevisionHistory] = useState<TripRevisionMetadata[]>([]);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
@@ -4087,9 +4088,15 @@ function buildRegenerationSemanticsViewModel(
     }
   }
 
-  function returnToOriginalRequest() {
+  function returnToOriginalRequest(notice?: string) {
     setTripPersistence({ status: "none" });
+    setReturnToTripTextNotice(notice?.trim() || null);
     setRestoreTripTextFocus(true);
+  }
+
+  function updateTripText(value: string) {
+    setTripText(value);
+    setReturnToTripTextNotice(null);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -4268,7 +4275,8 @@ function buildRegenerationSemanticsViewModel(
               loading={loading}
               advancedModeOpen={advancedModeOpen}
               intentPreview={editorialIntentPreview}
-              onTripTextChange={setTripText}
+              recoveryNotice={returnToTripTextNotice}
+              onTripTextChange={updateTripText}
               onSubmit={handleQuickGenerateSubmit}
               onToggleAdvancedMode={() => setAdvancedModeOpen((current) => !current)}
             />
@@ -6028,6 +6036,7 @@ function EditorialHeroField({
   loading,
   advancedModeOpen,
   intentPreview,
+  recoveryNotice,
   onTripTextChange,
   onSubmit,
   onToggleAdvancedMode,
@@ -6037,6 +6046,7 @@ function EditorialHeroField({
   loading: boolean;
   advancedModeOpen: boolean;
   intentPreview: EditorialIntentPreview;
+  recoveryNotice: string | null;
   onTripTextChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onToggleAdvancedMode: () => void;
@@ -6159,6 +6169,22 @@ function EditorialHeroField({
                 lineHeight: 1.78,
               }}
             />
+            {recoveryNotice ? (
+              <p
+                role="status"
+                style={{
+                  margin: 0,
+                  padding: "10px 12px",
+                  borderLeft: "3px solid var(--ec-ochre)",
+                  background: "rgba(177, 138, 88, 0.1)",
+                  color: "var(--ec-ink-soft)",
+                  fontSize: 14,
+                  lineHeight: 1.55,
+                }}
+              >
+                <strong style={{ color: "var(--ec-ink)" }}>请先修改这项行程信息：</strong>{recoveryNotice}
+              </p>
+            ) : null}
           </label>
           <div className="ec-home-actions" style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
             <button

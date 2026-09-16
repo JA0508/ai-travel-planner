@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { FixedEventIntent } from "@/features/intent-confirmation/intentTypes";
-import { centeredConfirmationScrollTop, findPlaceFocusItem, placeFocusUnavailableMessage } from "./PrePlanConfirmationQueue";
+import { blockedConfirmationRecoveryNotice, centeredConfirmationScrollTop, findPlaceFocusItem, placeFocusUnavailableMessage } from "./PrePlanConfirmationQueue";
 
 test("centers a requested confirmation item within the current page scroll", () => {
   assert.equal(
@@ -83,4 +83,29 @@ test("explains when a named recovery target is no longer in the current confirma
     "要确认的地点已更新，系统没有替你改选其他地点。请查看当前仍待确认的项目。",
   );
   assert.equal(placeFocusUnavailableMessage({ requestId: 2, kind: "must_place" }, null), null);
+});
+
+test("returns the existing conflict explanation when confirmation has no safe action", () => {
+  assert.equal(
+    blockedConfirmationRecoveryNotice([{
+      id: "conflict:arrival",
+      kind: "conflict",
+      title: "抵达时间不能晚于离开时间",
+      detail: "请调整抵达或离开时间后，再生成路线。",
+      questionId: null,
+      tone: "conflict",
+    }]),
+    "请调整抵达或离开时间后，再生成路线。",
+  );
+  assert.equal(
+    blockedConfirmationRecoveryNotice([{
+      id: "must-place:hongyadong",
+      kind: "must_place",
+      title: "确认洪崖洞",
+      detail: "确认后才会使用真实的位置和路线数据。",
+      identityId: "must:hongyadong",
+      tone: "todo",
+    }]),
+    null,
+  );
 });

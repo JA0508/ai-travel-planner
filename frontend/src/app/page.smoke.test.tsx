@@ -23,3 +23,13 @@ test("returning from confirmation places focus back in the original travel reque
   assert.match(source, /onCancel=\{returnToOriginalRequest\}/);
   assert.doesNotMatch(source, /trip-text"\)\?\.scrollIntoView/);
 });
+
+test("returning from a blocked confirmation keeps its existing explanation beside the request", () => {
+  const source = readFileSync(pagePath, "utf8");
+
+  assert.match(source, /returnToTripTextNotice/);
+  assert.match(source, /function returnToOriginalRequest\(notice\?: string\)/);
+  assert.match(source, /setReturnToTripTextNotice\(notice\?\.trim\(\) \|\| null\)/);
+  assert.match(source, /请先修改这项行程信息/);
+  assert.match(source, /setReturnToTripTextNotice\(null\)/);
+});

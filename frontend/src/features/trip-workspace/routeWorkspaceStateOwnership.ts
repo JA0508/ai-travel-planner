@@ -54,6 +54,7 @@ export const routeWorkspacePageStateOwnership = {
   recentCompletionTaskItemKey: "selection",
   replanning: "async",
   restaurants: "draft",
+  returnToTripTextNotice: "ui",
   restoreTripTextFocus: "ui",
   result: "server",
   savedTripPromptOpen: "ui",

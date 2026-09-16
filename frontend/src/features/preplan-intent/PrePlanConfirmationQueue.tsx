@@ -66,6 +66,10 @@ export function placeFocusUnavailableMessage(
   return "要确认的地点已更新，系统没有替你改选其他地点。请查看当前仍待确认的项目。";
 }
 
+export function blockedConfirmationRecoveryNotice(items: ConfirmationItem[]): string | null {
+  return items.find((item) => item.kind === "conflict")?.detail.trim() || null;
+}
+
 type Props = {
   items: ConfirmationItem[];
   confirmedItems: ConfirmedItem[];
@@ -75,7 +79,7 @@ type Props = {
   busy: boolean;
   canGeneratePreview: boolean;
   placeFocusRequest?: PlaceConfirmationFocusRequest;
-  onModifyRequest: () => void;
+  onModifyRequest: (notice?: string) => void;
   onConfirmPlace: (identity: PlaceIdentity, option: PlaceResolutionOption, searchQuery?: string) => void;
   onSearchPlace: (identity: PlaceIdentity, query: string) => Promise<PlaceIdentitySuggestionSearchResult>;
   onUpdateFixedLocation: (event: FixedEventIntent, location: string) => void;
@@ -103,6 +107,7 @@ export function PrePlanConfirmationQueue({
     [events, identities, items, questions],
   );
   const blockedWithoutAction = !canGeneratePreview && actionableItems.length === 0;
+  const recoveryNotice = blockedWithoutAction ? blockedConfirmationRecoveryNotice(items) : null;
   const remainingCopy = actionableItems.length
     ? `还需确认 ${actionableItems.length} 项`
     : blockedWithoutAction
@@ -181,7 +186,7 @@ export function PrePlanConfirmationQueue({
         <span>{actionableItems.length ? "每完成一项，路线就更可靠" : blockedWithoutAction ? "请先调整旅行信息" : "关键信息已齐备"}</span>
       </div>
 
-      {blockedWithoutAction ? <div className="uc-confirmation-recovery"><p className="uc-confirmation-muted">目前没有可直接确认的项目。请修改旅行信息后再继续。</p><button type="button" className="uc-intent-secondary" onClick={onModifyRequest} disabled={busy}>修改旅行信息</button></div> : null}
+      {blockedWithoutAction ? <div className="uc-confirmation-recovery"><p className="uc-confirmation-muted">目前没有可直接确认的项目。请修改旅行信息后再继续。</p><button type="button" className="uc-intent-secondary" onClick={() => onModifyRequest(recoveryNotice ?? undefined)} disabled={busy}>修改旅行信息</button></div> : null}
 
       {items.length ? <section className="uc-confirmation-lane uc-confirmation-lane--todo" aria-label={pendingLaneLabel}>
         <div className="uc-confirmation-lane-heading"><span>01</span><div><p>{pendingLaneLabel}</p><h3>{pendingLaneHeading}</h3></div></div>

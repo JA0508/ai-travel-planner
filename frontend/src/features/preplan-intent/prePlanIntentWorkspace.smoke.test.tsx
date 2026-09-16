@@ -225,6 +225,15 @@ test("pre-plan workspace uses one editorial confirmation queue instead of repeat
   assert.doesNotMatch(source, /function FixedArrangementSummary/);
 });
 
+test("confirmation recovery carries an existing conflict reason back to the request editor", () => {
+  const source = readFileSync(componentPath, "utf8");
+  const queueSource = readFileSync(queuePath, "utf8");
+
+  assert.match(source, /onCancel: \(notice\?: string\) => void/);
+  assert.match(queueSource, /onModifyRequest: \(notice\?: string\) => void/);
+  assert.match(queueSource, /onClick=\{\(\) => onModifyRequest\(recoveryNotice \?\? undefined\)\}/);
+});
+
 test("place search retains only same-query candidates after a recoverable retry", () => {
   const suggestions = {
     place_stable_id: "must:shancheng",
