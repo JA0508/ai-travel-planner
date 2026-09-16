@@ -5,6 +5,7 @@ import {
   buildPersistedDraftTripRef,
   buildReplanProposalIdempotencyKey,
   describeTripPersistence,
+  describeTripRevisionSource,
   markDirty,
   parsePersistedTripRef,
   serializePersistedTripRef,
@@ -79,6 +80,13 @@ test("saved and dirty states have stable user-facing labels", () => {
 
   assert.equal(describeTripPersistence(saved), "Saved · Revision 1");
   assert.equal(describeTripPersistence(dirty), "Unsaved changes · Revision 1");
+});
+
+test("revision source labels explain the saved change without exposing internal codes", () => {
+  assert.equal(describeTripRevisionSource("route_edit"), "局部路线调整");
+  assert.equal(describeTripRevisionSource("swap"), "替换一个地点");
+  assert.equal(describeTripRevisionSource("mutation_undo"), "撤销上一项调整");
+  assert.equal(describeTripRevisionSource("unknown_source"), "已保存的路线变更");
 });
 
 test("replan proposal idempotency key is stable without leaking raw follow-up text", () => {

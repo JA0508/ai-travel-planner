@@ -23,6 +23,7 @@ import {
   buildPersistedDraftTripRef,
   buildPersistedTripRef,
   describeTripPersistence,
+  describeTripRevisionSource,
   markDirty,
   markSavedFromRevision,
   parsePersistedTripRef,
@@ -4996,7 +4997,7 @@ function buildRegenerationSemanticsViewModel(
                       whiteSpace: "nowrap",
                     }}
                   >
-                    Version history
+                    版本记录
                   </button>
                 ) : null}
                 <button
@@ -5029,11 +5030,11 @@ function buildRegenerationSemanticsViewModel(
                     }}
                   >
                     <strong style={{ fontSize: 13, color: "var(--ec-ink)" }}>
-                      Version history
+                      版本记录
                     </strong>
                     {revisionHistory.length === 0 ? (
                       <p style={{ margin: 0, fontSize: 12, color: "var(--ec-slate)" }}>
-                        No saved revisions yet.
+                        暂无可查看的已保存版本。
                       </p>
                     ) : (
                       revisionHistory.map((revision) => (
@@ -5054,14 +5055,14 @@ function buildRegenerationSemanticsViewModel(
                         >
                           <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
                             <span style={{ fontSize: 12, fontWeight: 900, color: "var(--ec-ink)" }}>
-                              Revision {revision.revision_number}
+                              版本 {revision.revision_number}
                             </span>
                             <span style={{ fontSize: 11, color: "var(--ec-slate)" }}>
-                              {revision.source_type}
+                              {describeTripRevisionSource(revision.source_type)}
                             </span>
                           </div>
                           <p style={{ margin: 0, fontSize: 11, color: "var(--ec-slate)", lineHeight: 1.4 }}>
-                            {revision.planner_version ?? "no planner"} · {new Date(revision.created_at).toLocaleString()}
+                              {revision.planner_version ? "规划记录已附带" : "无规划记录"} · {new Date(revision.created_at).toLocaleString()}
                           </p>
                           {tripPersistence.status === "saved" &&
                           tripPersistence.currentRevisionId !== revision.id ? (
@@ -5070,7 +5071,7 @@ function buildRegenerationSemanticsViewModel(
                               onClick={() => void handleRestoreRevision(revision)}
                               style={{ ...miniGhostButtonStyle, justifySelf: "start" }}
                             >
-                              Restore as new revision
+                              恢复为新版本
                             </button>
                           ) : null}
                         </div>

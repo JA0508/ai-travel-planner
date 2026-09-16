@@ -130,6 +130,25 @@ export function describeTripPersistence(state: TripPersistenceState): string {
   }
 }
 
+export function describeTripRevisionSource(sourceType: string): string {
+  const labels: Record<string, string> = {
+    planner_generation: "首次生成路线",
+    planner_regeneration: "重新生成路线",
+    planner_intent_handoff: "按确认信息生成",
+    replan_patch: "根据新想法调整路线",
+    replan_undo: "撤销路线调整",
+    completion_patch: "补充一项安排",
+    completion_undo: "撤销补充安排",
+    route_edit: "局部路线调整",
+    swap: "替换一个地点",
+    candidate_admission: "加入候选地点",
+    mutation_undo: "撤销上一项调整",
+    restore: "恢复历史路线",
+    system_migration: "系统迁移保存",
+  };
+  return labels[sourceType] ?? "已保存的路线变更";
+}
+
 export function markSavedFromRevision(
   revision: TripRevisionMetadata,
 ): TripPersistenceState {
