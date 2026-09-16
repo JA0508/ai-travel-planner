@@ -1618,9 +1618,9 @@ export default function HomePage() {
     }
   }
 
-  async function loadLatestSavedRoute(): Promise<string | null> {
+  async function loadLatestSavedRoute(): Promise<{ revisionNumber: number } | { errorMessage: string }> {
     if (tripPersistence.status !== "saved") {
-      return "暂时无法确定需要载入哪一份路线。当前页面没有改动任何路线。";
+      return { errorMessage: "暂时无法确定需要载入哪一份路线。当前页面没有改动任何路线。" };
     }
     const response = await getTripJson<TripCurrentResponse>(
       TRIP_API_ENDPOINTS.getTrip(tripPersistence.tripId),
@@ -1628,7 +1628,7 @@ export default function HomePage() {
       "后端暂时不可用，当前页面没有改动任何路线。",
     );
     if (!response.ok) {
-      return "暂时无法载入最新路线。当前页面没有改动任何路线。";
+      return { errorMessage: "暂时无法载入最新路线。当前页面没有改动任何路线。" };
     }
     const current = response.data;
     setResult(current.itinerary);
@@ -1644,7 +1644,7 @@ export default function HomePage() {
         ?? null,
     );
     await refreshRevisionHistory(current.trip.id);
-    return null;
+    return { revisionNumber: current.current_revision.revision_number };
   }
 
   async function refreshCandidates(tripId: string) {

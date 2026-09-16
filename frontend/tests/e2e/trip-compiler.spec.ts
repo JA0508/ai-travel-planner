@@ -477,7 +477,7 @@ test("Stale saved replacement lets the traveler load the latest route without re
   await expect(page.getByText("这次替换没有保存，原路线保持不变。", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: "载入最新路线" }).click();
 
-  await expect(page.getByText("已载入最新保存版本；没有应用刚才的替换。")).toBeVisible();
+  await expect(page.getByText(`已载入最新保存版本 ${saved.current_revision.revision_number}；没有应用刚才的替换。`)).toBeVisible();
   expect(latestRouteReads).toBe(1);
   expect(applyRequests).toBe(1);
   assertClean();

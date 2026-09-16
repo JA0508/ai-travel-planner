@@ -50,13 +50,17 @@ type MutationApplyResponse = {
   itinerary: RoutePreviewItinerary;
 };
 
+type LatestRouteReloadResult =
+  | { revisionNumber: number }
+  | { errorMessage: string };
+
 type Props = {
   itinerary: RoutePreviewItinerary;
   variant: "draft" | "saved";
   tripId?: string;
   baseRevisionId?: string;
   onApplied?: (response: MutationApplyResponse) => void;
-  onReloadLatest?: () => Promise<string | null>;
+  onReloadLatest?: () => Promise<LatestRouteReloadResult>;
   destination?: string | null;
   draftConfirmation?: {
     label: string;
@@ -74,7 +78,7 @@ type RepairState =
   | { status: "applying"; day: number; before: RoutePreviewItinerary; preview: MutationPreviewResponse }
   | { status: "applied"; day: number; revisionId: string; revisionNumber: number; undoing: boolean; errorMessage?: string }
   | { status: "restored" }
-  | { status: "reloaded" }
+  | { status: "reloaded"; revisionNumber: number }
   | { status: "error"; message: string; reloadable?: boolean };
 
 type ReplaceState =
@@ -86,7 +90,7 @@ type ReplaceState =
   | { status: "applying"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate; before: RoutePreviewItinerary; preview: MutationPreviewResponse; model: SafeReplacePreviewModel }
   | { status: "applied"; stopId: string; previousName: string; replacementName: string; revisionId: string; revisionNumber: number; undoing: boolean; errorMessage?: string }
   | { status: "restored"; stopId: string }
-  | { status: "reloaded"; stopId: string }
+  | { status: "reloaded"; stopId: string; revisionNumber: number }
   | { status: "error"; message: string; stopId?: string; reloadable?: boolean };
 
 function replacementFocusStopId(state: ReplaceState): string | null {
@@ -402,16 +406,16 @@ export function ExecutableRoutePreview({
   async function reloadLatestRoute(kind: "repair" | "replace", message: string, stopId?: string) {
     if (!onReloadLatest || reloadingLatest) return;
     setReloadingLatest(true);
-    const reloadError = await onReloadLatest();
+    const reloadResult = await onReloadLatest();
     setReloadingLatest(false);
-    if (reloadError) {
-      const state = { status: "error" as const, message: `${message} ${reloadError}`, reloadable: true };
+    if ("errorMessage" in reloadResult) {
+      const state = { status: "error" as const, message: `${message} ${reloadResult.errorMessage}`, reloadable: true };
       if (kind === "repair") setRepair(state);
       else setReplace({ ...state, stopId });
       return;
     }
-    if (kind === "repair") setRepair({ status: "reloaded" });
-    else setReplace({ status: "reloaded", stopId: stopId ?? "" });
+    if (kind === "repair") setRepair({ status: "reloaded", revisionNumber: reloadResult.revisionNumber });
+    else setReplace({ status: "reloaded", stopId: stopId ?? "", revisionNumber: reloadResult.revisionNumber });
   }
 
   function showOtherCandidates() {
@@ -510,7 +514,7 @@ export function ExecutableRoutePreview({
           />
         ) : null}
         {repair.status === "restored" ? <RepairFeedback autoFocus eyebrow="ROUTE RESTORED" message="已恢复调整前的路线。" /> : null}
-        {repair.status === "reloaded" ? <RepairFeedback autoFocus eyebrow="LATEST ROUTE LOADED" message="已载入最新保存版本；没有应用刚才的调整。" /> : null}
+        {repair.status === "reloaded" ? <RepairFeedback autoFocus eyebrow="LATEST ROUTE LOADED" message={`已载入最新保存版本 ${repair.revisionNumber}；没有应用刚才的调整。`} /> : null}
         {repair.status === "error" ? <RepairError message={repair.message} onDismiss={dismissRepair} actionLabel={repair.reloadable ? "载入最新路线" : undefined} busy={reloadingLatest} onAction={repair.reloadable ? () => void reloadLatestRoute("repair", repair.message) : undefined} /> : null}
         {replace.status === "applied" ? (
           <RepairFeedback
@@ -523,7 +527,7 @@ export function ExecutableRoutePreview({
           />
         ) : null}
         {replace.status === "restored" ? <RepairFeedback autoFocus eyebrow="ROUTE RESTORED" message="已恢复原来的地点和相邻路线。" /> : null}
-        {replace.status === "reloaded" ? <RepairFeedback autoFocus eyebrow="LATEST ROUTE LOADED" message="已载入最新保存版本；没有应用刚才的替换。" /> : null}
+        {replace.status === "reloaded" ? <RepairFeedback autoFocus eyebrow="LATEST ROUTE LOADED" message={`已载入最新保存版本 ${replace.revisionNumber}；没有应用刚才的替换。`} /> : null}
         {replace.status === "error" ? <RepairError message={replace.message} onDismiss={dismissReplacement} actionLabel={replace.reloadable ? "载入最新路线" : undefined} busy={reloadingLatest} onAction={replace.reloadable ? () => void reloadLatestRoute("replace", replace.message, replace.stopId) : undefined} /> : null}
         <RoutePreviewStyles />
       </section>
