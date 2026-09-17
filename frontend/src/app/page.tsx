@@ -5192,6 +5192,9 @@ function buildRegenerationSemanticsViewModel(
                                   <span style={{ fontSize: 11 }}>
                                     {revisionRoutePreview.outline.tripDays} 天 · {revisionRoutePreview.outline.stopCount} 项安排
                                   </span>
+                                  <span style={{ fontSize: 11, lineHeight: 1.4 }}>
+                                    这是保存当时的路线快照；出行前仍需核实实时路线与预约状态。
+                                  </span>
                                   {revisionRoutePreview.outline.fixedStopNames.length > 0 ? (
                                     <span style={{ fontSize: 11 }}>
                                       此版本中的固定安排：{revisionRoutePreview.outline.fixedStopNames.join("、")}
