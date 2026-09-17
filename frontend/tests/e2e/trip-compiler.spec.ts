@@ -499,8 +499,10 @@ test("Version history restores a prior route as a new revision and confirms it",
 
   await page.getByRole("button", { name: "版本记录" }).click();
   await expect(page.getByText("恢复版本 1 会创建一个新的版本；当前版本会保留，之后仍可恢复。")).toBeVisible();
-  const restoreResponse = page.waitForResponse((response) => response.url().includes(`/revisions/${saved.current_revision.id}/restore`) && response.request().method() === "POST");
   await page.getByRole("button", { name: "恢复为新版本" }).click();
+  await expect(page.getByRole("alertdialog", { name: "确认恢复版本 1" })).toBeVisible();
+  const restoreResponse = page.waitForResponse((response) => response.url().includes(`/revisions/${saved.current_revision.id}/restore`) && response.request().method() === "POST");
+  await page.getByRole("button", { name: "确认恢复版本 1" }).click();
   const restored = await restoreResponse;
   expect(restored.status()).toBe(200);
   const restoredPayload = await restored.json() as { current_revision: { revision_number: number; restored_from_revision_id: string | null } };

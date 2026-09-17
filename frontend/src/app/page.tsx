@@ -1283,6 +1283,7 @@ export default function HomePage() {
   const [restoreTripTextFocus, setRestoreTripTextFocus] = useState(false);
   const [revisionHistory, setRevisionHistory] = useState<TripRevisionMetadata[]>([]);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
+  const [revisionRestoreConfirmation, setRevisionRestoreConfirmation] = useState<TripRevisionMetadata | null>(null);
   const [revisionRestoreReceipt, setRevisionRestoreReceipt] = useState<string | null>(null);
   const [quickPreviewMode, setQuickPreviewMode] = useState<QuickPreviewMode>("original_parse");
   const [dismissedFollowUpRawText, setDismissedFollowUpRawText] = useState<string | null>(null);
@@ -1503,6 +1504,7 @@ export default function HomePage() {
       window.localStorage.removeItem(SAVED_TRIP_SESSION_KEY);
     }
     setTripPersistence(markSavedFromRevision(revision));
+    setRevisionRestoreConfirmation(null);
     setRevisionRestoreReceipt(null);
     setHasSavedSession(true);
     void refreshCandidates(ref.tripId);
@@ -5018,6 +5020,7 @@ function buildRegenerationSemanticsViewModel(
                     type="button"
                     onClick={() => {
                       setVersionHistoryOpen((current) => !current);
+                      setRevisionRestoreConfirmation(null);
                       void refreshRevisionHistory(tripPersistence.tripId);
                     }}
                     style={{
@@ -5095,16 +5098,56 @@ function buildRegenerationSemanticsViewModel(
                           {tripPersistence.status === "saved" &&
                           tripPersistence.currentRevisionId !== revision.id ? (
                             <div style={{ display: "grid", gap: 6, justifyItems: "start" }}>
-                              <p style={{ margin: 0, fontSize: 11, lineHeight: 1.4, color: "var(--ec-slate)" }}>
-                                {describeRevisionRestoreImpact(revision.revision_number)}
-                              </p>
-                              <button
-                                type="button"
-                                onClick={() => void handleRestoreRevision(revision)}
-                                style={{ ...miniGhostButtonStyle, justifySelf: "start" }}
-                              >
-                                恢复为新版本
-                              </button>
+                              {revisionRestoreConfirmation?.id === revision.id ? (
+                                <section
+                                  role="alertdialog"
+                                  aria-label={`确认恢复版本 ${revision.revision_number}`}
+                                  style={{
+                                    display: "grid",
+                                    gap: 8,
+                                    padding: 10,
+                                    borderRadius: 10,
+                                    border: "1px solid rgba(125, 91, 50, 0.3)",
+                                    background: "rgba(255,248,237,0.9)",
+                                  }}
+                                >
+                                  <p style={{ margin: 0, fontSize: 11, lineHeight: 1.45, color: "#6f4d24" }}>
+                                    {describeRevisionRestoreImpact(revision.revision_number)}
+                                  </p>
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setRevisionRestoreConfirmation(null);
+                                        void handleRestoreRevision(revision);
+                                      }}
+                                      style={{ ...miniGhostButtonStyle, color: "#6f4d24" }}
+                                    >
+                                      确认恢复版本 {revision.revision_number}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setRevisionRestoreConfirmation(null)}
+                                      style={miniGhostButtonStyle}
+                                    >
+                                      暂不恢复
+                                    </button>
+                                  </div>
+                                </section>
+                              ) : (
+                                <>
+                                  <p style={{ margin: 0, fontSize: 11, lineHeight: 1.4, color: "var(--ec-slate)" }}>
+                                    {describeRevisionRestoreImpact(revision.revision_number)}
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRevisionRestoreConfirmation(revision)}
+                                    style={{ ...miniGhostButtonStyle, justifySelf: "start" }}
+                                  >
+                                    恢复为新版本
+                                  </button>
+                                </>
+                              )}
                             </div>
                           ) : null}
                         </div>
