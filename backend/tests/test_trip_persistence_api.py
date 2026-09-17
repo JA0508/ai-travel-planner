@@ -24,7 +24,10 @@ from app.schemas import (
     TripIntentEnvelope,
     TripIntentEnvelopeSource,
 )
-from app.trips.dependencies import reset_trip_repository_cache_for_tests
+from app.trips.access import hash_idempotency_key
+from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
+from app.trips.mutation_commands import ensure_stable_item_ids
+from app.trips.service import serialize_itinerary_snapshot
 from tests.test_trip_mutation_commands import command_itinerary
 
 
@@ -129,6 +132,37 @@ class TripPersistenceApiTests(unittest.TestCase):
         self.assertEqual(history.status_code, 200)
         self.assertEqual(len(history.json()["revisions"]), 1)
         self.assertNotIn("itinerary", history.json()["revisions"][0])
+
+    def test_restore_rejects_an_old_snapshot_that_would_drop_a_current_fixed_arrangement(self) -> None:
+        client, trip_id, initial_revision_id = create_command_trip()
+        repository = get_trip_repository()
+        trip = repository.get_trip(trip_id)
+        fixed_snapshot = ensure_stable_item_ids(
+            serialize_itinerary_snapshot(command_itinerary(fixed_museum=True)),
+        )
+        current = repository.create_revision(
+            trip_id=trip_id,
+            capability_hash=trip.capability_hash,
+            base_revision_id=initial_revision_id,
+            itinerary_snapshot=fixed_snapshot,
+            source_type="test_fixed_arrangement",
+            operation_type="test_fixed_arrangement",
+            operation_summary="Added a fixed arrangement for restore protection coverage.",
+            operation_metadata={},
+            request_digest="test-fixed-arrangement",
+            idempotency_key_hash=hash_idempotency_key("test-fixed-arrangement"),
+        ).revision
+
+        restored = client.post(
+            f"/trips/{trip_id}/revisions/{initial_revision_id}/restore",
+            json={"base_revision_id": current.id},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "restore-would-drop-fixed"},
+        )
+
+        self.assertEqual(restored.status_code, 409, restored.text)
+        self.assertEqual(restored.json()["error"]["code"], "restore_would_drop_fixed_items")
+        self.assertEqual(client.get(f"/trips/{trip_id}").json()["current_revision"]["id"], current.id)
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 2)
 
     def test_persisted_replan_creates_revision_with_idempotent_retry(self) -> None:
         client = TestClient(app)

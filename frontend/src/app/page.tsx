@@ -1879,10 +1879,17 @@ export default function HomePage() {
     );
 
     if (!response.ok) {
-      setError(response.message);
+      const message = response.code === "restore_would_drop_fixed_items"
+        ? "无法恢复该版本：它会移除或改变当前路线中的固定安排。当前路线没有变化。"
+        : response.message;
+      setError(message);
+      if (response.code === "restore_would_drop_fixed_items") {
+        setTripPersistence(tripPersistence);
+        return;
+      }
       setTripPersistence({
         status: "error",
-        message: response.message,
+        message,
         tripId: tripPersistence.tripId,
         recoverable: true,
       });

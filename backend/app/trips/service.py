@@ -102,6 +102,7 @@ from .errors import (
     PreviewApplyMismatchError,
     ProposalDigestMismatchError,
     ProposalIntegrityViolationError,
+    RestoreWouldDropFixedItemsError,
     RevisionNotUndoableError,
     SnapshotSchemaUnsupportedError,
     StaleBaseRevisionError,
@@ -2365,6 +2366,11 @@ class TripPersistenceService:
             raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
         trip = self._require_trip_access(trip_id, capability)
         target_revision = self.repository.get_revision(trip_id, target_revision_id)
+        current_revision = self.repository.get_current_revision(trip_id)
+        validate_restore_preserves_fixed_items(
+            current_snapshot=current_revision.itinerary_snapshot,
+            target_snapshot=target_revision.itinerary_snapshot,
+        )
         req_digest = request_digest(
             {
                 "operation": "restore_revision",
@@ -2818,6 +2824,45 @@ def authoritative_safe_replace_envelope(
         deep=True,
     )
     return envelope.model_copy(update={"commands": [authoritative_command]}, deep=True)
+
+
+def validate_restore_preserves_fixed_items(
+    *,
+    current_snapshot: dict[str, Any],
+    target_snapshot: dict[str, Any],
+) -> None:
+    current_itinerary = deserialize_itinerary_snapshot(current_snapshot)
+    target_itinerary = deserialize_itinerary_snapshot(target_snapshot)
+    target_fixed_items = {
+        item.stable_id: fixed_item_signature(day.day, block.block_type.value, item)
+        for day in target_itinerary.days
+        for block in day.blocks
+        for item in block.items
+        if item.is_fixed and item.stable_id
+    }
+    protected_items = [
+        fixed_item_signature(day.day, block.block_type.value, item)
+        for day in current_itinerary.days
+        for block in day.blocks
+        for item in block.items
+        if item.is_fixed
+    ]
+    if any(
+        signature[0] is None or target_fixed_items.get(signature[0]) != signature
+        for signature in protected_items
+    ):
+        raise RestoreWouldDropFixedItemsError(protected_item_count=len(protected_items))
+
+
+def fixed_item_signature(day: int, block_type: str, item: Any) -> tuple[str | None, int, str, str, str, str]:
+    return (
+        item.stable_id,
+        day,
+        block_type,
+        item.name,
+        item.start_time.isoformat(),
+        item.end_time.isoformat(),
+    )
 
 
 def serialize_itinerary_snapshot(itinerary: ItineraryResponse) -> dict[str, Any]:

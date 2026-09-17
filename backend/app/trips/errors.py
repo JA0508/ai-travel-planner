@@ -316,6 +316,16 @@ class RevisionNotUndoableError(TripError):
         )
 
 
+class RestoreWouldDropFixedItemsError(TripError):
+    def __init__(self, *, protected_item_count: int) -> None:
+        super().__init__(
+            code="restore_would_drop_fixed_items",
+            message="Restoring this revision would remove or change a fixed arrangement.",
+            status_code=409,
+            context={"protected_item_count": protected_item_count},
+        )
+
+
 class CandidateNotFoundError(TripError):
     def __init__(self, candidate_id: str) -> None:
         super().__init__(
