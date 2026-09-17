@@ -5,6 +5,7 @@ import {
   buildPersistedDraftTripRef,
   buildReplanProposalIdempotencyKey,
   describeRevisionRestoreBlock,
+  describeRevisionRestoreAvailabilityBlock,
   describeRevisionRestoreMustVisitBlock,
   describeTripPersistence,
   describeRevisionRestoreImpact,
@@ -118,6 +119,13 @@ test("revision restore block explains that current must-visit places remain prot
   assert.equal(
     describeRevisionRestoreMustVisitBlock(1),
     "无法恢复该版本：它会移除当前路线中的 1 个必去地点。当前路线没有变化。",
+  );
+});
+
+test("revision restore block explains that current time windows remain protected", () => {
+  assert.equal(
+    describeRevisionRestoreAvailabilityBlock(1),
+    "无法恢复该版本：它会移除当前路线中的 1 个可用时间限制。当前路线没有变化。",
   );
 });
 

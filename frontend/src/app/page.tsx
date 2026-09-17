@@ -23,6 +23,7 @@ import {
   buildPersistedDraftTripRef,
   buildPersistedTripRef,
   describeTripPersistence,
+  describeRevisionRestoreAvailabilityBlock,
   describeRevisionRestoreBlock,
   describeRevisionRestoreMustVisitBlock,
   describeRevisionRestoreImpact,
@@ -1898,14 +1899,20 @@ export default function HomePage() {
       const protectedItemCount = typeof response.context?.protected_item_count === "number"
         ? response.context.protected_item_count
         : null;
+      const protectedWindowCount = typeof response.context?.protected_window_count === "number"
+        ? response.context.protected_window_count
+        : null;
       const message = response.code === "restore_would_drop_fixed_items"
         ? describeRevisionRestoreBlock(protectedItemCount)
         : response.code === "restore_would_drop_must_visit_places"
           ? describeRevisionRestoreMustVisitBlock(protectedItemCount)
+          : response.code === "restore_would_drop_availability_windows"
+            ? describeRevisionRestoreAvailabilityBlock(protectedWindowCount)
           : response.message;
       if (
         response.code === "restore_would_drop_fixed_items"
         || response.code === "restore_would_drop_must_visit_places"
+        || response.code === "restore_would_drop_availability_windows"
       ) {
         setError(null);
         setRevisionRestoreBlockedNotice(message);

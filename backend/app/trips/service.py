@@ -102,6 +102,7 @@ from .errors import (
     PreviewApplyMismatchError,
     ProposalDigestMismatchError,
     ProposalIntegrityViolationError,
+    RestoreWouldDropAvailabilityWindowsError,
     RestoreWouldDropFixedItemsError,
     RestoreWouldDropMustVisitPlacesError,
     RevisionNotUndoableError,
@@ -2376,6 +2377,10 @@ class TripPersistenceService:
             current_snapshot=current_revision.itinerary_snapshot,
             target_snapshot=target_revision.itinerary_snapshot,
         )
+        validate_restore_preserves_availability_windows(
+            current_snapshot=current_revision.itinerary_snapshot,
+            target_snapshot=target_revision.itinerary_snapshot,
+        )
         req_digest = request_digest(
             {
                 "operation": "restore_revision",
@@ -2906,6 +2911,39 @@ def is_must_visit_item(item: Any) -> bool:
         or field_path.startswith(f"{field_prefix}.")
         or field_path.startswith(f"{field_prefix}[")
     )
+
+
+def validate_restore_preserves_availability_windows(
+    *,
+    current_snapshot: dict[str, Any],
+    target_snapshot: dict[str, Any],
+) -> None:
+    current_windows = persisted_availability_window_signatures(current_snapshot)
+    if not current_windows:
+        return
+    target_windows = persisted_availability_window_signatures(target_snapshot)
+    missing_windows = current_windows - target_windows
+    if missing_windows:
+        raise RestoreWouldDropAvailabilityWindowsError(
+            protected_window_count=len(missing_windows),
+        )
+
+
+def persisted_availability_window_signatures(snapshot: dict[str, Any]) -> set[tuple[int | None, str | None, str | None]]:
+    itinerary = deserialize_itinerary_snapshot(snapshot)
+    intent = (
+        itinerary.trip_intent.current_intent
+        if itinerary.trip_intent is not None
+        else itinerary.planning_assumptions.regeneration_intent
+        if itinerary.planning_assumptions is not None
+        else None
+    )
+    if intent is None:
+        return set()
+    return {
+        (window.day, window.available_start, window.available_end)
+        for window in intent.availability_windows
+    }
 
 
 def serialize_itinerary_snapshot(itinerary: ItineraryResponse) -> dict[str, Any]:

@@ -336,6 +336,16 @@ class RestoreWouldDropMustVisitPlacesError(TripError):
         )
 
 
+class RestoreWouldDropAvailabilityWindowsError(TripError):
+    def __init__(self, *, protected_window_count: int) -> None:
+        super().__init__(
+            code="restore_would_drop_availability_windows",
+            message="Restoring this revision would remove a current availability window.",
+            status_code=409,
+            context={"protected_window_count": protected_window_count},
+        )
+
+
 class CandidateNotFoundError(TripError):
     def __init__(self, candidate_id: str) -> None:
         super().__init__(

@@ -171,6 +171,13 @@ export function describeRevisionRestoreMustVisitBlock(protectedItemCount: number
   return "无法恢复该版本：它会移除当前路线中的必去地点。当前路线没有变化。";
 }
 
+export function describeRevisionRestoreAvailabilityBlock(protectedWindowCount: number | null): string {
+  if (protectedWindowCount !== null && protectedWindowCount > 0) {
+    return `无法恢复该版本：它会移除当前路线中的 ${protectedWindowCount} 个可用时间限制。当前路线没有变化。`;
+  }
+  return "无法恢复该版本：它会移除当前路线中的可用时间限制。当前路线没有变化。";
+}
+
 export function markSavedFromRevision(
   revision: TripRevisionMetadata,
 ): TripPersistenceState {

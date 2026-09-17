@@ -210,6 +210,60 @@ class TripPersistenceApiTests(unittest.TestCase):
         self.assertEqual(client.get(f"/trips/{trip_id}").json()["current_revision"]["id"], current.id)
         self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 2)
 
+    def test_restore_rejects_an_old_snapshot_that_would_drop_a_current_availability_window(self) -> None:
+        client = TestClient(app)
+        with patch(
+            "app.trips.service.build_itinerary_response",
+            return_value=simple_itinerary(with_intent=True),
+        ):
+            created = client.post(
+                "/trips/plan",
+                json={
+                    "itinerary_request": {
+                        "city": "上海",
+                        "trip_days": 1,
+                        "scenic_spots": [],
+                        "restaurants": [],
+                    }
+                },
+            )
+        trip_id = created.json()["trip"]["id"]
+        initial_revision_id = created.json()["current_revision"]["id"]
+        repository = get_trip_repository()
+        trip = repository.get_trip(trip_id)
+        current_snapshot = serialize_itinerary_snapshot(simple_itinerary(with_intent=True))
+        current_snapshot["trip_intent"]["current_intent"]["availability_windows"] = [
+            {
+                "day": 1,
+                "label": "第一天下午后抵达",
+                "available_start": "14:00",
+                "available_end": None,
+            }
+        ]
+        current = repository.create_revision(
+            trip_id=trip_id,
+            capability_hash=trip.capability_hash,
+            base_revision_id=initial_revision_id,
+            itinerary_snapshot=current_snapshot,
+            source_type="test_availability_window",
+            operation_type="test_availability_window",
+            operation_summary="Added an availability window for restore protection coverage.",
+            operation_metadata={},
+            request_digest="test-availability-window",
+            idempotency_key_hash=hash_idempotency_key("test-availability-window"),
+        ).revision
+
+        restored = client.post(
+            f"/trips/{trip_id}/revisions/{initial_revision_id}/restore",
+            json={"base_revision_id": current.id},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "restore-would-drop-window"},
+        )
+
+        self.assertEqual(restored.status_code, 409, restored.text)
+        self.assertEqual(restored.json()["error"]["code"], "restore_would_drop_availability_windows")
+        self.assertEqual(client.get(f"/trips/{trip_id}").json()["current_revision"]["id"], current.id)
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 2)
+
     def test_persisted_replan_creates_revision_with_idempotent_retry(self) -> None:
         client = TestClient(app)
         with patch(
