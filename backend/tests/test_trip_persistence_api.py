@@ -164,6 +164,52 @@ class TripPersistenceApiTests(unittest.TestCase):
         self.assertEqual(client.get(f"/trips/{trip_id}").json()["current_revision"]["id"], current.id)
         self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 2)
 
+    def test_restore_rejects_an_old_snapshot_that_would_drop_a_current_must_visit_place(self) -> None:
+        client, trip_id, initial_revision_id = create_command_trip()
+        repository = get_trip_repository()
+        trip = repository.get_trip(trip_id)
+        current_snapshot = ensure_stable_item_ids(
+            serialize_itinerary_snapshot(command_itinerary(system_yu=True, must_yu=True)),
+        )
+        must_place = current_snapshot["days"][0]["blocks"][0]["items"][1]
+        must_place["name"] = "城隍庙"
+        must_place["source_label"] = "Confirmed intent candidate"
+        must_place["candidate_provenance"] = {
+            "intent_field_path": "formal_contract.must_visit_places.0",
+        }
+        must_place["canonical_place_id"] = "amap:shanghai:chenghuangmiao"
+        must_place["verified_place"].update(
+            {
+                "stable_id": "place-shanghai:chenghuangmiao",
+                "original_name": "城隍庙",
+                "canonical_name": "城隍庙",
+                "provider_place_id": "shanghai:chenghuangmiao",
+            }
+        )
+        current = repository.create_revision(
+            trip_id=trip_id,
+            capability_hash=trip.capability_hash,
+            base_revision_id=initial_revision_id,
+            itinerary_snapshot=current_snapshot,
+            source_type="test_must_visit_place",
+            operation_type="test_must_visit_place",
+            operation_summary="Added a must-visit place for restore protection coverage.",
+            operation_metadata={},
+            request_digest="test-must-visit-place",
+            idempotency_key_hash=hash_idempotency_key("test-must-visit-place"),
+        ).revision
+
+        restored = client.post(
+            f"/trips/{trip_id}/revisions/{initial_revision_id}/restore",
+            json={"base_revision_id": current.id},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "restore-would-drop-must"},
+        )
+
+        self.assertEqual(restored.status_code, 409, restored.text)
+        self.assertEqual(restored.json()["error"]["code"], "restore_would_drop_must_visit_places")
+        self.assertEqual(client.get(f"/trips/{trip_id}").json()["current_revision"]["id"], current.id)
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 2)
+
     def test_persisted_replan_creates_revision_with_idempotent_retry(self) -> None:
         client = TestClient(app)
         with patch(

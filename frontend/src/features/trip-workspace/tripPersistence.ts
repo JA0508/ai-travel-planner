@@ -164,6 +164,13 @@ export function describeRevisionRestoreBlock(protectedItemCount: number | null):
   return "无法恢复该版本：它会移除或改变当前路线中的固定安排。当前路线没有变化。";
 }
 
+export function describeRevisionRestoreMustVisitBlock(protectedItemCount: number | null): string {
+  if (protectedItemCount !== null && protectedItemCount > 0) {
+    return `无法恢复该版本：它会移除当前路线中的 ${protectedItemCount} 个必去地点。当前路线没有变化。`;
+  }
+  return "无法恢复该版本：它会移除当前路线中的必去地点。当前路线没有变化。";
+}
+
 export function markSavedFromRevision(
   revision: TripRevisionMetadata,
 ): TripPersistenceState {

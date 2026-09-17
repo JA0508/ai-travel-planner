@@ -103,6 +103,7 @@ from .errors import (
     ProposalDigestMismatchError,
     ProposalIntegrityViolationError,
     RestoreWouldDropFixedItemsError,
+    RestoreWouldDropMustVisitPlacesError,
     RevisionNotUndoableError,
     SnapshotSchemaUnsupportedError,
     StaleBaseRevisionError,
@@ -2371,6 +2372,10 @@ class TripPersistenceService:
             current_snapshot=current_revision.itinerary_snapshot,
             target_snapshot=target_revision.itinerary_snapshot,
         )
+        validate_restore_preserves_must_visit_places(
+            current_snapshot=current_revision.itinerary_snapshot,
+            target_snapshot=target_revision.itinerary_snapshot,
+        )
         req_digest = request_digest(
             {
                 "operation": "restore_revision",
@@ -2862,6 +2867,44 @@ def fixed_item_signature(day: int, block_type: str, item: Any) -> tuple[str | No
         item.name,
         item.start_time.isoformat(),
         item.end_time.isoformat(),
+    )
+
+
+def validate_restore_preserves_must_visit_places(
+    *,
+    current_snapshot: dict[str, Any],
+    target_snapshot: dict[str, Any],
+) -> None:
+    current_itinerary = deserialize_itinerary_snapshot(current_snapshot)
+    target_itinerary = deserialize_itinerary_snapshot(target_snapshot)
+    target_place_ids = {
+        item.canonical_place_id
+        for day in target_itinerary.days
+        for block in day.blocks
+        for item in block.items
+        if item.canonical_place_id
+    }
+    protected_place_ids = [
+        item.canonical_place_id
+        for day in current_itinerary.days
+        for block in day.blocks
+        for item in block.items
+        if is_must_visit_item(item)
+    ]
+    if any(place_id is None or place_id not in target_place_ids for place_id in protected_place_ids):
+        raise RestoreWouldDropMustVisitPlacesError(protected_item_count=len(protected_place_ids))
+
+
+def is_must_visit_item(item: Any) -> bool:
+    if item.source_label == "必去":
+        return True
+    provenance = item.candidate_provenance or {}
+    field_path = provenance.get("intent_field_path")
+    field_prefix = "formal_contract.must_visit_places"
+    return isinstance(field_path, str) and (
+        field_path == field_prefix
+        or field_path.startswith(f"{field_prefix}.")
+        or field_path.startswith(f"{field_prefix}[")
     )
 
 

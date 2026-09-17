@@ -326,6 +326,16 @@ class RestoreWouldDropFixedItemsError(TripError):
         )
 
 
+class RestoreWouldDropMustVisitPlacesError(TripError):
+    def __init__(self, *, protected_item_count: int) -> None:
+        super().__init__(
+            code="restore_would_drop_must_visit_places",
+            message="Restoring this revision would remove a current must-visit place.",
+            status_code=409,
+            context={"protected_item_count": protected_item_count},
+        )
+
+
 class CandidateNotFoundError(TripError):
     def __init__(self, candidate_id: str) -> None:
         super().__init__(

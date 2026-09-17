@@ -24,6 +24,7 @@ import {
   buildPersistedTripRef,
   describeTripPersistence,
   describeRevisionRestoreBlock,
+  describeRevisionRestoreMustVisitBlock,
   describeRevisionRestoreImpact,
   describeRevisionRestoreReceipt,
   describeTripRevisionSource,
@@ -1899,8 +1900,13 @@ export default function HomePage() {
         : null;
       const message = response.code === "restore_would_drop_fixed_items"
         ? describeRevisionRestoreBlock(protectedItemCount)
-        : response.message;
-      if (response.code === "restore_would_drop_fixed_items") {
+        : response.code === "restore_would_drop_must_visit_places"
+          ? describeRevisionRestoreMustVisitBlock(protectedItemCount)
+          : response.message;
+      if (
+        response.code === "restore_would_drop_fixed_items"
+        || response.code === "restore_would_drop_must_visit_places"
+      ) {
         setError(null);
         setRevisionRestoreBlockedNotice(message);
         setTripPersistence(tripPersistence);

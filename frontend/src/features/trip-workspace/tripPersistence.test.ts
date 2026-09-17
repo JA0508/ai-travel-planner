@@ -5,6 +5,7 @@ import {
   buildPersistedDraftTripRef,
   buildReplanProposalIdempotencyKey,
   describeRevisionRestoreBlock,
+  describeRevisionRestoreMustVisitBlock,
   describeTripPersistence,
   describeRevisionRestoreImpact,
   describeRevisionRestoreReceipt,
@@ -110,6 +111,13 @@ test("revision restore block explains that the current route remains unchanged",
   assert.equal(
     describeRevisionRestoreBlock(2),
     "无法恢复该版本：它会移除或改变当前路线中的 2 项固定安排。当前路线没有变化。",
+  );
+});
+
+test("revision restore block explains that current must-visit places remain protected", () => {
+  assert.equal(
+    describeRevisionRestoreMustVisitBlock(1),
+    "无法恢复该版本：它会移除当前路线中的 1 个必去地点。当前路线没有变化。",
   );
 });
 
