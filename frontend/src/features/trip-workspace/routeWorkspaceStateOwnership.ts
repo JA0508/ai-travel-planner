@@ -58,6 +58,7 @@ export const routeWorkspacePageStateOwnership = {
   restoreTripTextFocus: "ui",
   result: "server",
   revisionRestoreConfirmation: "selection",
+  revisionRestoreBlockedNotice: "ui",
   revisionRestoreReceipt: "ui",
   revisionRoutePreview: "server",
   savedTripPromptOpen: "ui",

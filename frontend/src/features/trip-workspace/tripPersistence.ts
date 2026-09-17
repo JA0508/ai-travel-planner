@@ -157,6 +157,13 @@ export function describeRevisionRestoreReceipt(restoredRevisionNumber: number, n
   return `已恢复版本 ${restoredRevisionNumber}，并保存为新版本 ${newRevisionNumber}。之前的版本仍可恢复。`;
 }
 
+export function describeRevisionRestoreBlock(protectedItemCount: number | null): string {
+  if (protectedItemCount !== null && protectedItemCount > 0) {
+    return `无法恢复该版本：它会移除或改变当前路线中的 ${protectedItemCount} 项固定安排。当前路线没有变化。`;
+  }
+  return "无法恢复该版本：它会移除或改变当前路线中的固定安排。当前路线没有变化。";
+}
+
 export function markSavedFromRevision(
   revision: TripRevisionMetadata,
 ): TripPersistenceState {

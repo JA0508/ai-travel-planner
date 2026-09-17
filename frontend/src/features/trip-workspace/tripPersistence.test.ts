@@ -4,6 +4,7 @@ import {
   buildPersistedTripRef,
   buildPersistedDraftTripRef,
   buildReplanProposalIdempotencyKey,
+  describeRevisionRestoreBlock,
   describeTripPersistence,
   describeRevisionRestoreImpact,
   describeRevisionRestoreReceipt,
@@ -102,6 +103,13 @@ test("revision restore receipt names both the restored and newly saved versions"
   assert.equal(
     describeRevisionRestoreReceipt(2, 4),
     "已恢复版本 2，并保存为新版本 4。之前的版本仍可恢复。",
+  );
+});
+
+test("revision restore block explains that the current route remains unchanged", () => {
+  assert.equal(
+    describeRevisionRestoreBlock(2),
+    "无法恢复该版本：它会移除或改变当前路线中的 2 项固定安排。当前路线没有变化。",
   );
 });
 

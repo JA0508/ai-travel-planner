@@ -23,6 +23,7 @@ import {
   buildPersistedDraftTripRef,
   buildPersistedTripRef,
   describeTripPersistence,
+  describeRevisionRestoreBlock,
   describeRevisionRestoreImpact,
   describeRevisionRestoreReceipt,
   describeTripRevisionSource,
@@ -1300,6 +1301,7 @@ export default function HomePage() {
   const [revisionHistory, setRevisionHistory] = useState<TripRevisionMetadata[]>([]);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [revisionRestoreConfirmation, setRevisionRestoreConfirmation] = useState<TripRevisionMetadata | null>(null);
+  const [revisionRestoreBlockedNotice, setRevisionRestoreBlockedNotice] = useState<string | null>(null);
   const [revisionRoutePreview, setRevisionRoutePreview] = useState<RevisionRoutePreviewState>({ status: "idle" });
   const [revisionRestoreReceipt, setRevisionRestoreReceipt] = useState<string | null>(null);
   const [quickPreviewMode, setQuickPreviewMode] = useState<QuickPreviewMode>("original_parse");
@@ -1331,6 +1333,7 @@ export default function HomePage() {
   });
   const resultSectionRef = useRef<HTMLElement | null>(null);
   const revisionRestoreConfirmationRef = useRef<HTMLButtonElement | null>(null);
+  const revisionRestoreBlockedNoticeRef = useRef<HTMLElement | null>(null);
   const revisionRestoreTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const revisionRoutePreviewRequestRef = useRef(0);
   const shouldRevealResultRef = useRef(false);
@@ -1345,6 +1348,16 @@ export default function HomePage() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [revisionRestoreConfirmation]);
+
+  useEffect(() => {
+    if (!revisionRestoreBlockedNotice) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      revisionRestoreBlockedNoticeRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [revisionRestoreBlockedNotice]);
   const isAvailabilityPreviewStale =
     availabilityPreview !== null &&
     availabilityPreviewSignature !== buildAvailabilityPreviewSignature(tripDays, availabilityWindowsText);
@@ -1535,6 +1548,7 @@ export default function HomePage() {
     }
     setTripPersistence(markSavedFromRevision(revision));
     setRevisionRestoreConfirmation(null);
+    setRevisionRestoreBlockedNotice(null);
     revisionRoutePreviewRequestRef.current += 1;
     setRevisionRoutePreview({ status: "idle" });
     setRevisionRestoreReceipt(null);
@@ -1863,6 +1877,7 @@ export default function HomePage() {
       setError("当前行程有未保存变更，先重新生成或刷新后再恢复历史版本。");
       return;
     }
+    setRevisionRestoreBlockedNotice(null);
     setTripPersistence({ status: "restoring", tripId: tripPersistence.tripId });
     const response = await postTripJson<RestoreRevisionResponse>(
       TRIP_API_ENDPOINTS.restoreTripRevision(tripPersistence.tripId, revision.id),
@@ -1879,14 +1894,19 @@ export default function HomePage() {
     );
 
     if (!response.ok) {
+      const protectedItemCount = typeof response.context?.protected_item_count === "number"
+        ? response.context.protected_item_count
+        : null;
       const message = response.code === "restore_would_drop_fixed_items"
-        ? "无法恢复该版本：它会移除或改变当前路线中的固定安排。当前路线没有变化。"
+        ? describeRevisionRestoreBlock(protectedItemCount)
         : response.message;
-      setError(message);
       if (response.code === "restore_would_drop_fixed_items") {
+        setError(null);
+        setRevisionRestoreBlockedNotice(message);
         setTripPersistence(tripPersistence);
         return;
       }
+      setError(message);
       setTripPersistence({
         status: "error",
         message,
@@ -5086,6 +5106,7 @@ function buildRegenerationSemanticsViewModel(
                     onClick={() => {
                       setVersionHistoryOpen((current) => !current);
                       setRevisionRestoreConfirmation(null);
+                      setRevisionRestoreBlockedNotice(null);
                       revisionRoutePreviewRequestRef.current += 1;
                       setRevisionRoutePreview({ status: "idle" });
                       void refreshRevisionHistory(tripPersistence.tripId);
@@ -5130,6 +5151,25 @@ function buildRegenerationSemanticsViewModel(
                     <strong style={{ fontSize: 13, color: "var(--ec-ink)" }}>
                       版本记录
                     </strong>
+                    {revisionRestoreBlockedNotice ? (
+                      <section
+                        ref={revisionRestoreBlockedNoticeRef}
+                        role="alert"
+                        tabIndex={-1}
+                        style={{
+                          padding: 10,
+                          borderRadius: 10,
+                          border: "1px solid rgba(157, 48, 42, 0.28)",
+                          background: "rgba(255, 240, 238, 0.9)",
+                          color: "#8c302b",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          lineHeight: 1.45,
+                        }}
+                      >
+                        {revisionRestoreBlockedNotice}
+                      </section>
+                    ) : null}
                     {revisionHistory.length === 0 ? (
                       <p style={{ margin: 0, fontSize: 12, color: "var(--ec-slate)" }}>
                         暂无可查看的已保存版本。
