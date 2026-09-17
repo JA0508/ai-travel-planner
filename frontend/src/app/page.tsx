@@ -24,6 +24,7 @@ import {
   buildPersistedTripRef,
   describeTripPersistence,
   describeRevisionRestoreImpact,
+  describeRevisionRestoreReceipt,
   describeTripRevisionSource,
   markDirty,
   markSavedFromRevision,
@@ -1282,6 +1283,7 @@ export default function HomePage() {
   const [restoreTripTextFocus, setRestoreTripTextFocus] = useState(false);
   const [revisionHistory, setRevisionHistory] = useState<TripRevisionMetadata[]>([]);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
+  const [revisionRestoreReceipt, setRevisionRestoreReceipt] = useState<string | null>(null);
   const [quickPreviewMode, setQuickPreviewMode] = useState<QuickPreviewMode>("original_parse");
   const [dismissedFollowUpRawText, setDismissedFollowUpRawText] = useState<string | null>(null);
   const [highlightedResultTargetId, setHighlightedResultTargetId] = useState<string | null>(null);
@@ -1501,6 +1503,7 @@ export default function HomePage() {
       window.localStorage.removeItem(SAVED_TRIP_SESSION_KEY);
     }
     setTripPersistence(markSavedFromRevision(revision));
+    setRevisionRestoreReceipt(null);
     setHasSavedSession(true);
     void refreshCandidates(ref.tripId);
   }
@@ -1842,6 +1845,10 @@ export default function HomePage() {
     );
     await refreshRevisionHistory(response.data.trip.id);
     setVersionHistoryOpen(false);
+    setRevisionRestoreReceipt(
+      describeRevisionRestoreReceipt(revision.revision_number, response.data.current_revision.revision_number),
+    );
+    scheduleResultReveal({ focus: true });
     setError(null);
   }
 
@@ -4101,6 +4108,7 @@ function buildRegenerationSemanticsViewModel(
     setLoading(true);
     setParseError(null);
     setError(null);
+    setRevisionRestoreReceipt(null);
     scheduleResultReveal();
     setResult(null);
     setCompletionTaskEdits([]);
@@ -4917,6 +4925,25 @@ function buildRegenerationSemanticsViewModel(
         ) : (
           <InlineMessage tone="error" title="旅行骨架补全遇到问题" body={error} prominent />
         )
+      ) : null}
+
+      {revisionRestoreReceipt ? (
+        <section
+          role="status"
+          aria-live="polite"
+          style={{
+            marginBottom: 16,
+            padding: 16,
+            borderRadius: 16,
+            border: "1px solid rgba(76, 112, 68, 0.3)",
+            background: "rgba(239,248,243,0.9)",
+            color: "#36583a",
+            fontWeight: 800,
+            lineHeight: 1.5,
+          }}
+        >
+          {revisionRestoreReceipt}
+        </section>
       ) : null}
 
       {result ? (

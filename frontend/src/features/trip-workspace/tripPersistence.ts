@@ -153,6 +153,10 @@ export function describeRevisionRestoreImpact(revisionNumber: number): string {
   return `恢复版本 ${revisionNumber} 会创建一个新的版本；当前版本会保留，之后仍可恢复。`;
 }
 
+export function describeRevisionRestoreReceipt(restoredRevisionNumber: number, newRevisionNumber: number): string {
+  return `已恢复版本 ${restoredRevisionNumber}，并保存为新版本 ${newRevisionNumber}。之前的版本仍可恢复。`;
+}
+
 export function markSavedFromRevision(
   revision: TripRevisionMetadata,
 ): TripPersistenceState {

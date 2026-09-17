@@ -483,6 +483,33 @@ test("Stale saved replacement lets the traveler load the latest route without re
   assertClean();
 });
 
+test("Version history restores a prior route as a new revision and confirms it", async ({ page }) => {
+  const assertClean = installNetworkGate(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const saved = await createSavedRoadbook(page);
+  await openSafeReplaceCandidates(page, "湖畔小馆", 2);
+  const previewResponse = page.waitForResponse((response) => response.url().includes("/mutations/preview") && response.request().method() === "POST");
+  await selectReplacementCandidate(page, "茶人村");
+  const preview = await previewResponse;
+  const previewPayload = await preview.json() as { proposal: { id: string } };
+  const applyResponse = page.waitForResponse((response) => response.url().includes(`/mutation-proposals/${previewPayload.proposal.id}/apply`) && response.request().method() === "POST");
+  await page.getByRole("button", { name: "换成这个地点" }).click();
+  const applied = await applyResponse;
+  const appliedPayload = await applied.json() as { current_revision: { revision_number: number } };
+
+  await page.getByRole("button", { name: "版本记录" }).click();
+  await expect(page.getByText("恢复版本 1 会创建一个新的版本；当前版本会保留，之后仍可恢复。")).toBeVisible();
+  const restoreResponse = page.waitForResponse((response) => response.url().includes(`/revisions/${saved.current_revision.id}/restore`) && response.request().method() === "POST");
+  await page.getByRole("button", { name: "恢复为新版本" }).click();
+  const restored = await restoreResponse;
+  expect(restored.status()).toBe(200);
+  const restoredPayload = await restored.json() as { current_revision: { revision_number: number; restored_from_revision_id: string | null } };
+  expect(restoredPayload.current_revision.revision_number).toBe(appliedPayload.current_revision.revision_number + 1);
+  expect(restoredPayload.current_revision.restored_from_revision_id).toBe(saved.current_revision.id);
+  await expect(page.getByText(`已恢复版本 1，并保存为新版本 ${restoredPayload.current_revision.revision_number}。之前的版本仍可恢复。`)).toBeVisible();
+  assertClean();
+});
+
 test("Saved Roadbook exposes a safe adjustment index before a user hunts through place details", async ({ page }) => {
   const assertClean = installNetworkGate(page);
   await page.setViewportSize({ width: 1440, height: 900 });

@@ -6,6 +6,7 @@ import {
   buildReplanProposalIdempotencyKey,
   describeTripPersistence,
   describeRevisionRestoreImpact,
+  describeRevisionRestoreReceipt,
   describeTripRevisionSource,
   markDirty,
   parsePersistedTripRef,
@@ -94,6 +95,13 @@ test("revision restore impact makes the compensating version explicit", () => {
   assert.equal(
     describeRevisionRestoreImpact(2),
     "恢复版本 2 会创建一个新的版本；当前版本会保留，之后仍可恢复。",
+  );
+});
+
+test("revision restore receipt names both the restored and newly saved versions", () => {
+  assert.equal(
+    describeRevisionRestoreReceipt(2, 4),
+    "已恢复版本 2，并保存为新版本 4。之前的版本仍可恢复。",
   );
 });
 
