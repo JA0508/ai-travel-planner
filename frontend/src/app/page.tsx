@@ -1313,8 +1313,20 @@ export default function HomePage() {
     status: "idle",
   });
   const resultSectionRef = useRef<HTMLElement | null>(null);
+  const revisionRestoreConfirmationRef = useRef<HTMLButtonElement | null>(null);
+  const revisionRestoreTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const shouldRevealResultRef = useRef(false);
   const shouldFocusResultRef = useRef(false);
+
+  useEffect(() => {
+    if (!revisionRestoreConfirmation) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      revisionRestoreConfirmationRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [revisionRestoreConfirmation]);
   const isAvailabilityPreviewStale =
     availabilityPreview !== null &&
     availabilityPreviewSignature !== buildAvailabilityPreviewSignature(tripDays, availabilityWindowsText);
@@ -5116,6 +5128,7 @@ function buildRegenerationSemanticsViewModel(
                                   </p>
                                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                                     <button
+                                      ref={revisionRestoreConfirmationRef}
                                       type="button"
                                       onClick={() => {
                                         setRevisionRestoreConfirmation(null);
@@ -5127,7 +5140,15 @@ function buildRegenerationSemanticsViewModel(
                                     </button>
                                     <button
                                       type="button"
-                                      onClick={() => setRevisionRestoreConfirmation(null)}
+                                      onClick={() => {
+                                        const revisionId = revision.id;
+                                        setRevisionRestoreConfirmation(null);
+                                        window.requestAnimationFrame(() => {
+                                          revisionRestoreTriggerRefs.current
+                                            .get(revisionId)
+                                            ?.focus({ preventScroll: true });
+                                        });
+                                      }}
                                       style={miniGhostButtonStyle}
                                     >
                                       暂不恢复
@@ -5140,6 +5161,13 @@ function buildRegenerationSemanticsViewModel(
                                     {describeRevisionRestoreImpact(revision.revision_number)}
                                   </p>
                                   <button
+                                    ref={(node) => {
+                                      if (node) {
+                                        revisionRestoreTriggerRefs.current.set(revision.id, node);
+                                      } else {
+                                        revisionRestoreTriggerRefs.current.delete(revision.id);
+                                      }
+                                    }}
                                     type="button"
                                     onClick={() => setRevisionRestoreConfirmation(revision)}
                                     style={{ ...miniGhostButtonStyle, justifySelf: "start" }}
