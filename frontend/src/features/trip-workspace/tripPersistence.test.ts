@@ -5,6 +5,7 @@ import {
   buildPersistedDraftTripRef,
   buildReplanProposalIdempotencyKey,
   describeTripPersistence,
+  describeRevisionRestoreImpact,
   describeTripRevisionSource,
   markDirty,
   parsePersistedTripRef,
@@ -87,6 +88,13 @@ test("revision source labels explain the saved change without exposing internal 
   assert.equal(describeTripRevisionSource("swap"), "替换一个地点");
   assert.equal(describeTripRevisionSource("mutation_undo"), "撤销上一项调整");
   assert.equal(describeTripRevisionSource("unknown_source"), "已保存的路线变更");
+});
+
+test("revision restore impact makes the compensating version explicit", () => {
+  assert.equal(
+    describeRevisionRestoreImpact(2),
+    "恢复版本 2 会创建一个新的版本；当前版本会保留，之后仍可恢复。",
+  );
 });
 
 test("replan proposal idempotency key is stable without leaking raw follow-up text", () => {

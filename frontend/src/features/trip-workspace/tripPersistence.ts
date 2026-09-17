@@ -149,6 +149,10 @@ export function describeTripRevisionSource(sourceType: string): string {
   return labels[sourceType] ?? "已保存的路线变更";
 }
 
+export function describeRevisionRestoreImpact(revisionNumber: number): string {
+  return `恢复版本 ${revisionNumber} 会创建一个新的版本；当前版本会保留，之后仍可恢复。`;
+}
+
 export function markSavedFromRevision(
   revision: TripRevisionMetadata,
 ): TripPersistenceState {

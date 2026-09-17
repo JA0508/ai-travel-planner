@@ -23,6 +23,7 @@ import {
   buildPersistedDraftTripRef,
   buildPersistedTripRef,
   describeTripPersistence,
+  describeRevisionRestoreImpact,
   describeTripRevisionSource,
   markDirty,
   markSavedFromRevision,
@@ -5066,13 +5067,18 @@ function buildRegenerationSemanticsViewModel(
                           </p>
                           {tripPersistence.status === "saved" &&
                           tripPersistence.currentRevisionId !== revision.id ? (
-                            <button
-                              type="button"
-                              onClick={() => void handleRestoreRevision(revision)}
-                              style={{ ...miniGhostButtonStyle, justifySelf: "start" }}
-                            >
-                              恢复为新版本
-                            </button>
+                            <div style={{ display: "grid", gap: 6, justifyItems: "start" }}>
+                              <p style={{ margin: 0, fontSize: 11, lineHeight: 1.4, color: "var(--ec-slate)" }}>
+                                {describeRevisionRestoreImpact(revision.revision_number)}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => void handleRestoreRevision(revision)}
+                                style={{ ...miniGhostButtonStyle, justifySelf: "start" }}
+                              >
+                                恢复为新版本
+                              </button>
+                            </div>
                           ) : null}
                         </div>
                       ))
