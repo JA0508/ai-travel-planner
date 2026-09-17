@@ -35,6 +35,10 @@ import {
   type TripRevisionMetadata,
 } from "@/features/trip-workspace/tripPersistence";
 import {
+  buildRevisionRouteOutline,
+  type RevisionRouteOutline,
+} from "@/features/trip-workspace/revisionRouteOutline";
+import {
   buildRouteEditCommandEnvelope,
   buildSwapReplaceCommandEnvelope,
   type TripMutationCommandEnvelope,
@@ -826,6 +830,18 @@ type TripRevisionListResponse = {
   revisions: TripRevisionMetadata[];
 };
 
+type TripRevisionDetailResponse = {
+  trip: TripMetadata;
+  revision: TripRevisionMetadata;
+  itinerary: ItineraryResponse;
+};
+
+type RevisionRoutePreviewState =
+  | { status: "idle" }
+  | { status: "loading"; revisionId: string }
+  | { status: "ready"; revisionId: string; revisionNumber: number; outline: RevisionRouteOutline }
+  | { status: "error"; revisionId: string; message: string };
+
 type PersistedCompletionTaskActionResponse = {
   trip: TripMetadata;
   current_revision: TripRevisionMetadata;
@@ -1284,6 +1300,7 @@ export default function HomePage() {
   const [revisionHistory, setRevisionHistory] = useState<TripRevisionMetadata[]>([]);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
   const [revisionRestoreConfirmation, setRevisionRestoreConfirmation] = useState<TripRevisionMetadata | null>(null);
+  const [revisionRoutePreview, setRevisionRoutePreview] = useState<RevisionRoutePreviewState>({ status: "idle" });
   const [revisionRestoreReceipt, setRevisionRestoreReceipt] = useState<string | null>(null);
   const [quickPreviewMode, setQuickPreviewMode] = useState<QuickPreviewMode>("original_parse");
   const [dismissedFollowUpRawText, setDismissedFollowUpRawText] = useState<string | null>(null);
@@ -1315,6 +1332,7 @@ export default function HomePage() {
   const resultSectionRef = useRef<HTMLElement | null>(null);
   const revisionRestoreConfirmationRef = useRef<HTMLButtonElement | null>(null);
   const revisionRestoreTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  const revisionRoutePreviewRequestRef = useRef(0);
   const shouldRevealResultRef = useRef(false);
   const shouldFocusResultRef = useRef(false);
 
@@ -1517,6 +1535,8 @@ export default function HomePage() {
     }
     setTripPersistence(markSavedFromRevision(revision));
     setRevisionRestoreConfirmation(null);
+    revisionRoutePreviewRequestRef.current += 1;
+    setRevisionRoutePreview({ status: "idle" });
     setRevisionRestoreReceipt(null);
     setHasSavedSession(true);
     void refreshCandidates(ref.tripId);
@@ -1635,6 +1655,32 @@ export default function HomePage() {
     if (response.ok) {
       setRevisionHistory(response.data.revisions);
     }
+  }
+
+  async function previewRevisionRoute(revision: TripRevisionMetadata) {
+    if (tripPersistence.status !== "saved") {
+      return;
+    }
+    const requestId = revisionRoutePreviewRequestRef.current + 1;
+    revisionRoutePreviewRequestRef.current = requestId;
+    setRevisionRoutePreview({ status: "loading", revisionId: revision.id });
+    const response = await getTripJson<TripRevisionDetailResponse>(
+      TRIP_API_ENDPOINTS.getTripRevision(tripPersistence.tripId, revision.id),
+      "读取历史版本路线失败",
+    );
+    if (requestId !== revisionRoutePreviewRequestRef.current) {
+      return;
+    }
+    if (!response.ok) {
+      setRevisionRoutePreview({ status: "error", revisionId: revision.id, message: response.message });
+      return;
+    }
+    setRevisionRoutePreview({
+      status: "ready",
+      revisionId: revision.id,
+      revisionNumber: revision.revision_number,
+      outline: buildRevisionRouteOutline(response.data.itinerary),
+    });
   }
 
   async function loadLatestSavedRoute(): Promise<{ revisionNumber: number } | { errorMessage: string }> {
@@ -5033,6 +5079,8 @@ function buildRegenerationSemanticsViewModel(
                     onClick={() => {
                       setVersionHistoryOpen((current) => !current);
                       setRevisionRestoreConfirmation(null);
+                      revisionRoutePreviewRequestRef.current += 1;
+                      setRevisionRoutePreview({ status: "idle" });
                       void refreshRevisionHistory(tripPersistence.tripId);
                     }}
                     style={{
@@ -5110,6 +5158,58 @@ function buildRegenerationSemanticsViewModel(
                           {tripPersistence.status === "saved" &&
                           tripPersistence.currentRevisionId !== revision.id ? (
                             <div style={{ display: "grid", gap: 6, justifyItems: "start" }}>
+                              <button
+                                type="button"
+                                onClick={() => void previewRevisionRoute(revision)}
+                                disabled={
+                                  revisionRoutePreview.status === "loading" &&
+                                  revisionRoutePreview.revisionId === revision.id
+                                }
+                                style={{ ...miniGhostButtonStyle, justifySelf: "start" }}
+                              >
+                                {revisionRoutePreview.status === "loading" &&
+                                revisionRoutePreview.revisionId === revision.id
+                                  ? "正在读取当时路线…"
+                                  : "查看当时路线"}
+                              </button>
+                              {revisionRoutePreview.status === "ready" &&
+                              revisionRoutePreview.revisionId === revision.id ? (
+                                <section
+                                  aria-live="polite"
+                                  style={{
+                                    display: "grid",
+                                    gap: 6,
+                                    width: "100%",
+                                    padding: 10,
+                                    borderRadius: 10,
+                                    background: "rgba(237, 243, 247, 0.9)",
+                                    color: "var(--ec-slate)",
+                                  }}
+                                >
+                                  <strong style={{ fontSize: 11, color: "var(--ec-ink)" }}>
+                                    版本 {revisionRoutePreview.revisionNumber} 的当时路线（只读）
+                                  </strong>
+                                  <span style={{ fontSize: 11 }}>
+                                    {revisionRoutePreview.outline.tripDays} 天 · {revisionRoutePreview.outline.stopCount} 项安排
+                                  </span>
+                                  {revisionRoutePreview.outline.fixedStopNames.length > 0 ? (
+                                    <span style={{ fontSize: 11 }}>
+                                      此版本中的固定安排：{revisionRoutePreview.outline.fixedStopNames.join("、")}
+                                    </span>
+                                  ) : null}
+                                  {revisionRoutePreview.outline.days.map((day) => (
+                                    <span key={day.day} style={{ fontSize: 11, lineHeight: 1.4 }}>
+                                      第 {day.day} 天：{day.stopNames.join("、") || "暂无安排"}
+                                    </span>
+                                  ))}
+                                </section>
+                              ) : null}
+                              {revisionRoutePreview.status === "error" &&
+                              revisionRoutePreview.revisionId === revision.id ? (
+                                <p style={{ margin: 0, fontSize: 11, lineHeight: 1.4, color: "#9d302a" }}>
+                                  {revisionRoutePreview.message}
+                                </p>
+                              ) : null}
                               {revisionRestoreConfirmation?.id === revision.id ? (
                                 <section
                                   role="alertdialog"

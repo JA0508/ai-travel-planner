@@ -34,6 +34,8 @@ export const TRIP_API_ENDPOINTS = {
   getTrip: (tripId: string) => buildApiUrl(`/trips/${encodeURIComponent(tripId)}`),
   listTripRevisions: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/revisions`),
+  getTripRevision: (tripId: string, revisionId: string) =>
+    buildApiUrl(`/trips/${encodeURIComponent(tripId)}/revisions/${encodeURIComponent(revisionId)}`),
   restoreTripRevision: (tripId: string, revisionId: string) =>
     buildApiUrl(
       `/trips/${encodeURIComponent(tripId)}/revisions/${encodeURIComponent(revisionId)}/restore`,

@@ -59,6 +59,7 @@ export const routeWorkspacePageStateOwnership = {
   result: "server",
   revisionRestoreConfirmation: "selection",
   revisionRestoreReceipt: "ui",
+  revisionRoutePreview: "server",
   savedTripPromptOpen: "ui",
   scenicSpots: "draft",
   selectedCompletionOptionKeys: "selection",

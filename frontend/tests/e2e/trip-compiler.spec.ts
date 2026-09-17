@@ -499,6 +499,10 @@ test("Version history restores a prior route as a new revision and confirms it",
 
   await page.getByRole("button", { name: "版本记录" }).click();
   await expect(page.getByText("恢复版本 1 会创建一个新的版本；当前版本会保留，之后仍可恢复。")).toBeVisible();
+  const revisionDetailResponse = page.waitForResponse((response) => response.url().includes(`/revisions/${saved.current_revision.id}`) && response.request().method() === "GET");
+  await page.getByRole("button", { name: "查看当时路线" }).click();
+  await revisionDetailResponse;
+  await expect(page.getByText("版本 1 的当时路线（只读）")).toBeVisible();
   await page.getByRole("button", { name: "恢复为新版本" }).click();
   await expect(page.getByRole("alertdialog", { name: "确认恢复版本 1" })).toBeVisible();
   await expect(page.getByRole("button", { name: "确认恢复版本 1" })).toBeFocused();
