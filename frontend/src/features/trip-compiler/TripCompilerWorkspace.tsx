@@ -192,7 +192,7 @@ export function TripCompilerWorkspace() {
       });
     }
     if (!result.ok) return setState({ kind: "error", message: result.message });
-    setState({ kind: "confirm", latest: { trip: { id: result.data.draft_trip_id, draft_version: result.data.draft_version }, envelope: result.data.envelope, revision: result.data.revision }, message: "地点已确认。", focusNextAction: true });
+    setState({ kind: "confirm", latest: { trip: { id: result.data.draft_trip_id, draft_version: result.data.draft_version }, envelope: result.data.envelope, revision: result.data.revision }, message: placeConfirmationFeedback(result.data.envelope), focusNextAction: true });
   }
 
   async function plan(latest: Latest) {
@@ -375,7 +375,25 @@ function Confirmation({ latest, busy, message, pendingPlaceConfirmation, onConfi
     : `确认 ${unresolved.length} 个必去地点后即可生成路线。`;
   const paceLabel = { relaxed: "慢一点", balanced: "刚刚好", intensive: "走多一点" }[formal.pace?.value ?? "balanced"];
   const confirmationPending = Boolean(pendingPlaceConfirmation);
+
+  function focusUnresolvedFixedPlace() {
+    const identity = unresolvedFixed[0];
+    if (!identity) return;
+    const target = document.getElementById(placeCheckAnchorId(identity.stable_id));
+    if (!target) return;
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    const action = target.querySelector<HTMLButtonElement>(".tc-place-options button");
+    (action ?? target).focus({ preventScroll: true });
+  }
+
   return <main className="tc-page tc-confirm-page" data-visual-shell="road-movie-v0">
+    <style>{`
+      .tc-place:focus-visible { outline: 3px solid rgba(242, 107, 56, .4); outline-offset: 5px; }
+      .tc-fixed-confirmation-link { width: 100%; box-sizing: border-box; border: 1px solid var(--ink); background: var(--paper-light); padding: 12px 14px; color: var(--ink); font: inherit; font-size: 13px; font-weight: 900; text-align: left; cursor: pointer; }
+      .tc-fixed-confirmation-link:focus-visible { outline: 3px solid rgba(242, 107, 56, .4); outline-offset: 3px; }
+      .tc-fixed-confirmation-link:disabled { cursor: not-allowed; opacity: .5; }
+      .tc-place-options button { box-sizing: border-box; }
+    `}</style>
     <header className="tc-confirm-hero">
       <img src={EDITORIAL_HERO_IMAGE} alt="雨后上海街头的旅行氛围" />
       <div className="tc-confirm-hero-shade" />
@@ -391,7 +409,7 @@ function Confirmation({ latest, busy, message, pendingPlaceConfirmation, onConfi
         {formal.fixed_events.length ? <section className="tc-ticket-section"><p className="tc-eyebrow">DON'T MOVE THIS ONE</p><h2>已经留好的时间</h2><div className="tc-ticket-stack">{formal.fixed_events.map((event) => <article className="tc-fixed-ticket" key={event.title}><div className="tc-ticket-day"><span>DAY</span><b>{String(event.fixed_day ?? 0).padStart(2, "0")}</b></div><div className="tc-ticket-content"><span>FIXED ARRANGEMENT</span><strong>{event.title}</strong><small>这段安排已固定，不会被随意改动。</small></div><span className="tc-ticket-lock">LOCKED</span></article>)}</div></section> : null}
         <section className="tc-place-ledger">
           <div className="tc-ledger-title"><div><p className="tc-eyebrow">PLACE CHECK</p><h2>这些地方，想和你确认一下。</h2></div><span>{required.length ? `${required.length} PLACES` : "OPEN ROUTE"}</span></div>
-          {required.length ? required.map((identity, index) => <div className="tc-place" key={identity.stable_id}>
+          {required.length ? required.map((identity, index) => <div id={placeCheckAnchorId(identity.stable_id)} className="tc-place" key={identity.stable_id} tabIndex={-1}>
             <span className="tc-place-index">0{index + 1}</span>
             <div className="tc-place-copy">
               {identity.resolution_status === "verified" ? <>
@@ -410,10 +428,31 @@ function Confirmation({ latest, busy, message, pendingPlaceConfirmation, onConfi
           </div>) : <div className="tc-open-slot"><b>ONE PLACE MISSING</b><p>还没有一定要去的地点。也很好，路线会为临时起意留一个空位。</p></div>}
         </section>
       </section>
-      <aside className="tc-confirm-aside"><div className={`tc-readiness-note${unresolved.length ? " is-pending" : ""}`}><span>{unresolved.length ? "还差一点" : "READY TO GO"}</span><strong>{unresolved.length ? "先确认地点，路线才能真的属于你。" : "关键信息已经齐全。"}</strong><p>{unresolved.length ? confirmationHint : "固定安排和已确认地点都会被完整带进路线。"}</p><i aria-hidden="true">↘</i></div><button className="tc-primary tc-plan" type="button" disabled={busy || confirmationPending || !canPlan} onClick={() => onPlan(latest)}><span>{busy ? "正在生成路线" : "生成我的路线"}</span><i aria-hidden="true">→</i></button><p className="tc-plan-note">确认后才会开始生成路线方案，还不会保存为最终行程。</p><details className="tc-source"><summary>为什么这样安排？ <span>↓</span></summary><p>每项安排都来自你确认的地点、时间和固定安排；系统补充会明确标为建议。</p></details></aside>
+      <aside className="tc-confirm-aside"><div className={`tc-readiness-note${unresolved.length ? " is-pending" : ""}`}><span>{unresolved.length ? "还差一点" : "READY TO GO"}</span><strong>{unresolved.length ? "先确认地点，路线才能真的属于你。" : "关键信息已经齐全。"}</strong><p>{unresolved.length ? confirmationHint : "固定安排和已确认地点都会被完整带进路线。"}</p><i aria-hidden="true">↘</i></div>{unresolvedFixed.length ? <button className="tc-fixed-confirmation-link" type="button" onClick={focusUnresolvedFixedPlace} disabled={busy || confirmationPending}>查看待确认的固定地点</button> : null}<button className="tc-primary tc-plan" type="button" disabled={busy || confirmationPending || !canPlan} onClick={() => onPlan(latest)}><span>{busy ? "正在生成路线" : "生成我的路线"}</span><i aria-hidden="true">→</i></button><p className="tc-plan-note">确认后才会开始生成路线方案，还不会保存为最终行程。</p><details className="tc-source"><summary>为什么这样安排？ <span>↓</span></summary><p>每项安排都来自你确认的地点、时间和固定安排；系统补充会明确标为建议。</p></details></aside>
     </div>
     <Styles />
+    <style>{`@media (max-width: 860px) { .tc-trip-strip { margin: 0 0 30px; padding: 14px 0; } }`}</style>
   </main>;
+}
+
+function placeCheckAnchorId(stableId: string) {
+  return `place-check-${stableId}`;
+}
+
+export function placeConfirmationFeedback(input: {
+  formal_contract: {
+    place_identities: Array<Pick<PlaceIdentity, "ownership" | "resolution_status">>;
+  };
+}): string {
+  const unresolved = input.formal_contract.place_identities.filter((identity) => (
+    (identity.ownership === "must" || identity.ownership === "fixed")
+    && identity.resolution_status !== "verified"
+  ));
+  if (!unresolved.length) return "地点已确认。关键信息已齐全，可以生成路线。";
+  if (unresolved.some((identity) => identity.ownership === "fixed")) {
+    return "地点已确认。固定安排地点仍待确认，确认后才能生成路线。";
+  }
+  return `地点已确认。还有 ${unresolved.length} 个必去地点待确认，确认后才能生成路线。`;
 }
 
 function RouteScreen({ trip, current_revision, itinerary, intent, onApplied, onReloadLatest }: SavedTrip & { intent: TravelIntent; onApplied: (response: SavedTrip) => void; onReloadLatest: () => Promise<LatestRouteReloadResult> }) {

@@ -736,6 +736,25 @@ test("Saved roadbook distinguishes a protected fixed arrangement from a verified
   assertClean();
 });
 
+test("Trip Compiler gives mobile users a direct path to an unresolved fixed place", async ({ page }) => {
+  const assertClean = installNetworkGate(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/trip-compiler");
+  await page.getByLabel("这一趟，你已经知道些什么？").fill(VISUAL_TRIP);
+  await page.getByRole("button", { name: "开始编排行程" }).click();
+  await expect(page.getByRole("heading", { name: "这些是我理解到的旅行安排。" })).toBeVisible();
+
+  const confirmation = page.waitForResponse((response) => response.url().includes("/preplan-intent/edits") && response.request().method() === "POST");
+  await page.locator(".tc-place-options button").first().click();
+  expect((await confirmation).status()).toBe(201);
+  await expect(page.getByText("地点已确认。固定安排地点仍待确认，确认后才能生成路线。")).toBeVisible();
+  await page.getByRole("button", { name: "查看待确认的固定地点" }).click();
+  const fixedPlace = page.locator(".tc-place").filter({ hasText: "中国茶叶博物馆" });
+  await expect(fixedPlace).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  assertClean();
+});
+
 test("Trip Compiler keeps the Draft Intent to candidate flow usable on mobile", async ({ page }) => {
   const assertClean = installNetworkGate(page);
   await page.setViewportSize({ width: 390, height: 844 });
