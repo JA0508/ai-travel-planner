@@ -94,6 +94,24 @@ test("labels deterministic daily-hours coverage without claiming date or booking
   );
 });
 
+test("does not present a route-fit verdict as reasonable when regular hours miss the scheduled window", () => {
+  const days = makeDays();
+  const stop = days[0].stops[1];
+  const model = buildPlaceDetailViewModel({
+    stop,
+    allDays: days,
+    originLabel: "杭州东站",
+    routePreviewMap: routeMap(days),
+    routeMode: "walk",
+    poiDetail: { ...poiDetail(stop.item.name), open_time_coverage: "does_not_cover_scheduled_window" },
+    poiDetailState: "idle",
+  });
+
+  assert.equal(model.trust.verdict, "needs-review");
+  assert.equal(model.trust.headline, "当前安排落在日常营业时段之外");
+  assert.match(model.trust.explanation, /不会自动移动/);
+});
+
 test("protects fixed events as user constraints and disables destructive actions", () => {
   const days = makeDays();
   const stop = days[0].stops[0];

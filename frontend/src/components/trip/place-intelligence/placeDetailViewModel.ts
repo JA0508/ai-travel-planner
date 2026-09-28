@@ -608,6 +608,14 @@ function buildTrustVerdict({
   poiDetail: POIDetailPreview | null;
   caveats: PlaceCaveat[];
 }): PlaceDetailViewModel["trust"] {
+  if (poiDetail?.open_time_coverage === "does_not_cover_scheduled_window") {
+    return {
+      verdict: "needs-review",
+      label: "Needs review",
+      headline: "当前安排落在日常营业时段之外",
+      explanation: "提供方的单段日常营业时间不覆盖当前钟点；系统不会自动移动地点或固定安排，请先核验具体日期规则再做局部修复。",
+    };
+  }
   if (spatial.topology === "minor-detour" || caveats.some((caveat) => caveat.kind === "heuristic")) {
     return {
       verdict: "needs-review",
