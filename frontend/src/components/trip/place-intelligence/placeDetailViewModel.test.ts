@@ -110,6 +110,12 @@ test("does not present a route-fit verdict as reasonable when regular hours miss
   assert.equal(model.trust.verdict, "needs-review");
   assert.equal(model.trust.headline, "当前安排落在日常营业时段之外");
   assert.match(model.trust.explanation, /不会自动移动/);
+  assert.deepEqual(model.caveats[0], {
+    key: "opening-hours-conflict",
+    kind: "deterministic-inference",
+    label: "安排时段冲突",
+    detail: "提供方的单段日常营业时间不覆盖当前安排钟点；请先核验具体日期规则，再决定是否局部调整。",
+  });
 });
 
 test("protects fixed events as user constraints and disables destructive actions", () => {

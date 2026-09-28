@@ -569,7 +569,14 @@ function buildCaveats({
   poiDetail: POIDetailPreview | null;
   poiDetailState: "idle" | "loading" | "failed";
 }): PlaceCaveat[] {
-  const caveats = [...spatial.caveats];
+  const caveats: PlaceCaveat[] = poiDetail?.open_time_coverage === "does_not_cover_scheduled_window"
+    ? [{
+      key: "opening-hours-conflict",
+      kind: "deterministic-inference",
+      label: "安排时段冲突",
+      detail: "提供方的单段日常营业时间不覆盖当前安排钟点；请先核验具体日期规则，再决定是否局部调整。",
+    }, ...spatial.caveats]
+    : [...spatial.caveats];
   if (!poiDetail?.open_time) {
     caveats.push({
       key: "missing-open-time",

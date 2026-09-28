@@ -227,6 +227,51 @@ test("roadbook shows a provider opening-hour snapshot without treating it as boo
   }
 });
 
+test("roadbook promotes a deterministic opening-hours conflict as the departure note", () => {
+  const viewModel: PlaceDetailViewModel = {
+    identity: { id: "west-lake", name: "西湖", category: "景点", observedAt: "2026-09-26T12:00:00Z" },
+    schedule: { dayIndex: 1, blockLabel: "晚上", startTime: "18:00", endTime: "20:00", durationLabel: "2 小时" },
+    trust: {
+      verdict: "needs-review",
+      label: "Needs review",
+      headline: "当前安排落在日常营业时段之外",
+      explanation: "提供方的单段日常营业时间不覆盖当前钟点。",
+    },
+    routeFit: { topology: "linear", spatialSummary: "相邻路线顺路", observations: [] },
+    visitContext: { role: "anchor", label: "行程地点" },
+    evidence: [{
+      key: "provider-opening-hours",
+      kind: "provider-fact",
+      label: "营业时间快照",
+      detail: "09:00-17:00 · 地点详情服务 · 查询于 2026-09-26T12:00:00Z",
+    }, {
+      key: "provider-opening-hours-coverage",
+      kind: "deterministic-inference",
+      label: "常规时段比对",
+      detail: "提供方的单段日常营业时间不覆盖当前安排钟点；请调整这一站或在出发前核验具体日期规则。",
+    }],
+    caveats: [{
+      key: "opening-hours-conflict",
+      kind: "deterministic-inference",
+      label: "安排时段冲突",
+      detail: "提供方的单段日常营业时间不覆盖当前安排钟点；请先核验具体日期规则，再决定是否局部调整。",
+    }],
+    actions: { canKeep: true, canReplace: false, canRemove: false, canMoveToUnplanned: false },
+  };
+
+  const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
+  const originalReact = reactGlobal.React;
+  reactGlobal.React = React;
+  try {
+    const html = renderToStaticMarkup(<PlaceDetailPanel viewModel={viewModel} onBack={() => undefined} appearance="roadbook" />);
+
+    assert.match(html, /出发前留意：提供方的单段日常营业时间不覆盖当前安排钟点/);
+    assert.match(html, /具体日期规则/);
+  } finally {
+    reactGlobal.React = originalReact;
+  }
+});
+
 test("roadbook distinguishes a protected fixed arrangement from a verified reservation", () => {
   const viewModel: PlaceDetailViewModel = {
     identity: { id: "museum", name: "中国茶叶博物馆", category: "景点" },
