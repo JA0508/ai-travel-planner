@@ -245,6 +245,17 @@ class SQLiteTripRepository:
             )
             return row_to_trip(connection.execute("SELECT * FROM trips WHERE id = ?", (trip_id,)).fetchone()), False
 
+    def get_draft_trip_by_creation_idempotency(self, *, idempotency_key_hash: str) -> TripRecord | None:
+        with closing(self.connection_factory()) as connection:
+            record = connection.execute(
+                "SELECT result_trip_id FROM draft_trip_idempotency_records WHERE idempotency_key_hash = ?",
+                (idempotency_key_hash,),
+            ).fetchone()
+            if record is None:
+                return None
+            trip = connection.execute("SELECT * FROM trips WHERE id = ?", (record["result_trip_id"],)).fetchone()
+            return row_to_trip(trip) if trip is not None else None
+
     def get_draft_source_text(self, *, trip_id: str) -> str:
         with closing(self.connection_factory()) as connection:
             row = connection.execute(
@@ -337,6 +348,28 @@ class SQLiteTripRepository:
                 (revision.created_at, stored.trip_id),
             )
             return stored, False
+
+    def get_draft_intent_revision_by_idempotency(
+        self,
+        *,
+        trip_id: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> DraftIntentRevisionRecord | None:
+        with closing(self.connection_factory()) as connection:
+            existing = connection.execute(
+                "SELECT * FROM draft_intent_idempotency_records WHERE trip_id = ? AND idempotency_key_hash = ?",
+                (trip_id, idempotency_key_hash),
+            ).fetchone()
+            if existing is None:
+                return None
+            if existing["request_digest"] != request_digest:
+                raise IdempotencyConflictError()
+            return self._get_draft_intent_revision_in_connection(
+                connection,
+                trip_id,
+                existing["result_draft_intent_revision_id"],
+            )
 
     def edit_draft_intent_revision(
         self,

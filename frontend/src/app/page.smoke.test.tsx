@@ -33,3 +33,13 @@ test("returning from a blocked confirmation keeps its existing explanation besid
   assert.match(source, /请先修改这项行程信息/);
   assert.match(source, /setReturnToTripTextNotice\(null\)/);
 });
+
+test("a blocked history restore offers a focused route back to the current workspace", () => {
+  const source = readFileSync(pagePath, "utf8");
+
+  assert.match(source, /function returnToCurrentRouteAfterRestoreBlock\(\)/);
+  assert.match(source, /setVersionHistoryOpen\(false\)/);
+  assert.match(source, /setRevisionRestoreBlockedNotice\(null\)/);
+  assert.match(source, /scheduleResultReveal\(\{ focus: true \}\)/);
+  assert.match(source, /回到当前路线，查看调整选项/);
+});

@@ -161,6 +161,8 @@ class TripPersistenceApiTests(unittest.TestCase):
 
         self.assertEqual(restored.status_code, 409, restored.text)
         self.assertEqual(restored.json()["error"]["code"], "restore_would_drop_fixed_items")
+        self.assertEqual(restored.json()["error"]["protected_item_count"], 1)
+        self.assertEqual(restored.json()["error"]["protected_item_names"], ["上海博物馆"])
         self.assertEqual(client.get(f"/trips/{trip_id}").json()["current_revision"]["id"], current.id)
         self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 2)
 
@@ -207,6 +209,8 @@ class TripPersistenceApiTests(unittest.TestCase):
 
         self.assertEqual(restored.status_code, 409, restored.text)
         self.assertEqual(restored.json()["error"]["code"], "restore_would_drop_must_visit_places")
+        self.assertEqual(restored.json()["error"]["protected_item_count"], 1)
+        self.assertEqual(restored.json()["error"]["protected_item_names"], ["城隍庙"])
         self.assertEqual(client.get(f"/trips/{trip_id}").json()["current_revision"]["id"], current.id)
         self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 2)
 
@@ -261,6 +265,57 @@ class TripPersistenceApiTests(unittest.TestCase):
 
         self.assertEqual(restored.status_code, 409, restored.text)
         self.assertEqual(restored.json()["error"]["code"], "restore_would_drop_availability_windows")
+        self.assertEqual(restored.json()["error"]["protected_window_count"], 1)
+        self.assertEqual(restored.json()["error"]["protected_window_labels"], ["第一天下午后抵达"])
+        self.assertEqual(client.get(f"/trips/{trip_id}").json()["current_revision"]["id"], current.id)
+        self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 2)
+
+    def test_restore_rejects_an_old_snapshot_that_would_change_a_current_travel_boundary_anchor(self) -> None:
+        client = TestClient(app)
+        with patch(
+            "app.trips.service.build_itinerary_response",
+            return_value=simple_itinerary(with_intent=True),
+        ):
+            created = client.post(
+                "/trips/plan",
+                json={
+                    "itinerary_request": {
+                        "city": "上海",
+                        "trip_days": 1,
+                        "scenic_spots": [],
+                        "restaurants": [],
+                    }
+                },
+            )
+        trip_id = created.json()["trip"]["id"]
+        initial_revision_id = created.json()["current_revision"]["id"]
+        repository = get_trip_repository()
+        trip = repository.get_trip(trip_id)
+        current_snapshot = serialize_itinerary_snapshot(simple_itinerary(with_intent=True))
+        current_snapshot["trip_intent"]["current_intent"]["arrival_anchor"] = "上海虹桥站"
+        current = repository.create_revision(
+            trip_id=trip_id,
+            capability_hash=trip.capability_hash,
+            base_revision_id=initial_revision_id,
+            itinerary_snapshot=current_snapshot,
+            source_type="test_travel_boundary_anchor",
+            operation_type="test_travel_boundary_anchor",
+            operation_summary="Added an arrival anchor for restore protection coverage.",
+            operation_metadata={},
+            request_digest="test-travel-boundary-anchor",
+            idempotency_key_hash=hash_idempotency_key("test-travel-boundary-anchor"),
+        ).revision
+
+        restored = client.post(
+            f"/trips/{trip_id}/revisions/{initial_revision_id}/restore",
+            json={"base_revision_id": current.id},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "restore-would-change-anchor"},
+        )
+
+        self.assertEqual(restored.status_code, 409, restored.text)
+        self.assertEqual(restored.json()["error"]["code"], "restore_would_change_travel_boundary_anchors")
+        self.assertEqual(restored.json()["error"]["protected_boundary_count"], 1)
+        self.assertEqual(restored.json()["error"]["protected_boundary_labels"], ["到达：上海虹桥站"])
         self.assertEqual(client.get(f"/trips/{trip_id}").json()["current_revision"]["id"], current.id)
         self.assertEqual(len(client.get(f"/trips/{trip_id}/revisions").json()["revisions"]), 2)
 

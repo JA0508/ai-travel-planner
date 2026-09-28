@@ -7,6 +7,7 @@ import {
   describeRevisionRestoreBlock,
   describeRevisionRestoreAvailabilityBlock,
   describeRevisionRestoreMustVisitBlock,
+  describeRevisionRestoreTravelBoundaryBlock,
   describeTripPersistence,
   describeRevisionRestoreImpact,
   describeRevisionRestoreReceipt,
@@ -94,10 +95,10 @@ test("revision source labels explain the saved change without exposing internal 
   assert.equal(describeTripRevisionSource("unknown_source"), "已保存的路线变更");
 });
 
-test("revision restore impact makes the compensating version explicit", () => {
+test("revision restore impact makes the compensating version and protected constraints explicit", () => {
   assert.equal(
     describeRevisionRestoreImpact(2),
-    "恢复版本 2 会创建一个新的版本；当前版本会保留，之后仍可恢复。",
+    "恢复版本 2 会创建一个新的版本；当前版本会保留，之后仍可恢复。系统会先核验固定安排、必去地点、可用时间和到达/返程地点；若旧版本会改变其中任一项，当前路线不会变化。",
   );
 });
 
@@ -108,24 +109,31 @@ test("revision restore receipt names both the restored and newly saved versions"
   );
 });
 
-test("revision restore block explains that the current route remains unchanged", () => {
+test("revision restore block names the affected fixed arrangement and keeps the current route unchanged", () => {
   assert.equal(
-    describeRevisionRestoreBlock(2),
-    "无法恢复该版本：它会移除或改变当前路线中的 2 项固定安排。当前路线没有变化。",
+    describeRevisionRestoreBlock(2, ["上海博物馆", "午餐预约"]),
+    "无法恢复该版本：它会移除或改变当前路线中的 2 项固定安排（上海博物馆、午餐预约）。当前路线没有变化。",
   );
 });
 
-test("revision restore block explains that current must-visit places remain protected", () => {
+test("revision restore block names the affected must-visit place and keeps the current route unchanged", () => {
   assert.equal(
-    describeRevisionRestoreMustVisitBlock(1),
-    "无法恢复该版本：它会移除当前路线中的 1 个必去地点。当前路线没有变化。",
+    describeRevisionRestoreMustVisitBlock(1, ["城隍庙"]),
+    "无法恢复该版本：它会移除当前路线中的 1 个必去地点（城隍庙）。当前路线没有变化。",
   );
 });
 
-test("revision restore block explains that current time windows remain protected", () => {
+test("revision restore block names the affected availability window and keeps the current route unchanged", () => {
   assert.equal(
-    describeRevisionRestoreAvailabilityBlock(1),
-    "无法恢复该版本：它会移除当前路线中的 1 个可用时间限制。当前路线没有变化。",
+    describeRevisionRestoreAvailabilityBlock(1, ["第一天下午后抵达"]),
+    "无法恢复该版本：它会移除当前路线中的 1 个可用时间限制（第一天下午后抵达）。当前路线没有变化。",
+  );
+});
+
+test("revision restore block names the affected arrival or departure anchor and keeps the current route unchanged", () => {
+  assert.equal(
+    describeRevisionRestoreTravelBoundaryBlock(1, ["到达：上海虹桥站"]),
+    "无法恢复该版本：它会移除或改变当前路线中的 1 个到达或返程地点（到达：上海虹桥站）。当前路线没有变化。",
   );
 });
 

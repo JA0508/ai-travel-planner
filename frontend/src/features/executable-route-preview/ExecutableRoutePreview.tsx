@@ -14,8 +14,10 @@ import {
 } from "./routePreviewModel";
 import { RoadbookRepairPreview } from "./RoadbookRepairPreview";
 import {
-  isRepairStaleCode,
+  latestRouteReloadActionLabel,
+  latestRouteReloadReceipt,
   repairFailureMessage,
+  undoRevisionReceipt,
   type LocalRepairImpact,
 } from "./repairPreviewModel";
 import { SavedLivingRoadbook } from "./SavedLivingRoadbook";
@@ -50,7 +52,7 @@ type MutationApplyResponse = {
   itinerary: RoutePreviewItinerary;
 };
 
-type LatestRouteReloadResult =
+export type LatestRouteReloadResult =
   | { revisionNumber: number }
   | { errorMessage: string };
 
@@ -74,24 +76,24 @@ type Props = {
 type RepairState =
   | { status: "idle" }
   | { status: "previewing"; day: number }
-  | { status: "review"; day: number; before: RoutePreviewItinerary; preview: MutationPreviewResponse }
+  | { status: "review"; day: number; before: RoutePreviewItinerary; preview: MutationPreviewResponse; applyErrorMessage?: string }
   | { status: "applying"; day: number; before: RoutePreviewItinerary; preview: MutationPreviewResponse }
-  | { status: "applied"; day: number; revisionId: string; revisionNumber: number; undoing: boolean; errorMessage?: string }
-  | { status: "restored" }
+  | { status: "applied"; day: number; revisionId: string; revisionNumber: number; undoing: boolean; errorMessage?: string; retryUndo?: boolean }
+  | { status: "restored"; revisionNumber: number }
   | { status: "reloaded"; revisionNumber: number }
-  | { status: "error"; message: string; reloadable?: boolean };
+  | { status: "error"; message: string; day?: number; reloadable?: boolean; reloadAttempted?: boolean };
 
 type ReplaceState =
   | { status: "idle" }
   | { status: "candidates"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; loading: boolean; errorMessage?: string }
   | { status: "previewing"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate }
   | { status: "unsafe"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate }
-  | { status: "review"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate; before: RoutePreviewItinerary; preview: MutationPreviewResponse; model: SafeReplacePreviewModel }
+  | { status: "review"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate; before: RoutePreviewItinerary; preview: MutationPreviewResponse; model: SafeReplacePreviewModel; applyErrorMessage?: string }
   | { status: "applying"; target: RoutePreviewItem; options: SafeReplaceCandidate[]; candidate: SafeReplaceCandidate; before: RoutePreviewItinerary; preview: MutationPreviewResponse; model: SafeReplacePreviewModel }
-  | { status: "applied"; stopId: string; previousName: string; replacementName: string; revisionId: string; revisionNumber: number; undoing: boolean; errorMessage?: string }
-  | { status: "restored"; stopId: string }
+  | { status: "applied"; stopId: string; previousName: string; replacementName: string; revisionId: string; revisionNumber: number; undoing: boolean; errorMessage?: string; retryUndo?: boolean }
+  | { status: "restored"; stopId: string; revisionNumber: number }
   | { status: "reloaded"; stopId: string; revisionNumber: number }
-  | { status: "error"; message: string; stopId?: string; reloadable?: boolean };
+  | { status: "error"; message: string; stopId?: string; reloadable?: boolean; reloadAttempted?: boolean };
 
 function replacementFocusStopId(state: ReplaceState): string | null {
   if ("target" in state) return state.target.stable_id ?? null;
@@ -170,7 +172,7 @@ export function ExecutableRoutePreview({
     if (!tripId || !baseRevisionId) return;
     if (repairInteractionActive || replaceInteractionActive) return;
     if (!loads.some((load) => load.day === day)) {
-      setRepair({ status: "error", message: "暂时无法读取这一天的行程负载，当前行程没有被修改。" });
+      setRepair({ status: "error", day, message: "暂时无法读取这一天的行程负载，当前行程没有被修改。" });
       return;
     }
     const requestId = ++previewRequestIdRef.current;
@@ -183,12 +185,17 @@ export function ExecutableRoutePreview({
     );
     if (requestId !== previewRequestIdRef.current) return;
     if (!response.ok) {
-      setRepair({ status: "error", message: repairFailureMessage(response.code, "preview") });
+      setRepair({
+        status: "error",
+        day,
+        message: repairFailureMessage(response.code, "preview"),
+        reloadable: isStaleRouteMutation(response.code, response.context),
+      });
       return;
     }
     const localRepair = repairImpact(response.data);
     if (!localRepair) {
-      setRepair({ status: "error", message: "暂时找不到一个有充分证据的安全小调整。原路线不会被改变。" });
+      setRepair({ status: "error", day, message: "暂时找不到一个有充分证据的安全小调整。原路线不会被改变。" });
       return;
     }
     setRepair({
@@ -206,7 +213,7 @@ export function ExecutableRoutePreview({
   }
 
   function dismissRepair() {
-    repairDismissFocusDayRef.current = "day" in repair ? repair.day : null;
+    repairDismissFocusDayRef.current = "day" in repair && typeof repair.day === "number" ? repair.day : null;
     previewRequestIdRef.current += 1;
     setRepair({ status: "idle" });
   }
@@ -226,8 +233,19 @@ export function ExecutableRoutePreview({
       { headers: { "X-Idempotency-Key": `day-relax:${preview.proposal.id}:${preview.proposal.proposal_digest.slice(0, 16)}` } },
     );
     if (!response.ok) {
+      if (hasUnknownMutationOutcome(response)) {
+        setRepair({
+          status: "review",
+          day,
+          before,
+          preview,
+          applyErrorMessage: "暂时无法确认这次调整是否已保存。可重试同一项调整；系统会核对这次操作，不会重复创建版本。",
+        });
+        return;
+      }
       setRepair({
         status: "error",
+        day,
         message: repairFailureMessage(response.code, "apply"),
         reloadable: isStaleRouteMutation(response.code, response.context),
       });
@@ -255,14 +273,18 @@ export function ExecutableRoutePreview({
       { headers: { "X-Idempotency-Key": `undo-day-relax:${revisionId}` } },
     );
     if (!response.ok) {
-      const message = repairFailureMessage(response.code, "undo");
-      setRepair(isRepairStaleCode(response.code)
-        ? { status: "error", message, reloadable: true }
-        : { status: "applied", day, revisionId, revisionNumber, undoing: false, errorMessage: message });
+      const retryUndo = hasUnknownMutationOutcome(response);
+      const stale = isStaleRouteMutation(response.code, response.context);
+      const message = retryUndo
+        ? "暂时无法确认这次撤销是否已保存。可重试撤销；系统会核对这次操作，不会重复创建版本。"
+        : repairFailureMessage(stale ? "undo_target_not_current" : response.code, "undo");
+      setRepair(stale
+        ? { status: "error", day, message, reloadable: true }
+        : { status: "applied", day, revisionId, revisionNumber, undoing: false, errorMessage: message, retryUndo });
       return;
     }
     onApplied(response.data);
-    setRepair({ status: "restored" });
+    setRepair({ status: "restored", revisionNumber: response.data.current_revision.revision_number });
   }
 
   async function findReplacementCandidates(target: RoutePreviewItem) {
@@ -329,7 +351,12 @@ export function ExecutableRoutePreview({
     );
     if (!replaceRequestsRef.current.isLatest(requestId)) return;
     if (!response.ok) {
-      setReplace({ status: "error", message: safeReplaceFailureMessage(response.code, "preview", response.context), stopId: target.stable_id ?? undefined });
+      setReplace({
+        status: "error",
+        message: safeReplaceFailureMessage(response.code, "preview", response.context),
+        stopId: target.stable_id ?? undefined,
+        reloadable: isStaleRouteMutation(response.code, response.context),
+      });
       return;
     }
     let model: SafeReplacePreviewModel;
@@ -353,6 +380,14 @@ export function ExecutableRoutePreview({
       { headers: { "X-Idempotency-Key": `safe-replace:${state.preview.proposal.id}:${state.preview.proposal.proposal_digest.slice(0, 16)}` } },
     );
     if (!response.ok) {
+      if (hasUnknownMutationOutcome(response)) {
+        setReplace({
+          ...state,
+          status: "review",
+          applyErrorMessage: "暂时无法确认这次替换是否已保存。可重试同一项替换；系统会核对这次操作，不会重复创建版本。",
+        });
+        return;
+      }
       setReplace({
         status: "error",
         message: safeReplaceFailureMessage(response.code, "apply", response.context),
@@ -385,16 +420,23 @@ export function ExecutableRoutePreview({
       { headers: { "X-Idempotency-Key": `undo-safe-replace:${state.revisionId}` } },
     );
     if (!response.ok) {
-      const message = safeReplaceFailureMessage(response.code, "undo", response.context);
+      const retryUndo = hasUnknownMutationOutcome(response);
+      const message = retryUndo
+        ? "暂时无法确认这次撤销是否已保存。可重试撤销；系统会核对这次操作，不会重复创建版本。"
+        : safeReplaceFailureMessage(response.code, "undo", response.context);
       if (isStaleRouteMutation(response.code, response.context)) {
         setReplace({ status: "error", message, stopId: state.stopId, reloadable: true });
       } else {
-        setReplace({ ...state, undoing: false, errorMessage: message });
+        setReplace({ ...state, undoing: false, errorMessage: message, retryUndo });
       }
       return;
     }
     onApplied(response.data);
-    setReplace({ status: "restored", stopId: state.stopId });
+    setReplace({
+      status: "restored",
+      stopId: state.stopId,
+      revisionNumber: response.data.current_revision.revision_number,
+    });
   }
 
   function dismissReplacement() {
@@ -403,14 +445,19 @@ export function ExecutableRoutePreview({
     setReplace({ status: "idle" });
   }
 
-  async function reloadLatestRoute(kind: "repair" | "replace", message: string, stopId?: string) {
+  async function reloadLatestRoute(kind: "repair" | "replace", message: string, stopId?: string, repairDay?: number) {
     if (!onReloadLatest || reloadingLatest) return;
     setReloadingLatest(true);
     const reloadResult = await onReloadLatest();
     setReloadingLatest(false);
     if ("errorMessage" in reloadResult) {
-      const state = { status: "error" as const, message: `${message} ${reloadResult.errorMessage}`, reloadable: true };
-      if (kind === "repair") setRepair(state);
+      const state = {
+        status: "error" as const,
+        message: `${message} ${reloadResult.errorMessage}`,
+        reloadable: true,
+        reloadAttempted: true,
+      };
+      if (kind === "repair") setRepair({ ...state, day: repairDay });
       else setReplace({ ...state, stopId });
       return;
     }
@@ -487,6 +534,7 @@ export function ExecutableRoutePreview({
             candidate={replace.candidate}
             model={replace.model}
             applying={replace.status === "applying"}
+            errorMessage={replace.status === "review" ? replace.applyErrorMessage : undefined}
             onApply={() => void applyReplacement(replace)}
             onKeep={dismissReplacement}
             onOtherCandidates={showOtherCandidates}
@@ -499,6 +547,7 @@ export function ExecutableRoutePreview({
             targetDay={repair.day}
             impact={repair.preview.impact_summary.local_repair!}
             applying={repair.status === "applying"}
+            errorMessage={repair.status === "review" ? repair.applyErrorMessage : undefined}
             onKeep={dismissRepair}
             onApply={() => void applyRelaxation(repair.day, repair.before, repair.preview)}
           />
@@ -508,27 +557,27 @@ export function ExecutableRoutePreview({
             autoFocus
             message={`这段路线已经松了一点，调整已保存为版本 ${repair.revisionNumber}。`}
             errorMessage={repair.errorMessage}
-            actionLabel={repair.undoing ? "正在恢复…" : repair.errorMessage ? "重试撤销" : "撤销刚才的调整"}
+            actionLabel={repair.undoing ? "正在恢复…" : repair.retryUndo ? "重试撤销" : "撤销刚才的调整"}
             busy={repair.undoing}
             onAction={() => void undoRelaxation(repair.day, repair.revisionId, repair.revisionNumber)}
           />
         ) : null}
-        {repair.status === "restored" ? <RepairFeedback autoFocus eyebrow="ROUTE RESTORED" message="已恢复调整前的路线。" /> : null}
-        {repair.status === "reloaded" ? <RepairFeedback autoFocus eyebrow="LATEST ROUTE LOADED" message={`已载入最新保存版本 ${repair.revisionNumber}；没有应用刚才的调整。`} /> : null}
-        {repair.status === "error" ? <RepairError message={repair.message} onDismiss={dismissRepair} actionLabel={repair.reloadable ? "载入最新路线" : undefined} busy={reloadingLatest} onAction={repair.reloadable ? () => void reloadLatestRoute("repair", repair.message) : undefined} /> : null}
+        {repair.status === "restored" ? <RepairFeedback autoFocus eyebrow="ROUTE RESTORED" message={undoRevisionReceipt("relax_day", repair.revisionNumber)} /> : null}
+        {repair.status === "reloaded" ? <RepairFeedback autoFocus eyebrow="LATEST ROUTE LOADED" message={latestRouteReloadReceipt("relax_day", repair.revisionNumber)} /> : null}
+        {repair.status === "error" ? <RepairError message={repair.message} onDismiss={dismissRepair} actionLabel={repair.reloadable ? latestRouteReloadActionLabel(repair.reloadAttempted === true) : undefined} busy={reloadingLatest} onAction={repair.reloadable ? () => void reloadLatestRoute("repair", repair.message, undefined, repair.day) : undefined} /> : null}
         {replace.status === "applied" ? (
           <RepairFeedback
             autoFocus
             message={`这个地点已经从${replace.previousName}换成${replace.replacementName}，并保存为版本 ${replace.revisionNumber}。其他已经确认的安排没有被改动。`}
             errorMessage={replace.errorMessage}
-            actionLabel={replace.undoing ? "正在恢复…" : replace.errorMessage ? "重试撤销" : "撤销刚才的替换"}
+            actionLabel={replace.undoing ? "正在恢复…" : replace.retryUndo ? "重试撤销" : "撤销刚才的替换"}
             busy={replace.undoing}
             onAction={() => void undoReplacement(replace)}
           />
         ) : null}
-        {replace.status === "restored" ? <RepairFeedback autoFocus eyebrow="ROUTE RESTORED" message="已恢复原来的地点和相邻路线。" /> : null}
-        {replace.status === "reloaded" ? <RepairFeedback autoFocus eyebrow="LATEST ROUTE LOADED" message={`已载入最新保存版本 ${replace.revisionNumber}；没有应用刚才的替换。`} /> : null}
-        {replace.status === "error" ? <RepairError message={replace.message} onDismiss={dismissReplacement} actionLabel={replace.reloadable ? "载入最新路线" : undefined} busy={reloadingLatest} onAction={replace.reloadable ? () => void reloadLatestRoute("replace", replace.message, replace.stopId) : undefined} /> : null}
+        {replace.status === "restored" ? <RepairFeedback autoFocus eyebrow="ROUTE RESTORED" message={undoRevisionReceipt("replace_stop", replace.revisionNumber)} /> : null}
+        {replace.status === "reloaded" ? <RepairFeedback autoFocus eyebrow="LATEST ROUTE LOADED" message={latestRouteReloadReceipt("replace_stop", replace.revisionNumber)} /> : null}
+        {replace.status === "error" ? <RepairError message={replace.message} onDismiss={dismissReplacement} actionLabel={replace.reloadable ? latestRouteReloadActionLabel(replace.reloadAttempted === true) : undefined} busy={reloadingLatest} onAction={replace.reloadable ? () => void reloadLatestRoute("replace", replace.message, replace.stopId) : undefined} /> : null}
         <RoutePreviewStyles />
       </section>
     );
@@ -632,6 +681,10 @@ function isStaleRouteMutation(code: string | undefined, context?: Record<string,
   return [code, context?.reason_code]
     .filter((value): value is string => typeof value === "string")
     .some((value) => staleCodes.includes(value));
+}
+
+function hasUnknownMutationOutcome(response: { responseStatus?: number; aborted?: boolean }) {
+  return !response.aborted && (response.responseStatus === undefined || response.responseStatus >= 500);
 }
 
 function RepairFeedback({

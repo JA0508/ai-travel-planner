@@ -158,6 +158,20 @@ export function buildUserFacingRisks(itinerary: RoutePreviewItinerary, loads: Da
   return risks;
 }
 
+export function shouldDisplayTravelLeg(
+  itinerary: Pick<RoutePreviewItinerary, "planning_anchor_source">,
+  item: Pick<RoutePreviewItem, "travel_from_name">,
+): boolean {
+  const fromName = item.travel_from_name;
+  const anchor = itinerary.planning_anchor_source;
+  if (!fromName || !anchor) return Boolean(fromName);
+  const isInternalRouteCenter = anchor.source_name === fromName
+    && anchor.source_type !== "arrival_anchor"
+    && anchor.source_type !== "provided_hotel"
+    && (anchor.source_type === "route_centroid" || anchor.source_name.includes("路线中心"));
+  return !isInternalRouteCenter;
+}
+
 export function formatMinutes(value: number): string {
   if (value < 60) return `${value} 分钟`;
   const hours = Math.floor(value / 60);

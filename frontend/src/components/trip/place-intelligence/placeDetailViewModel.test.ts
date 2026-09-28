@@ -33,12 +33,65 @@ test("builds a reasonable fit with provider facts and deterministic route eviden
   assert.equal(model.routeFit.previousStop?.name, "西湖断桥");
   assert.equal(model.routeFit.nextStop?.name, "湖滨银泰晚餐");
   assert.ok(model.evidence.some((item) => item.kind === "provider-fact" && item.key === "provider-address"));
+  assert.deepEqual(
+    model.evidence.find((item) => item.key === "provider-opening-hours"),
+    {
+      key: "provider-opening-hours",
+      kind: "provider-fact",
+      label: "营业时间快照",
+      detail: "09:00-17:00 · 地点详情服务 · 查询于 2026-09-26T12:00:00Z",
+    },
+  );
   assert.ok(model.evidence.some((item) => item.kind === "deterministic-inference" && item.key === "neighbor-order"));
   assert.deepEqual(buildNeighborStopIds(stop, days), [days[0].stops[0].id, days[0].stops[2].id]);
   assert.deepEqual(buildRelatedRouteSegmentKeys(stop, days), [
     `${days[0].stops[0].id}->${stop.id}`,
     `${stop.id}->${days[0].stops[2].id}`,
   ]);
+});
+
+test("keeps an unsuccessful provider lookup timestamp without treating it as a POI fact", () => {
+  const days = makeDays();
+  const stop = days[0].stops[1];
+  const model = buildPlaceDetailViewModel({
+    stop,
+    allDays: days,
+    originLabel: "杭州东站",
+    routePreviewMap: routeMap(days),
+    routeMode: "walk",
+    poiDetail: null,
+    poiDetailState: "failed",
+    poiDetailObservedAt: "2026-09-26T12:00:00Z",
+  });
+
+  assert.equal(model.identity.observedAt, "2026-09-26T12:00:00Z");
+  assert.equal(model.trust.verdict, "uncertain-fit");
+  assert.ok(model.evidence.some((item) => item.key === "missing-poi-detail"));
+  assert.equal(model.evidence.some((item) => item.key === "provider-address"), false);
+});
+
+test("labels deterministic daily-hours coverage without claiming date or booking verification", () => {
+  const days = makeDays();
+  const stop = days[0].stops[1];
+  const model = buildPlaceDetailViewModel({
+    stop,
+    allDays: days,
+    originLabel: "杭州东站",
+    routePreviewMap: routeMap(days),
+    routeMode: "walk",
+    poiDetail: { ...poiDetail(stop.item.name), open_time_coverage: "covers_scheduled_window" },
+    poiDetailState: "idle",
+  });
+
+  assert.deepEqual(
+    model.evidence.find((item) => item.key === "provider-opening-hours-coverage"),
+    {
+      key: "provider-opening-hours-coverage",
+      kind: "deterministic-inference",
+      label: "常规时段比对",
+      detail: "提供方的单段日常营业时间覆盖当前安排钟点；具体日期、临时闭馆和预约规则仍待核验。",
+    },
+  );
 });
 
 test("protects fixed events as user constraints and disables destructive actions", () => {
@@ -320,6 +373,7 @@ function poiDetail(name: string): POIDetailPreview {
     latitude: 30.25,
     longitude: 120.14,
     source: "fixture",
+    observed_at: "2026-09-26T12:00:00Z",
     failure_reason: null,
   };
 }

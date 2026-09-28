@@ -66,6 +66,11 @@ export function PlaceDetailPanel({
               <dt>路线位置</dt>
               <dd>{viewModel.routeFit.spatialSummary}</dd>
             </div>
+            <div>
+              <dt>核验状态</dt>
+              <dd>{roadbookVerificationStatus(viewModel)}</dd>
+            </div>
+            {openingHoursSnapshot(viewModel) ? <div><dt>营业时间快照</dt><dd>{openingHoursSnapshot(viewModel)?.detail}</dd></div> : null}
             {viewModel.identity.address ? <div><dt>地址</dt><dd>{viewModel.identity.address}</dd></div> : null}
           </dl>
           {viewModel.caveats.length ? (
@@ -166,4 +171,50 @@ function userFacingReason(viewModel: PlaceDetailViewModel): string {
   return reason && /[\u3400-\u9fff]/.test(reason)
     ? reason
     : viewModel.routeFit.spatialSummary;
+}
+
+function roadbookVerificationStatus(viewModel: PlaceDetailViewModel): string {
+  const observation = formatObservationTime(viewModel.identity.observedAt);
+  const observationPrefix = observation ? `地点详情查询于 ${observation}。` : "";
+  const fixedArrangementNotice = viewModel.visitContext.role === "fixed-event"
+    ? "这个固定安排会按你的输入保护；系统尚未核验订单、入场资格或预约状态。"
+    : "";
+  const hasMissingOperationalFact = viewModel.caveats.some((caveat) => caveat.key === "missing-open-time");
+  const openingHours = openingHoursSnapshot(viewModel);
+  const openingHoursCoverage = openingHoursCoverageEvidence(viewModel);
+  if (hasMissingOperationalFact) {
+    return `${observationPrefix}地点详情（如营业时间）待验证；当前安排只是时间骨架，不能确认该地点在此时开放。${fixedArrangementNotice}`;
+  }
+  if (openingHours) {
+    const coverageNotice = openingHoursCoverage?.detail
+      ?? `这是地点详情查询快照，尚未确认是否覆盖 ${formatClock(viewModel.schedule.startTime)}-${formatClock(viewModel.schedule.endTime)}，也不代表已完成预约。`;
+    return `${openingHours.detail}。${coverageNotice}${fixedArrangementNotice}`;
+  }
+  if (viewModel.trust.verdict === "uncertain-fit") {
+    return `${observationPrefix}地点详情或相邻路线仍待验证；当前安排只是时间骨架，不能确认该地点在此时开放。${fixedArrangementNotice}`;
+  }
+  if (viewModel.trust.verdict === "needs-review") {
+    return `${observationPrefix}地点详情可用；相邻路线仍建议复核。${fixedArrangementNotice}`;
+  }
+  return `${observationPrefix}地点详情与相邻路线已有可用证据。${fixedArrangementNotice}`;
+}
+
+function openingHoursSnapshot(viewModel: PlaceDetailViewModel) {
+  return viewModel.evidence.find((item) => item.key === "provider-opening-hours");
+}
+
+function openingHoursCoverageEvidence(viewModel: PlaceDetailViewModel) {
+  return viewModel.evidence.find((item) => item.key === "provider-opening-hours-coverage");
+}
+
+function formatObservationTime(observedAt?: string): string | null {
+  if (!observedAt || Number.isNaN(Date.parse(observedAt))) {
+    return null;
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Shanghai",
+  }).format(new Date(observedAt));
 }

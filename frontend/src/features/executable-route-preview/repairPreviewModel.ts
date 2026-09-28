@@ -110,11 +110,38 @@ export function repairFailureMessage(
   phase: "preview" | "apply" | "undo",
 ): string {
   if (isRepairStaleCode(code)) {
+    if (phase === "undo") {
+      return "路线刚刚发生了变化。这次撤销没有保存。请载入最新路线确认当前安排。";
+    }
     return "路线刚刚发生了变化。这次调整没有保存，原路线保持不变。请基于最新版本重新看看调整建议。";
   }
   if (phase === "preview") return "暂时找不到一个安全的小调整。原路线不会被改变。";
   if (phase === "apply") return "这次调整没有保存。你的原路线仍然保持不变。";
   return "暂时无法撤销这次调整。当前保存的路线没有改变。";
+}
+
+export function undoRevisionReceipt(
+  kind: "relax_day" | "replace_stop",
+  revisionNumber: number,
+): string {
+  if (kind === "replace_stop") {
+    return `已撤销这次替换，并保存为新版本 ${revisionNumber}。原来的地点和相邻路线已恢复。`;
+  }
+  return `已撤销这次调整，并保存为新版本 ${revisionNumber}。调整前的路线已恢复。`;
+}
+
+export function latestRouteReloadReceipt(
+  kind: "relax_day" | "replace_stop",
+  revisionNumber: number,
+): string {
+  if (kind === "replace_stop") {
+    return `已载入最新保存版本 ${revisionNumber}；没有应用刚才的替换。请基于这版路线重新选择地点。`;
+  }
+  return `已载入最新保存版本 ${revisionNumber}；没有应用刚才的调整。请基于这版路线重新查看当天是否仍然太赶。`;
+}
+
+export function latestRouteReloadActionLabel(retry: boolean): string {
+  return retry ? "重新载入最新路线" : "载入最新路线";
 }
 
 export function isRepairStaleCode(code: string | undefined): boolean {

@@ -213,7 +213,7 @@ test("Scenario D: retries a lost edit response with the original idempotency key
   await page.getByLabel("旅行天数").fill("3");
   const initialSnapshot = readDraftDatabase(tripId);
   await page.getByRole("button", { name: "保存修改" }).click();
-  await expect(page.getByText("网络连接失败，你的修改还在这里。")).toHaveCount(1);
+  await expect(page.getByText("暂时无法确认这项修改是否已保存。可重新提交；系统会核对这次修改，不会重复创建版本。")).toHaveCount(1);
   await expect(page.getByLabel("旅行天数")).toHaveValue("3");
   expect(droppedResponse.value?.idempotent_replay).toBe(false);
   const afterLostResponse = readDraftDatabase(tripId);
@@ -226,6 +226,46 @@ test("Scenario D: retries a lost edit response with the original idempotency key
   await expect(page.getByText("已确认这项修改已经保存。")).toBeVisible();
   expect(readDraftDatabase(tripId).intent_revisions).toHaveLength(2);
   expect(readDraftDatabase(tripId).draft_version - initialSnapshot.draft_version).toBe(1);
+  gate.assertClean();
+});
+
+test("Scenario D: retries a 503 edit response with the original idempotency key", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const gate = installErrorGate(page);
+  gate.allowExpectedInitialIntentAbsence();
+  gate.allowExpectedProviderUnavailable();
+  const tripId = await createDraftThroughHome(page, "周末去杭州玩两天，轻松一点。");
+  const initialSnapshot = readDraftDatabase(tripId);
+  let firstResponse = true;
+  await page.route("**/api/trips/*/preplan-intent/edits", async (route) => {
+    if (!firstResponse) {
+      await route.continue();
+      return;
+    }
+    firstResponse = false;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "service_unavailable", message: "Temporary service issue." } }),
+    });
+  });
+
+  await page.getByRole("button", { name: "修改旅行时间" }).click();
+  await page.getByRole("button", { name: "按旅行天数" }).click();
+  await page.getByLabel("旅行天数").fill("3");
+  const failedSave = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: "保存修改" }).click();
+  expect((await failedSave).status()).toBe(503);
+
+  await expect(page.getByText("暂时无法确认这项修改是否已保存。可重新提交；系统会核对这次修改，不会重复创建版本。")).toBeVisible();
+  await expect(page.getByRole("button", { name: "重新提交" })).toBeVisible();
+  expect(readDraftDatabase(tripId).intent_revisions).toHaveLength(initialSnapshot.intent_revisions.length);
+
+  const replay = page.waitForResponse(isDraftIntentEditResponse);
+  await page.getByRole("button", { name: "重新提交" }).click();
+  expect((await replay).status()).toBe(201);
+  await expect(page.getByText("已更新行程信息。")).toBeVisible();
+  expect(readDraftDatabase(tripId).intent_revisions).toHaveLength(initialSnapshot.intent_revisions.length + 1);
   gate.assertClean();
 });
 

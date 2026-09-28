@@ -57,6 +57,7 @@ test("keeps the core workspace owners distinct", () => {
   assert.equal(getWorkspaceStateOwner("rightPanelMode"), "selection");
   assert.equal(getWorkspaceStateOwner("activeStopId"), "selection");
   assert.equal(getWorkspaceStateOwner("routePreviewState"), "async");
+  assert.equal(getWorkspaceStateOwner("poiDetailObservedAt"), "async");
   assert.equal(getWorkspaceStateOwner("poiDetailState"), "async");
   assert.equal(getWorkspaceStateOwner("replanning"), "async");
 });

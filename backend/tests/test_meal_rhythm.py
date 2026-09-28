@@ -769,6 +769,44 @@ def test_planning_snapshot_freezes_meal_identity_and_both_adjacent_routes() -> N
     }
 
 
+def test_planning_snapshot_marks_opening_hours_unverified_when_scheduler_only_places_poi() -> None:
+    response = terminal_meal_itinerary()
+    intent = TravelIntent(destination="杭州", trip_days=1)
+    graph = ConstraintGraph(intent_digest="intent-digest", nodes=[], edges=[])
+    candidate = PlanCandidate(
+        id="candidate-opening-hours",
+        candidate_hash="candidate-hash",
+        strategy="balanced",
+        title="含晚饭的路线",
+        tradeoff_summary="保留晚饭节奏",
+        itinerary=response,
+        constraint_graph=graph,
+        metrics=CandidateMetrics(
+            fixed_coverage=0,
+            must_coverage=0,
+            optional_coverage=0,
+            total_travel_minutes=22,
+            activity_minutes=60,
+            max_daily_activity_minutes=60,
+            free_buffer_minutes=0,
+            minimum_daily_slack_minutes=0,
+            rushed_day_count=0,
+            infeasible_day_count=0,
+            risk_count=0,
+            travel_data_completeness="complete",
+        ),
+    )
+
+    _manifest, poi_snapshot, _route_snapshot, _strategy_manifest = build_planning_snapshot_manifest(
+        intent=intent,
+        graph=graph,
+        candidates=[candidate],
+        strategy_inputs={candidate.id: {}},
+    )
+
+    assert {poi["opening_hour_status"] for poi in poi_snapshot} == {"not_verified"}
+
+
 def test_planning_snapshot_does_not_duplicate_non_terminal_meal_outbound_leg() -> None:
     meal = stop(
         "茶人村",

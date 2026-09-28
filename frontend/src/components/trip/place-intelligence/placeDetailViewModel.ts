@@ -83,6 +83,7 @@ export type PlaceDetailViewModel = {
     category?: string;
     address?: string;
     photoUrl?: string;
+    observedAt?: string;
   };
   schedule: {
     dayIndex: number;
@@ -131,6 +132,7 @@ export type BuildPlaceDetailViewModelInput = {
   routeMode: RoutePreviewMode;
   poiDetail: POIDetailPreview | null;
   poiDetailState: "idle" | "loading" | "failed";
+  poiDetailObservedAt?: string | null;
 };
 
 export function buildPlaceDetailViewModel({
@@ -141,6 +143,7 @@ export function buildPlaceDetailViewModel({
   routeMode,
   poiDetail,
   poiDetailState,
+  poiDetailObservedAt,
 }: BuildPlaceDetailViewModelInput): PlaceDetailViewModel {
   const day = allDays.find((entry) => entry.day === stop.day) ?? null;
   const stopIndex = day?.stops.findIndex((candidate) => candidate.id === stop.id) ?? -1;
@@ -179,6 +182,7 @@ export function buildPlaceDetailViewModel({
       category: poiDetail?.category ?? stop.item.source_label ?? formatStopType(stop.item.type),
       address: poiDetail?.address ?? undefined,
       photoUrl: poiDetail?.photo_url ?? undefined,
+      observedAt: poiDetail?.observed_at ?? poiDetailObservedAt ?? undefined,
     },
     schedule: {
       dayIndex: stop.day,
@@ -476,6 +480,34 @@ function buildEvidence({
       detail: poiDetail.category,
     });
   }
+  if (poiDetail?.open_time) {
+    evidence.push({
+      key: "provider-opening-hours",
+      kind: "provider-fact",
+      label: "营业时间快照",
+      detail: [
+        poiDetail.open_time,
+        poiDetailSourceLabel(poiDetail.source),
+        poiDetail.observed_at ? `查询于 ${poiDetail.observed_at}` : null,
+      ].filter(Boolean).join(" · "),
+    });
+  }
+  if (poiDetail?.open_time_coverage === "covers_scheduled_window") {
+    evidence.push({
+      key: "provider-opening-hours-coverage",
+      kind: "deterministic-inference",
+      label: "常规时段比对",
+      detail: "提供方的单段日常营业时间覆盖当前安排钟点；具体日期、临时闭馆和预约规则仍待核验。",
+    });
+  }
+  if (poiDetail?.open_time_coverage === "does_not_cover_scheduled_window") {
+    evidence.push({
+      key: "provider-opening-hours-coverage",
+      kind: "deterministic-inference",
+      label: "常规时段比对",
+      detail: "提供方的单段日常营业时间不覆盖当前安排钟点；请调整这一站或在出发前核验具体日期规则。",
+    });
+  }
   if (stop.item.source_type === "user_seed" || stop.item.source_type === "user_fixed") {
     evidence.push({
       key: "user-source",
@@ -520,6 +552,10 @@ function buildEvidence({
     });
   }
   return evidence;
+}
+
+function poiDetailSourceLabel(source: string | null | undefined): string {
+  return source === "amap_place_detail" ? "高德地点详情" : "地点详情服务";
 }
 
 function buildCaveats({

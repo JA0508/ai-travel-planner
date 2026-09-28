@@ -136,7 +136,13 @@ export function PrePlanConfirmationQueue({
     const frame = window.requestAnimationFrame(() => {
       if (nextItem) {
         const nextTarget = document.getElementById(`confirmation-item-${nextItem.id}`);
-        if (nextTarget) focusPlaceConfirmationAction(nextTarget);
+        if (nextTarget) {
+          window.scrollTo({
+            top: centeredConfirmationScrollTop(nextTarget.getBoundingClientRect(), window.scrollY, window.innerHeight),
+            behavior: "smooth",
+          });
+          focusPlaceConfirmationAction(nextTarget);
+        }
         return;
       }
       confirmationHeadingRef.current?.focus();
@@ -359,11 +365,16 @@ function PlaceIdentityRecommendation({
   }
 
   return <div className="uc-place-identity-editor" aria-label={`${title}的地点确认`}>
+    <section className="uc-place-mention" aria-label="待确认的原始地点">
+      <p>你提到的地点</p>
+      <strong>{identity.original_name}</strong>
+      <small>尚未作为路线地点保存；请从下方的提供商候选中确认。</small>
+    </section>
     {recommended ? <section className="uc-place-recommendation" aria-label="系统推荐地点">
-      <p>系统推荐</p>
+      <p>提供商候选（系统推荐）</p>
       <strong>{recommended.canonical_name}</strong>
       <span>{recommended.address_summary ?? recommended.category ?? "提供商地点候选"}</span>
-      {reason ? <small>推荐依据：{reason}</small> : null}
+      <small>确认前不会加入路线。{reason ? ` 推荐依据：${reason}` : ""}</small>
       <button type="button" className="uc-place-accept" disabled={busy || searching} onClick={() => onConfirm(identity, recommended, suggestions?.query)}>采用这个地点</button>
     </section> : <p className="uc-confirmation-muted">暂时没有可确认的地点候选。你可以搜索更具体的地标或街区名称。</p>}
 

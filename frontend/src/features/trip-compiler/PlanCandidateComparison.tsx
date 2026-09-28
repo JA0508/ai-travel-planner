@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { formatDistance, formatMinutes, type RoutePreviewItinerary } from "@/features/executable-route-preview/routePreviewModel";
+import { formatDistance, formatMinutes, shouldDisplayTravelLeg, type RoutePreviewItinerary } from "@/features/executable-route-preview/routePreviewModel";
 
 type CandidateMetrics = {
   fixed_coverage: number;
@@ -65,7 +65,10 @@ export function PlanCandidateComparison({
   onBack,
 }: Props) {
   const selected = response.candidates.find((candidate) => candidate.id === selectedId) ?? response.candidates[0];
-  const selectedHighlights = response.comparison.find((item) => item.candidate_id === selected.id)?.highlights ?? [];
+  const selectedHighlights = candidateHighlights(
+    selected,
+    response.comparison.find((item) => item.candidate_id === selected.id)?.highlights ?? [],
+  );
 
   return <main className="tc-page tc-candidate-page" data-visual-shell="road-movie-v0">
     <header className="tc-candidate-hero">
@@ -97,9 +100,9 @@ export function PlanCandidateComparison({
           >
             <span>0{index + 1}</span>
             <div>
-              <small>{STRATEGY_LABELS[candidate.strategy]}</small>
-              <strong>{candidate.title}</strong>
-              <p>{candidate.tradeoff_summary}</p>
+              <small>{candidateStrategyLabel(candidate)}</small>
+              <strong>{candidateTitle(candidate)}</strong>
+              <p>{candidateTradeoff(candidate)}</p>
             </div>
             <i aria-hidden="true">{active ? "●" : "○"}</i>
           </button>;
@@ -110,19 +113,19 @@ export function PlanCandidateComparison({
         <header className="tc-selected-route-header">
           <div>
             <p className="tc-eyebrow">SELECTED JOURNEY</p>
-            <h2>{selected.title}</h2>
-            <p>{selected.tradeoff_summary}</p>
+            <h2>{candidateTitle(selected)}</h2>
+            <p>{candidateTradeoff(selected)}</p>
           </div>
           <dl className="tc-route-facts">
             <div><dt>必去地点</dt><dd>{selected.metrics.must_coverage} 个</dd></div>
             <div><dt>路上时间</dt><dd>{formatOptionalMinutes(selected.metrics.total_travel_minutes)}</dd></div>
-            <div><dt>每天至少留白</dt><dd>{formatMinutes(selected.metrics.minimum_daily_slack_minutes)}</dd></div>
+            <div><dt>每天至少留白</dt><dd>{formatMinimumDailySlack(selected.metrics)}</dd></div>
           </dl>
         </header>
 
         <div className="tc-route-proof">
           <span>{selected.metrics.fixed_coverage ? "固定安排已保护" : "没有固定安排"}</span>
-          <span>{selected.metrics.travel_data_completeness === "complete" ? "路程已确认" : "部分路程待确认"}</span>
+          <span>{travelDataStatusLabel(selected.metrics.travel_data_completeness)}</span>
           <span>{mealRhythmLabel(selected.itinerary)}</span>
         </div>
 
@@ -131,13 +134,14 @@ export function PlanCandidateComparison({
             <header><span>DAY</span><b>{String(day.day).padStart(2, "0")}</b></header>
             <div className="tc-day-route-body">
               {day.blocks.flatMap((block) => block.items).map((item, index) => <div className="tc-route-item" key={item.stable_id ?? `${day.day}:${item.start_time}:${item.name}`}>
-                {item.travel_from_name ? <TravelEvidence item={item} /> : null}
+                {shouldDisplayTravelLeg(selected.itinerary, item) ? <TravelEvidence item={item} /> : null}
                 <div className="tc-route-stop">
                   <time>{item.start_time ?? "待定"}</time>
                   <span className="tc-route-dot" aria-hidden="true" />
                   <div>
                     <strong>{item.name}</strong>
                     <small>{item.is_fixed ? "固定安排已保护" : item.source_label ?? "系统补充"}{item.duration_minutes ? ` · ${item.duration_minutes} 分钟` : ""}</small>
+                    {systemSupplementReason(item) ? <p className="tc-route-stop-reason"><span>为什么补入</span>{systemSupplementReason(item)}</p> : null}
                   </div>
                   <span className="tc-route-order">0{index + 1}</span>
                 </div>
@@ -148,7 +152,7 @@ export function PlanCandidateComparison({
 
         <details className="tc-route-rationale" open>
           <summary>为什么选这条路</summary>
-          <p>{selected.tradeoff_summary}</p>
+          <p>{candidateTradeoff(selected)}</p>
           {selectedHighlights.map((highlight) => <p key={highlight}>↳ {highlight}</p>)}
         </details>
       </section>
@@ -179,6 +183,58 @@ function TravelEvidence({ item }: { item: RoutePreviewItinerary["days"][number][
 
 function formatOptionalMinutes(minutes: number | null) {
   return minutes == null ? "待确认" : formatMinutes(minutes);
+}
+
+function travelDataStatusLabel(completeness: CandidateMetrics["travel_data_completeness"]) {
+  if (completeness === "complete") return "路程已确认";
+  if (completeness === "partial") return "部分路程待确认";
+  return "路程待确认";
+}
+
+function formatMinimumDailySlack(metrics: CandidateMetrics) {
+  return metrics.travel_data_completeness === "complete"
+    ? formatMinutes(metrics.minimum_daily_slack_minutes)
+    : "待确认";
+}
+
+function candidateHasCompleteTravelData(candidate: PlanCandidate) {
+  return candidate.metrics.travel_data_completeness === "complete";
+}
+
+function candidateStrategyLabel(candidate: PlanCandidate) {
+  return candidateHasCompleteTravelData(candidate)
+    ? STRATEGY_LABELS[candidate.strategy]
+    : "路线待确认";
+}
+
+function candidateTitle(candidate: PlanCandidate) {
+  return candidateHasCompleteTravelData(candidate)
+    ? candidate.title
+    : "路线方案";
+}
+
+function candidateTradeoff(candidate: PlanCandidate) {
+  return candidateHasCompleteTravelData(candidate)
+    ? candidate.tradeoff_summary
+    : "固定安排和必去地点已保留；路程仍待确认。";
+}
+
+function candidateHighlights(candidate: PlanCandidate, highlights: string[]) {
+  return candidateHasCompleteTravelData(candidate)
+    ? highlights
+    : [
+        `固定安排 ${candidate.metrics.fixed_coverage} 个均保留`,
+        `必去地点覆盖 ${candidate.metrics.must_coverage} 个`,
+        "路程仍待确认，留白时间待核验",
+      ];
+}
+
+function systemSupplementReason(item: RoutePreviewItinerary["days"][number]["blocks"][number]["items"][number]) {
+  const isSystemSupplement = item.source_type === "auto_seeded_poi"
+    || item.source_type === "auto_seeded_meal"
+    || item.source_type === "auto_filled";
+  if (!isSystemSupplement) return null;
+  return item.source_reason?.trim() || item.placement_reason?.trim() || null;
 }
 
 function mealRhythmLabel(itinerary: RoutePreviewItinerary) {

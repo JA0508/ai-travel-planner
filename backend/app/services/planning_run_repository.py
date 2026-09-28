@@ -118,6 +118,24 @@ class SQLitePlanningRunRepository:
             run = self._require_run(connection, run_id, capability_hash)
             return run
 
+    def recover_selected_trip_capability(
+        self,
+        *,
+        run_id: str,
+        planning_capability_hash: str,
+        trip_capability_hash: str,
+    ) -> str | None:
+        with self._transaction() as connection:
+            run = self._require_run(connection, run_id, planning_capability_hash)
+            if run.status != "selected" or not run.trip_id:
+                return None
+            connection.execute(
+                "UPDATE trips SET capability_hash = ?, updated_at = ? WHERE id = ?",
+                (trip_capability_hash, _now(), run.trip_id),
+            )
+            self._append_event(connection, run.id, "selection_replayed", _now(), {"recovery_source": "planning_run_read"})
+            return run.trip_id
+
     def find_run_for_candidate(self, *, candidate_id: str, capability_hash: str) -> str:
         with closing(self.connection_factory()) as connection:
             row = connection.execute(
@@ -344,7 +362,7 @@ def _parse_time(value: str) -> datetime:
 
 
 def _candidate_title(strategy: str, metrics: dict) -> str:
-    if strategy == "low_travel" and metrics.get("travel_data_completeness") != "complete":
+    if strategy in {"relaxed", "low_travel"} and metrics.get("travel_data_completeness") != "complete":
         return "路线方案"
     return {"relaxed": "留出更多空白", "balanced": "保留更多想去地点", "low_travel": "少走一些路"}[strategy]
 
@@ -354,6 +372,8 @@ def _candidate_tradeoff(strategy: str, metrics: dict) -> str:
         return f"保留 {metrics['optional_coverage']} 个可调整地点。"
     if strategy == "low_travel" and metrics.get("travel_data_completeness") == "complete":
         return f"路线数据完整，预计移动 {metrics.get('total_travel_minutes', 0)} 分钟。"
+    if metrics.get("travel_data_completeness") != "complete":
+        return "保留固定安排和必去地点；路程仍待确认。"
     return f"最少每天留出 {metrics['minimum_daily_slack_minutes']} 分钟弹性时间。"
 
 

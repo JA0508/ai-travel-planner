@@ -727,10 +727,69 @@ def apply_replace_stop(
         following["travel_calculation_status"] = "provider_verified"
         following["travel_provider"] = outbound.provider
         following["travel_data_status"] = outbound.data_status
+    record_replace_intent_feedback(
+        snapshot=snapshot,
+        original=item,
+        replacement=command,
+    )
     impact["replaced_stop_ids"].append(command.stop_id)
     impact["replacement_route_impact"] = replacement.route_impact.model_dump(mode="json")
     impact["execution_evidence"]["route_provider_calls"] = 1 + int(outbound is not None)
     record_day_impact(impact, day.get("day"))
+
+
+def record_replace_intent_feedback(
+    *,
+    snapshot: dict[str, Any],
+    original: dict[str, Any],
+    replacement: ReplaceStopCommand,
+) -> None:
+    """Persist a user-confirmed local replacement as future planning intent."""
+
+    trip_intent = snapshot.get("trip_intent")
+    if not isinstance(trip_intent, dict):
+        return
+    current_intent = trip_intent.get("current_intent")
+    if not isinstance(current_intent, dict):
+        return
+
+    original_name = str(original.get("name") or "").strip()
+    original_type = str(original.get("type") or "").strip()
+    if not original_name or original_type not in {"restaurant", "scenic"}:
+        return
+
+    rejected_key = "rejected_restaurants" if original_type == "restaurant" else "rejected_scenic_spots"
+    current_intent[rejected_key] = append_unique_intent_name(
+        current_intent.get(rejected_key),
+        original_name,
+    )
+    replacement_name = replacement.replacement.verified_place.canonical_name
+    existing_replacements = current_intent.get("confirmed_replacements")
+    replacement_record = {
+        "original_name": original_name,
+        "original_type": original_type,
+        "replacement_name": replacement_name,
+        "replacement_type": replacement.replacement.type,
+        "source": "swap",
+        "reasoning_summary": replacement.replacement.reasoning_summary,
+    }
+    current_intent["confirmed_replacements"] = [
+        record
+        for record in existing_replacements
+        if isinstance(record, dict)
+        and not (
+            str(record.get("original_name") or "").casefold() == original_name.casefold()
+            and str(record.get("replacement_name") or "").casefold() == replacement_name.casefold()
+        )
+    ] if isinstance(existing_replacements, list) else []
+    current_intent["confirmed_replacements"].append(replacement_record)
+
+
+def append_unique_intent_name(value: Any, name: str) -> list[str]:
+    existing = [entry.strip() for entry in value if isinstance(entry, str) and entry.strip()] if isinstance(value, list) else []
+    if any(entry.casefold() == name.casefold() for entry in existing):
+        return existing
+    return [*existing, name]
 
 
 def apply_add_candidate_stop(

@@ -112,6 +112,23 @@ def create_draft_trip(
         return trip_error_response(exc)
 
 
+@router.post("/drafts/recover", response_model=DraftTripCreateResponse, status_code=status.HTTP_201_CREATED)
+def recover_draft_trip(
+    response: Response,
+    request: Request,
+    x_idempotency_key: Annotated[str | None, Header(alias="X-Idempotency-Key")] = None,
+) -> DraftTripCreateResponse | JSONResponse:
+    origin_error = validate_write_origin(request)
+    if origin_error is not None:
+        return origin_error
+    try:
+        result = get_trip_persistence_service().recover_draft_trip(idempotency_key=x_idempotency_key)
+        set_trip_capability_cookie(response, result.response.trip.id, result.capability)
+        return result.response
+    except TripError as exc:
+        return trip_error_response(exc)
+
+
 @router.get("/{trip_id}/draft", response_model=DraftTripDetailResponse)
 def get_draft_trip(trip_id: str, request: Request) -> DraftTripDetailResponse | JSONResponse:
     try:

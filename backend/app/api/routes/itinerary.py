@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+from datetime import datetime, timezone
 from collections import OrderedDict
 from collections.abc import Iterable
 from typing import Annotated
@@ -96,6 +97,7 @@ from app.services.mock_normalizer import (
     normalize_poi,
 )
 from app.services.nl_parser import normalize_parsed_trip_intent, parse_trip_text
+from app.services.opening_hours_coverage import assess_regular_daily_open_time_coverage
 from app.services.poi_discovery_provider import get_poi_discovery_capability
 from app.services.poi_research_summary import attach_poi_research_summaries
 from app.services.planner_realism_analyzer import analyze_planner_realism
@@ -267,6 +269,7 @@ def preview_poi_detail(payload: POIDetailPreviewRequest) -> POIDetailPreviewResp
     change scheduling, does not infer facts with an LLM, and safely returns an
     empty state when the POI provider is unavailable.
     """
+    observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         candidates = search_place_detail_candidates(
             keyword=payload.name,
@@ -279,6 +282,7 @@ def preview_poi_detail(payload: POIDetailPreviewRequest) -> POIDetailPreviewResp
             found=False,
             name=payload.name,
             source="amap_place_detail",
+            observed_at=observed_at,
             failure_reason=str(exc),
         )
 
@@ -287,10 +291,12 @@ def preview_poi_detail(payload: POIDetailPreviewRequest) -> POIDetailPreviewResp
             found=False,
             name=payload.name,
             source="amap_place_detail",
+            observed_at=observed_at,
             failure_reason="No Amap POI detail candidate found.",
         )
 
     candidate = candidates[0]
+    open_time = _clean_optional_text(candidate.get("open_time"))
     return POIDetailPreviewResponse(
         found=True,
         name=str(candidate.get("name") or payload.name),
@@ -301,11 +307,17 @@ def preview_poi_detail(payload: POIDetailPreviewRequest) -> POIDetailPreviewResp
         cost=_clean_optional_text(candidate.get("cost")),
         tel=_clean_optional_text(candidate.get("tel")),
         website=_clean_optional_text(candidate.get("website")),
-        open_time=_clean_optional_text(candidate.get("open_time")),
+        open_time=open_time,
+        open_time_coverage=assess_regular_daily_open_time_coverage(
+            open_time=open_time,
+            scheduled_start_time=payload.scheduled_start_time,
+            scheduled_end_time=payload.scheduled_end_time,
+        ),
         photo_url=_clean_optional_text(candidate.get("photo_url")),
         latitude=candidate.get("latitude"),
         longitude=candidate.get("longitude"),
         source="amap_place_detail",
+        observed_at=observed_at,
     )
 
 
@@ -664,6 +676,8 @@ def preview_completion_task_candidate_options(
         preview_safe_replace_candidates(
             itinerary=payload.itinerary,
             stop_id=payload.replacement_stop_id,
+            preference_policy=preference_policy,
+            request_style_preferences=request_style_signal,
         )
         if payload.task_id == "replace_stop" and payload.replacement_stop_id
         else preview_completion_task_candidates(
@@ -1576,12 +1590,35 @@ def build_replan_request(
     base_rejected_restaurants = (
         [] if destination_changed else list(base_intent.rejected_restaurants)
     )
+    confirmed_replacements = (
+        [] if destination_changed else list(base_intent.confirmed_replacements)
+    )
+    confirmed_scenic_spots = [
+        replacement.replacement_name
+        for replacement in confirmed_replacements
+        if replacement.replacement_type == POIType.SCENIC
+    ]
+    confirmed_restaurants = [
+        replacement.replacement_name
+        for replacement in confirmed_replacements
+        if replacement.replacement_type == POIType.RESTAURANT
+    ]
     base_scenic = filter_rejected_names(
-        [] if destination_changed else list(base_intent.carry_forward_scenic_spots),
+        unique_preserve_order(
+            [
+                *([] if destination_changed else base_intent.carry_forward_scenic_spots),
+                *confirmed_scenic_spots,
+            ]
+        ),
         base_rejected_scenic,
     )
     base_restaurants = filter_rejected_names(
-        [] if destination_changed else list(base_intent.carry_forward_restaurants),
+        unique_preserve_order(
+            [
+                *([] if destination_changed else base_intent.carry_forward_restaurants),
+                *confirmed_restaurants,
+            ]
+        ),
         base_rejected_restaurants,
     )
     newly_rejected_scenic = extract_rejected_seed_names(follow_up_text, base_scenic)
@@ -1672,7 +1709,7 @@ def build_replan_request(
         preferences=merged_preferences,
         rejected_scenic_spots=rejected_scenic,
         rejected_restaurants=rejected_restaurants,
-        confirmed_replacements=[] if destination_changed else list(base_intent.confirmed_replacements),
+        confirmed_replacements=confirmed_replacements,
         auto_fill_sparse_days=auto_fill_sparse_days,
         trip_days=(
             follow_up_intent.trip_days

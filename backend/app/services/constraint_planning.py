@@ -71,7 +71,7 @@ def build_planning_snapshot_manifest(
                         "coordinates": [item.latitude, item.longitude],
                         "category": item.type.value,
                         "duration_minutes": item.duration_minutes,
-                        "opening_hour_status": "scheduler_accepted",
+                        "opening_hour_status": "not_verified",
                         "source_status": "frozen_scheduler_input",
                     })
                     if item.travel_from_name:
@@ -364,8 +364,22 @@ def _dominates(left: PlanCandidate, right: PlanCandidate) -> bool:
         travel_better = False
     else:
         travel_no_worse, travel_better = a.total_travel_minutes <= b.total_travel_minutes, a.total_travel_minutes < b.total_travel_minutes
-    no_worse = a.fixed_coverage >= b.fixed_coverage and a.must_coverage >= b.must_coverage and a.optional_coverage >= b.optional_coverage and a.activity_minutes <= b.activity_minutes and a.minimum_daily_slack_minutes >= b.minimum_daily_slack_minutes and travel_no_worse
-    better = a.fixed_coverage > b.fixed_coverage or a.must_coverage > b.must_coverage or a.optional_coverage > b.optional_coverage or a.activity_minutes < b.activity_minutes or a.minimum_daily_slack_minutes > b.minimum_daily_slack_minutes or travel_better
+    slack_is_comparable = (
+        a.travel_data_completeness == "complete"
+        and b.travel_data_completeness == "complete"
+    )
+    slack_no_worse = (
+        a.minimum_daily_slack_minutes >= b.minimum_daily_slack_minutes
+        if slack_is_comparable
+        else True
+    )
+    slack_better = (
+        a.minimum_daily_slack_minutes > b.minimum_daily_slack_minutes
+        if slack_is_comparable
+        else False
+    )
+    no_worse = a.fixed_coverage >= b.fixed_coverage and a.must_coverage >= b.must_coverage and a.optional_coverage >= b.optional_coverage and a.activity_minutes <= b.activity_minutes and slack_no_worse and travel_no_worse
+    better = a.fixed_coverage > b.fixed_coverage or a.must_coverage > b.must_coverage or a.optional_coverage > b.optional_coverage or a.activity_minutes < b.activity_minutes or slack_better or travel_better
     return no_worse and better
 
 
@@ -374,14 +388,21 @@ def _tradeoff(strategy: str, metrics: CandidateMetrics) -> str:
         return f"保留全部必去地点，并安排 {metrics.optional_coverage} 个可调整地点。"
     if strategy == "low_travel" and metrics.travel_data_completeness == "complete":
         return f"保留全部地点，预计移动 {metrics.total_travel_minutes} 分钟。"
+    if metrics.travel_data_completeness != "complete":
+        return "保留固定安排和必去地点；路程仍待确认。"
     return f"保留固定安排和必去地点，最少每天预留 {metrics.minimum_daily_slack_minutes} 分钟弹性时间。"
 
 
 def _comparison(candidate: PlanCandidate) -> CandidateComparison:
     metrics = candidate.metrics
+    route_highlight = (
+        f"最少每天预留 {metrics.minimum_daily_slack_minutes} 分钟"
+        if metrics.travel_data_completeness == "complete"
+        else "路程仍待确认，留白时间待核验"
+    )
     return CandidateComparison(candidate_id=candidate.id, highlights=[
         f"固定安排 {metrics.fixed_coverage} 个均保留", f"必去地点覆盖 {metrics.must_coverage} 个",
-        f"可调整地点安排 {metrics.optional_coverage} 个", f"最少每天预留 {metrics.minimum_daily_slack_minutes} 分钟",
+        f"可调整地点安排 {metrics.optional_coverage} 个", route_highlight,
     ])
 
 
@@ -422,6 +443,8 @@ def _title(strategy: str, metrics: CandidateMetrics) -> str:
         return "保留更多想去地点"
     if strategy == "low_travel" and metrics.travel_data_completeness == "complete":
         return "少走一些路"
+    if strategy in {"relaxed", "low_travel"} and metrics.travel_data_completeness != "complete":
+        return "路线方案"
     if strategy == "relaxed":
         return "留出更多空白"
     return "路线方案"

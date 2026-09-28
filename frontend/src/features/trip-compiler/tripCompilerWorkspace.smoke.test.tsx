@@ -33,6 +33,15 @@ test("golden path keeps the confirmation surface in plain travel language", () =
   assert.doesNotMatch(source, />Revision</);
 });
 
+test("confirmation separates the traveler mention from provider candidates", () => {
+  const source = readFileSync(componentPath, "utf8");
+
+  assert.match(source, /你提到的地点/);
+  assert.match(source, /尚未作为路线地点保存/);
+  assert.match(source, /提供商候选（系统推荐）/);
+  assert.match(source, /确认前不会加入路线/);
+});
+
 test("live compiler uses the immutable Draft Intent path before server candidate selection", () => {
   const source = readFileSync(componentPath, "utf8");
   assert.match(source, /createDraftTrip/);

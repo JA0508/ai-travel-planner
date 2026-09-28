@@ -105,6 +105,7 @@ from .errors import (
     RestoreWouldDropAvailabilityWindowsError,
     RestoreWouldDropFixedItemsError,
     RestoreWouldDropMustVisitPlacesError,
+    RestoreWouldChangeTravelBoundaryAnchorsError,
     RevisionNotUndoableError,
     SnapshotSchemaUnsupportedError,
     StaleBaseRevisionError,
@@ -115,6 +116,7 @@ from .errors import (
     StaleIntentRevisionError,
     StaleMutationProposalError,
     TripAccessDeniedError,
+    TripNotFoundError,
     UndoTargetNotCurrentError,
 )
 from .intent_contracts import (
@@ -292,6 +294,26 @@ class TripPersistenceService:
             capability=capability,
         )
 
+    def recover_draft_trip(self, *, idempotency_key: str | None) -> CreatedTripResult:
+        if not idempotency_key or not idempotency_key.strip():
+            raise InvalidRevisionOperationError("X-Idempotency-Key is required.")
+        capability = f"draft-capability:{idempotency_key.strip()}"
+        trip = self.repository.get_draft_trip_by_creation_idempotency(
+            idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+        )
+        if trip is None:
+            raise TripNotFoundError("draft-recovery")
+        self._require_trip_access(trip.id, capability)
+        if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
+            raise InvalidRevisionOperationError("Draft recovery is only available while the trip is a draft.")
+        return CreatedTripResult(
+            response=DraftTripCreateResponse(
+                trip=TripMetadata.from_record(trip),
+                persistence=TripPersistenceInfo(idempotent_replay=True),
+            ),
+            capability=capability,
+        )
+
     def get_draft_trip(self, *, trip_id: str, capability: str | None) -> DraftTripDetailResponse:
         trip = self._require_trip_access(trip_id, capability)
         if trip.planning_phase != TripPlanningPhase.DRAFT.value or trip.current_revision_id is not None:
@@ -316,14 +338,26 @@ class TripPersistenceService:
             raise InvalidRevisionOperationError("Pre-plan intent is only available while the trip is a draft.")
         if payload.base_revision_id is not None:
             raise StaleBaseRevisionError(trip_id=trip_id, provided_base_revision_id=payload.base_revision_id, current_revision_id="")
-        parent = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
-        parent_id = parent.id if parent else None
-        if payload.base_intent_revision_id != parent_id:
-            raise StaleIntentRevisionError(trip_id=trip_id, provided_intent_revision_id=payload.base_intent_revision_id or "", current_intent_revision_id=parent_id or "")
         # The persisted Draft source is the only direct-language authority. A
         # caller cannot compile a different browser string into this Draft Trip.
         direct_user_text = self.repository.get_draft_source_text(trip_id=trip_id)
         compiler_payload = payload.model_copy(update={"direct_user_text": direct_user_text})
+        req_digest = request_digest({"operation": "compile_draft_trip_intent_envelope", "trip_id": trip_id, "parent": payload.base_intent_revision_id, "payload": compiler_payload.model_dump(mode="json")})
+        replay = self.repository.get_draft_intent_revision_by_idempotency(
+            trip_id=trip_id,
+            request_digest=req_digest,
+            idempotency_key_hash=hash_idempotency_key(idempotency_key.strip()),
+        )
+        if replay is not None:
+            return PrePlanIntentCompileResponse(
+                envelope=replay.envelope,
+                revision=DraftIntentRevisionMetadata.from_record(replay),
+                idempotent_replay=True,
+            )
+        parent = self.repository.get_latest_draft_intent_revision(trip_id=trip_id)
+        parent_id = parent.id if parent else None
+        if payload.base_intent_revision_id != parent_id:
+            raise StaleIntentRevisionError(trip_id=trip_id, provided_intent_revision_id=payload.base_intent_revision_id or "", current_intent_revision_id=parent_id or "")
         candidates, states, preferences = self._intent_candidate_context(trip_id, compiler_payload)
         refs, verification = self._verified_candidate_source_refs(trip_id, candidates)
         now = format_utc(self.clock())
@@ -369,7 +403,6 @@ class TripPersistenceService:
             validation_report=envelope.validation_report,
             created_at=now,
         )
-        req_digest = request_digest({"operation": "compile_draft_trip_intent_envelope", "trip_id": trip_id, "parent": parent_id, "payload": compiler_payload.model_dump(mode="json")})
         stored, replay = self.repository.create_draft_intent_revision(
             revision=record,
             request_digest=req_digest,
@@ -2381,6 +2414,10 @@ class TripPersistenceService:
             current_snapshot=current_revision.itinerary_snapshot,
             target_snapshot=target_revision.itinerary_snapshot,
         )
+        validate_restore_preserves_travel_boundary_anchors(
+            current_snapshot=current_revision.itinerary_snapshot,
+            target_snapshot=target_revision.itinerary_snapshot,
+        )
         req_digest = request_digest(
             {
                 "operation": "restore_revision",
@@ -2851,17 +2888,26 @@ def validate_restore_preserves_fixed_items(
         if item.is_fixed and item.stable_id
     }
     protected_items = [
-        fixed_item_signature(day.day, block.block_type.value, item)
+        (fixed_item_signature(day.day, block.block_type.value, item), item.name)
         for day in current_itinerary.days
         for block in day.blocks
         for item in block.items
         if item.is_fixed
     ]
-    if any(
-        signature[0] is None or target_fixed_items.get(signature[0]) != signature
-        for signature in protected_items
-    ):
-        raise RestoreWouldDropFixedItemsError(protected_item_count=len(protected_items))
+    affected_items = [
+        (signature, name)
+        for signature, name in protected_items
+        if (
+            signature[0] is None
+            or target_fixed_items.get(signature[0]) != signature
+        )
+    ]
+    if affected_items:
+        affected_names = list(dict.fromkeys(name for _, name in affected_items))[:3]
+        raise RestoreWouldDropFixedItemsError(
+            protected_item_count=len(affected_items),
+            protected_item_names=affected_names,
+        )
 
 
 def fixed_item_signature(day: int, block_type: str, item: Any) -> tuple[str | None, int, str, str, str, str]:
@@ -2889,15 +2935,24 @@ def validate_restore_preserves_must_visit_places(
         for item in block.items
         if item.canonical_place_id
     }
-    protected_place_ids = [
-        item.canonical_place_id
+    protected_items = [
+        (item.canonical_place_id, item.name)
         for day in current_itinerary.days
         for block in day.blocks
         for item in block.items
         if is_must_visit_item(item)
     ]
-    if any(place_id is None or place_id not in target_place_ids for place_id in protected_place_ids):
-        raise RestoreWouldDropMustVisitPlacesError(protected_item_count=len(protected_place_ids))
+    affected_items = [
+        (place_id, name)
+        for place_id, name in protected_items
+        if place_id is None or place_id not in target_place_ids
+    ]
+    if affected_items:
+        affected_names = list(dict.fromkeys(name for _, name in affected_items))[:3]
+        raise RestoreWouldDropMustVisitPlacesError(
+            protected_item_count=len(affected_items),
+            protected_item_names=affected_names,
+        )
 
 
 def is_must_visit_item(item: Any) -> bool:
@@ -2918,32 +2973,93 @@ def validate_restore_preserves_availability_windows(
     current_snapshot: dict[str, Any],
     target_snapshot: dict[str, Any],
 ) -> None:
-    current_windows = persisted_availability_window_signatures(current_snapshot)
+    current_windows = persisted_availability_windows(current_snapshot)
     if not current_windows:
         return
-    target_windows = persisted_availability_window_signatures(target_snapshot)
-    missing_windows = current_windows - target_windows
+    target_windows = persisted_availability_windows(target_snapshot)
+    missing_windows = [
+        signature
+        for signature in current_windows
+        if signature not in target_windows
+    ]
     if missing_windows:
         raise RestoreWouldDropAvailabilityWindowsError(
             protected_window_count=len(missing_windows),
+            protected_window_labels=[current_windows[signature] for signature in missing_windows[:3]],
         )
 
 
-def persisted_availability_window_signatures(snapshot: dict[str, Any]) -> set[tuple[int | None, str | None, str | None]]:
-    itinerary = deserialize_itinerary_snapshot(snapshot)
-    intent = (
-        itinerary.trip_intent.current_intent
-        if itinerary.trip_intent is not None
-        else itinerary.planning_assumptions.regeneration_intent
-        if itinerary.planning_assumptions is not None
-        else None
-    )
+def persisted_availability_windows(
+    snapshot: dict[str, Any],
+) -> dict[tuple[int | None, str | None, str | None], str]:
+    intent = persisted_regeneration_intent(snapshot)
     if intent is None:
-        return set()
+        return {}
+    windows: dict[tuple[int | None, str | None, str | None], str] = {}
+    for window in intent.availability_windows:
+        signature = (window.day, window.available_start, window.available_end)
+        windows.setdefault(signature, availability_window_label(window))
+    return windows
+
+
+def availability_window_label(window: Any) -> str:
+    if isinstance(window.label, str) and window.label.strip():
+        return window.label.strip()
+    day_label = f"第{window.day}天" if window.day is not None else "未指定日期"
+    if window.available_start and window.available_end:
+        return f"{day_label} {window.available_start}–{window.available_end}"
+    if window.available_start:
+        return f"{day_label} {window.available_start} 后"
+    if window.available_end:
+        return f"{day_label} {window.available_end} 前"
+    return day_label
+
+
+def validate_restore_preserves_travel_boundary_anchors(
+    *,
+    current_snapshot: dict[str, Any],
+    target_snapshot: dict[str, Any],
+) -> None:
+    current_anchors = persisted_travel_boundary_anchors(current_snapshot)
+    if not current_anchors:
+        return
+    target_anchors = persisted_travel_boundary_anchors(target_snapshot)
+    changed_anchors = [
+        (boundary_type, anchor)
+        for boundary_type, anchor in current_anchors.items()
+        if target_anchors.get(boundary_type) != anchor
+    ]
+    if changed_anchors:
+        raise RestoreWouldChangeTravelBoundaryAnchorsError(
+            protected_boundary_count=len(changed_anchors),
+            protected_boundary_labels=[
+                f"{'到达' if boundary_type == 'arrival' else '返程'}：{anchor}"
+                for boundary_type, anchor in changed_anchors
+            ],
+        )
+
+
+def persisted_travel_boundary_anchors(snapshot: dict[str, Any]) -> dict[str, str]:
+    intent = persisted_regeneration_intent(snapshot)
+    if intent is None:
+        return {}
     return {
-        (window.day, window.available_start, window.available_end)
-        for window in intent.availability_windows
+        boundary_type: anchor
+        for boundary_type, anchor in {
+            "arrival": intent.arrival_anchor,
+            "departure": intent.departure_anchor,
+        }.items()
+        if anchor
     }
+
+
+def persisted_regeneration_intent(snapshot: dict[str, Any]) -> Any | None:
+    itinerary = deserialize_itinerary_snapshot(snapshot)
+    if itinerary.trip_intent is not None:
+        return itinerary.trip_intent.current_intent
+    if itinerary.planning_assumptions is not None:
+        return itinerary.planning_assumptions.regeneration_intent
+    return None
 
 
 def serialize_itinerary_snapshot(itinerary: ItineraryResponse) -> dict[str, Any]:

@@ -12,6 +12,7 @@ export const TRIP_API_ENDPOINTS = {
   planFromText: buildApiUrl("/plan-trip-from-text"),
   planTrip: buildApiUrl("/trips/plan"),
   createDraftTrip: buildApiUrl("/trips/drafts"),
+  recoverDraftTrip: buildApiUrl("/trips/drafts/recover"),
   getDraftTrip: (tripId: string) => buildApiUrl(`/trips/${encodeURIComponent(tripId)}/draft`),
   compilePrePlanIntent: (tripId: string) =>
     buildApiUrl(`/trips/${encodeURIComponent(tripId)}/preplan-intent/compile`),

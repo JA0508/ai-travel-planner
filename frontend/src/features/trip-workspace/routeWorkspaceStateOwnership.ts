@@ -93,6 +93,7 @@ export const routeWorkspaceRuntimeStateOwnership = {
   pendingStopName: "draft",
   pendingStopType: "draft",
   poiDetail: "server",
+  poiDetailObservedAt: "async",
   poiDetailState: "async",
   redoStack: "durable",
   rightPanelMode: "selection",

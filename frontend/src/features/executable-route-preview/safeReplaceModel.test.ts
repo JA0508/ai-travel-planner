@@ -122,6 +122,7 @@ test("slow candidate preview cannot replace the latest selection", () => {
 
 test("translates stale, failed and unsafe operations without protocol codes", () => {
   const stale = safeReplaceFailureMessage("stale_mutation_proposal", "preview");
+  const staleUndo = safeReplaceFailureMessage("undo_target_not_current", "undo");
   const failed = safeReplaceFailureMessage(undefined, "apply");
   const unsafe = safeReplaceFailureMessage("replacement_breaks_fixed_event", "preview");
   const nestedUnsafe = safeReplaceFailureMessage(
@@ -131,10 +132,11 @@ test("translates stale, failed and unsafe operations without protocol codes", ()
   );
 
   assert.equal(stale, "路线刚刚发生了变化。这次替换没有保存，原路线保持不变。请基于最新路线重新选择一个地点。");
+  assert.equal(staleUndo, "路线刚刚发生了变化。这次撤销没有保存。请载入最新路线确认当前安排。");
   assert.match(failed, /原来的地点仍然保留/);
   assert.match(unsafe, /固定安排/);
   assert.match(nestedUnsafe, /固定安排/);
-  assert.doesNotMatch(`${stale}${failed}${unsafe}${nestedUnsafe}`, /409|422|stale_|replacement_/);
+  assert.doesNotMatch(`${stale}${staleUndo}${failed}${unsafe}${nestedUnsafe}`, /409|422|stale_|replacement_|undo_target/);
 });
 
 function candidate(): SafeReplaceCandidate {

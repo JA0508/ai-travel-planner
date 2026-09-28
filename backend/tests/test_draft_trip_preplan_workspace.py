@@ -113,6 +113,38 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 200, replay.text)
         self.assertTrue(replay.json()["persistence"]["idempotent_replay"])
 
+    def test_creation_key_recovers_only_its_still_draft_trip_for_a_new_browser(self) -> None:
+        key = "draft-recovery-key"
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": "我想去西安玩两天。"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": key},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        trip_id = created.json()["trip"]["id"]
+
+        recovered_browser = TestClient(app)
+        recovered = recovered_browser.post(
+            "/trips/drafts/recover",
+            json={},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": key},
+        )
+        self.assertEqual(recovered.status_code, 201, recovered.text)
+        self.assertEqual(recovered.json()["trip"]["id"], trip_id)
+        self.assertTrue(recovered.json()["persistence"]["idempotent_replay"])
+
+        draft = recovered_browser.get(f"/trips/{trip_id}/draft")
+        self.assertEqual(draft.status_code, 200, draft.text)
+        self.assertEqual(draft.json()["direct_user_text"], "我想去西安玩两天。"
+        )
+
+        denied = TestClient(app).post(
+            "/trips/drafts/recover",
+            json={},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "unrelated-key"},
+        )
+        self.assertEqual(denied.status_code, 404, denied.text)
+
     def test_compile_accepts_a_detailed_request_with_six_explicit_places(self) -> None:
         created = self.client.post(
             "/trips/drafts",
@@ -140,6 +172,25 @@ class DraftTripPrePlanWorkspaceTests(unittest.TestCase):
             ["洪崖洞", "解放碑", "李子坝轻轨站", "鹅岭二厂", "山城步道", "南山一棵树观景台"],
         )
         self.assertEqual(formal["fixed_events"], [])
+
+    def test_compile_replay_returns_the_existing_draft_revision_after_the_parent_advances(self) -> None:
+        created = self.client.post(
+            "/trips/drafts",
+            json={"direct_user_text": "我想去西安玩两天，想看兵马俑和城墙。"},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "draft-compile-replay-create"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        trip_id = created.json()["trip"]["id"]
+        payload = {"base_intent_revision_id": None, "use_llm_proposal_adapter": False}
+        headers = {"Origin": "http://testserver", "X-Idempotency-Key": "draft-compile-replay"}
+
+        first = self.client.post(f"/trips/{trip_id}/preplan-intent/compile", json=payload, headers=headers)
+        self.assertEqual(first.status_code, 201, first.text)
+
+        replay = self.client.post(f"/trips/{trip_id}/preplan-intent/compile", json=payload, headers=headers)
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertTrue(replay.json()["idempotent_replay"])
+        self.assertEqual(replay.json()["revision"]["id"], first.json()["revision"]["id"])
 
     def test_compile_does_not_turn_output_requirements_into_fixed_arrangements(self) -> None:
         created = self.client.post(

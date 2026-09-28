@@ -26,6 +26,7 @@ import {
   describeRevisionRestoreAvailabilityBlock,
   describeRevisionRestoreBlock,
   describeRevisionRestoreMustVisitBlock,
+  describeRevisionRestoreTravelBoundaryBlock,
   describeRevisionRestoreImpact,
   describeRevisionRestoreReceipt,
   describeTripRevisionSource,
@@ -1335,7 +1336,8 @@ export default function HomePage() {
   });
   const resultSectionRef = useRef<HTMLElement | null>(null);
   const revisionRestoreConfirmationRef = useRef<HTMLButtonElement | null>(null);
-  const revisionRestoreBlockedNoticeRef = useRef<HTMLElement | null>(null);
+  const revisionRestoreBlockedNoticeRef = useRef<HTMLDivElement | null>(null);
+  const revisionRestoreReceiptRef = useRef<HTMLElement | null>(null);
   const revisionRestoreTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   const revisionRoutePreviewRequestRef = useRef(0);
   const shouldRevealResultRef = useRef(false);
@@ -1360,6 +1362,22 @@ export default function HomePage() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [revisionRestoreBlockedNotice]);
+
+  useEffect(() => {
+    if (!revisionRestoreReceipt) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const target = revisionRestoreReceiptRef.current;
+      if (!target) {
+        return;
+      }
+      target.focus({ preventScroll: true });
+      const targetTop = Math.max(0, target.getBoundingClientRect().top + window.scrollY - 20);
+      window.scrollTo({ top: targetTop, behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [revisionRestoreReceipt]);
   const isAvailabilityPreviewStale =
     availabilityPreview !== null &&
     availabilityPreviewSignature !== buildAvailabilityPreviewSignature(tripDays, availabilityWindowsText);
@@ -1899,20 +1917,35 @@ export default function HomePage() {
       const protectedItemCount = typeof response.context?.protected_item_count === "number"
         ? response.context.protected_item_count
         : null;
+      const protectedItemNames = Array.isArray(response.context?.protected_item_names)
+        ? response.context.protected_item_names.filter((name): name is string => typeof name === "string")
+        : [];
       const protectedWindowCount = typeof response.context?.protected_window_count === "number"
         ? response.context.protected_window_count
         : null;
+      const protectedWindowLabels = Array.isArray(response.context?.protected_window_labels)
+        ? response.context.protected_window_labels.filter((label): label is string => typeof label === "string")
+        : [];
+      const protectedBoundaryCount = typeof response.context?.protected_boundary_count === "number"
+        ? response.context.protected_boundary_count
+        : null;
+      const protectedBoundaryLabels = Array.isArray(response.context?.protected_boundary_labels)
+        ? response.context.protected_boundary_labels.filter((label): label is string => typeof label === "string")
+        : [];
       const message = response.code === "restore_would_drop_fixed_items"
-        ? describeRevisionRestoreBlock(protectedItemCount)
+        ? describeRevisionRestoreBlock(protectedItemCount, protectedItemNames)
         : response.code === "restore_would_drop_must_visit_places"
-          ? describeRevisionRestoreMustVisitBlock(protectedItemCount)
+          ? describeRevisionRestoreMustVisitBlock(protectedItemCount, protectedItemNames)
           : response.code === "restore_would_drop_availability_windows"
-            ? describeRevisionRestoreAvailabilityBlock(protectedWindowCount)
+            ? describeRevisionRestoreAvailabilityBlock(protectedWindowCount, protectedWindowLabels)
+            : response.code === "restore_would_change_travel_boundary_anchors"
+              ? describeRevisionRestoreTravelBoundaryBlock(protectedBoundaryCount, protectedBoundaryLabels)
           : response.message;
       if (
         response.code === "restore_would_drop_fixed_items"
         || response.code === "restore_would_drop_must_visit_places"
         || response.code === "restore_would_drop_availability_windows"
+        || response.code === "restore_would_change_travel_boundary_anchors"
       ) {
         setError(null);
         setRevisionRestoreBlockedNotice(message);
@@ -1948,8 +1981,14 @@ export default function HomePage() {
     setRevisionRestoreReceipt(
       describeRevisionRestoreReceipt(revision.revision_number, response.data.current_revision.revision_number),
     );
-    scheduleResultReveal({ focus: true });
     setError(null);
+  }
+
+  function returnToCurrentRouteAfterRestoreBlock() {
+    setVersionHistoryOpen(false);
+    setRevisionRestoreConfirmation(null);
+    setRevisionRestoreBlockedNotice(null);
+    scheduleResultReveal({ focus: true });
   }
 
   function hasMeaningfulTripSession(session: PersistedTripSession): boolean {
@@ -5029,8 +5068,10 @@ function buildRegenerationSemanticsViewModel(
 
       {revisionRestoreReceipt ? (
         <section
+          ref={revisionRestoreReceiptRef}
           role="status"
           aria-live="polite"
+          tabIndex={-1}
           style={{
             marginBottom: 16,
             padding: 16,
@@ -5165,22 +5206,31 @@ function buildRegenerationSemanticsViewModel(
                       版本记录
                     </strong>
                     {revisionRestoreBlockedNotice ? (
-                      <section
-                        ref={revisionRestoreBlockedNoticeRef}
-                        role="alert"
-                        tabIndex={-1}
-                        style={{
-                          padding: 10,
-                          borderRadius: 10,
-                          border: "1px solid rgba(157, 48, 42, 0.28)",
-                          background: "rgba(255, 240, 238, 0.9)",
-                          color: "#8c302b",
-                          fontSize: 11,
-                          fontWeight: 700,
-                          lineHeight: 1.45,
-                        }}
-                      >
-                        {revisionRestoreBlockedNotice}
+                      <section style={{ display: "grid", gap: 8 }}>
+                        <div
+                          ref={revisionRestoreBlockedNoticeRef}
+                          role="alert"
+                          tabIndex={-1}
+                          style={{
+                            padding: 10,
+                            borderRadius: 10,
+                            border: "1px solid rgba(157, 48, 42, 0.28)",
+                            background: "rgba(255, 240, 238, 0.9)",
+                            color: "#8c302b",
+                            fontSize: 11,
+                            fontWeight: 700,
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          {revisionRestoreBlockedNotice}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={returnToCurrentRouteAfterRestoreBlock}
+                          style={{ ...miniGhostButtonStyle, justifySelf: "start" }}
+                        >
+                          回到当前路线，查看调整选项
+                        </button>
                       </section>
                     ) : null}
                     {revisionHistory.length === 0 ? (

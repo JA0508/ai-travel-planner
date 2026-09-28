@@ -74,6 +74,7 @@ export function SafeReplacePreview({
   candidate,
   model,
   applying,
+  errorMessage,
   onApply,
   onKeep,
   onOtherCandidates,
@@ -82,6 +83,7 @@ export function SafeReplacePreview({
   candidate: SafeReplaceCandidate;
   model?: SafeReplacePreviewModel;
   applying: boolean;
+  errorMessage?: string;
   onApply: () => void;
   onKeep: () => void;
   onOtherCandidates: () => void;
@@ -102,6 +104,7 @@ export function SafeReplacePreview({
           ? "我们只重新检查了这一个地点前后的路线。"
           : unsafeExplanation(candidate)}
       </p>
+      {errorMessage ? <p className="safe-replace__status is-error" role="alert">{errorMessage}</p> : null}
 
       {safe && model ? (
         <>
@@ -136,7 +139,7 @@ export function SafeReplacePreview({
           {safe ? "保持原地点" : "看看其他地点"}
         </button>
         <button type="button" className="is-primary" onClick={onApply} disabled={!safe || applying}>
-          {applying ? "正在保存…" : "换成这个地点"}
+          {applying ? "正在保存…" : errorMessage ? "重试这次替换" : "换成这个地点"}
         </button>
       </footer>
       <SafeReplaceStyles />

@@ -36,6 +36,8 @@ export function buildRoadbookAdjustmentIndex({
 
   return {
     actions,
-    summary: actions.length ? `有 ${actions.length} 个可以安全检查的小调整。` : "当前没有可安全自动微调的地方。",
+    summary: actions.length
+      ? `有 ${actions.length} 个可以安全检查的小调整；固定安排、必去地点和时间边界不会被这些调整改动。`
+      : "当前没有可安全自动微调的地方。",
   };
 }

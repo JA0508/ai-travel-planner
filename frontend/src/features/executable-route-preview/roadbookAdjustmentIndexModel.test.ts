@@ -19,7 +19,7 @@ test("offers only deterministic local repairs for a rushed day and verified syst
     { kind: "relax_day", day: 2, label: "查看第 2 天的放松方案" },
     { kind: "replace_stop", day: 1, stopId: "auto", label: "检查「湖畔小馆」能否安全替换" },
   ]);
-  assert.equal(index.summary, "有 2 个可以安全检查的小调整。");
+  assert.equal(index.summary, "有 2 个可以安全检查的小调整；固定安排、必去地点和时间边界不会被这些调整改动。");
 });
 
 test("does not invent an adjustment when no supported local repair exists", () => {

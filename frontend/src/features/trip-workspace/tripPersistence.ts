@@ -150,32 +150,65 @@ export function describeTripRevisionSource(sourceType: string): string {
 }
 
 export function describeRevisionRestoreImpact(revisionNumber: number): string {
-  return `恢复版本 ${revisionNumber} 会创建一个新的版本；当前版本会保留，之后仍可恢复。`;
+  return `恢复版本 ${revisionNumber} 会创建一个新的版本；当前版本会保留，之后仍可恢复。系统会先核验固定安排、必去地点、可用时间和到达/返程地点；若旧版本会改变其中任一项，当前路线不会变化。`;
 }
 
 export function describeRevisionRestoreReceipt(restoredRevisionNumber: number, newRevisionNumber: number): string {
   return `已恢复版本 ${restoredRevisionNumber}，并保存为新版本 ${newRevisionNumber}。之前的版本仍可恢复。`;
 }
 
-export function describeRevisionRestoreBlock(protectedItemCount: number | null): string {
+export function describeRevisionRestoreBlock(
+  protectedItemCount: number | null,
+  protectedItemNames: string[] = [],
+): string {
+  const namesSuffix = describeProtectedLabels(protectedItemCount, protectedItemNames);
   if (protectedItemCount !== null && protectedItemCount > 0) {
-    return `无法恢复该版本：它会移除或改变当前路线中的 ${protectedItemCount} 项固定安排。当前路线没有变化。`;
+    return `无法恢复该版本：它会移除或改变当前路线中的 ${protectedItemCount} 项固定安排${namesSuffix}。当前路线没有变化。`;
   }
-  return "无法恢复该版本：它会移除或改变当前路线中的固定安排。当前路线没有变化。";
+  return `无法恢复该版本：它会移除或改变当前路线中的固定安排${namesSuffix}。当前路线没有变化。`;
 }
 
-export function describeRevisionRestoreMustVisitBlock(protectedItemCount: number | null): string {
+export function describeRevisionRestoreMustVisitBlock(
+  protectedItemCount: number | null,
+  protectedItemNames: string[] = [],
+): string {
+  const namesSuffix = describeProtectedLabels(protectedItemCount, protectedItemNames);
   if (protectedItemCount !== null && protectedItemCount > 0) {
-    return `无法恢复该版本：它会移除当前路线中的 ${protectedItemCount} 个必去地点。当前路线没有变化。`;
+    return `无法恢复该版本：它会移除当前路线中的 ${protectedItemCount} 个必去地点${namesSuffix}。当前路线没有变化。`;
   }
-  return "无法恢复该版本：它会移除当前路线中的必去地点。当前路线没有变化。";
+  return `无法恢复该版本：它会移除当前路线中的必去地点${namesSuffix}。当前路线没有变化。`;
 }
 
-export function describeRevisionRestoreAvailabilityBlock(protectedWindowCount: number | null): string {
+function describeProtectedLabels(protectedItemCount: number | null, protectedLabels: string[]): string {
+  const visibleLimit = protectedItemCount !== null && protectedItemCount > 0
+    ? Math.min(3, protectedItemCount)
+    : 3;
+  const labels = protectedLabels.filter((label) => label.trim().length > 0).slice(0, visibleLimit);
+  return labels.length
+    ? `（${labels.join("、")}${protectedItemCount !== null && protectedItemCount > labels.length ? "等" : ""}）`
+    : "";
+}
+
+export function describeRevisionRestoreAvailabilityBlock(
+  protectedWindowCount: number | null,
+  protectedWindowLabels: string[] = [],
+): string {
+  const labelsSuffix = describeProtectedLabels(protectedWindowCount, protectedWindowLabels);
   if (protectedWindowCount !== null && protectedWindowCount > 0) {
-    return `无法恢复该版本：它会移除当前路线中的 ${protectedWindowCount} 个可用时间限制。当前路线没有变化。`;
+    return `无法恢复该版本：它会移除当前路线中的 ${protectedWindowCount} 个可用时间限制${labelsSuffix}。当前路线没有变化。`;
   }
-  return "无法恢复该版本：它会移除当前路线中的可用时间限制。当前路线没有变化。";
+  return `无法恢复该版本：它会移除当前路线中的可用时间限制${labelsSuffix}。当前路线没有变化。`;
+}
+
+export function describeRevisionRestoreTravelBoundaryBlock(
+  protectedBoundaryCount: number | null,
+  protectedBoundaryLabels: string[] = [],
+): string {
+  const labelsSuffix = describeProtectedLabels(protectedBoundaryCount, protectedBoundaryLabels);
+  if (protectedBoundaryCount !== null && protectedBoundaryCount > 0) {
+    return `无法恢复该版本：它会移除或改变当前路线中的 ${protectedBoundaryCount} 个到达或返程地点${labelsSuffix}。当前路线没有变化。`;
+  }
+  return `无法恢复该版本：它会移除或改变当前路线中的到达或返程地点${labelsSuffix}。当前路线没有变化。`;
 }
 
 export function markSavedFromRevision(

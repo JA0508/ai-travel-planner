@@ -81,6 +81,10 @@ test("confirmation queue advances reading focus after a confirmed place leaves t
   assert.match(source, /onPlaceConfirmationStart/);
   assert.match(source, /items\.some\(\(item\) => item\.id === completedItemId\)/);
   assert.match(source, /setExpandedItemId\(nextItem\.id\)/);
+  assert.match(
+    source,
+    /if \(nextTarget\) \{[\s\S]*window\.scrollTo\(\{[\s\S]*centeredConfirmationScrollTop\(nextTarget\.getBoundingClientRect\(\), window\.scrollY, window\.innerHeight\)[\s\S]*focusPlaceConfirmationAction\(nextTarget\)/,
+  );
   assert.match(source, /focusPlaceConfirmationAction\(nextTarget\)/);
   assert.match(source, /confirmationHeadingRef\.current\?\.focus\(\)/);
 });
@@ -114,8 +118,10 @@ test("first route preview is revealed and focused after it is generated", () => 
   const source = readFileSync(componentPath, "utf8");
 
   assert.match(source, /setPreview\(result\.data\);[\s\S]*setRevealPreview\(true\)/);
-  assert.match(source, /previewRevealRef\.current\?\.scrollIntoView/);
-  assert.match(source, /previewRevealRef\.current\?\.focus/);
+  assert.match(source, /window\.scrollTo/);
+  assert.match(source, /previewRevealScrollTop/);
+  assert.doesNotMatch(source, /scrollIntoView/);
+  assert.match(source, /target\.focus\(\{ preventScroll: true \}\)/);
   assert.match(source, /aria-label="第一版路线预览"/);
 });
 
@@ -223,6 +229,15 @@ test("pre-plan workspace uses one editorial confirmation queue instead of repeat
   assert.doesNotMatch(source, /function FixedPlaceConfirmation/);
   assert.doesNotMatch(source, /function MustPlaceConfirmation/);
   assert.doesNotMatch(source, /function FixedArrangementSummary/);
+});
+
+test("place confirmation distinguishes the traveler mention from the provider candidate", () => {
+  const queueSource = readFileSync(queuePath, "utf8");
+
+  assert.match(queueSource, /你提到的地点/);
+  assert.match(queueSource, /尚未作为路线地点保存/);
+  assert.match(queueSource, /提供商候选（系统推荐）/);
+  assert.match(queueSource, /确认前不会加入路线/);
 });
 
 test("confirmation recovery carries an existing conflict reason back to the request editor", () => {

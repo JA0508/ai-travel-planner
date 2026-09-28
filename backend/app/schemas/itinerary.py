@@ -994,6 +994,8 @@ class POIDetailPreviewRequest(BaseModel):
     city: str | None = None
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
+    scheduled_start_time: str | None = None
+    scheduled_end_time: str | None = None
 
 
 class POIDetailPreviewResponse(BaseModel):
@@ -1007,10 +1009,12 @@ class POIDetailPreviewResponse(BaseModel):
     tel: str | None = None
     website: str | None = None
     open_time: str | None = None
+    open_time_coverage: str = "unknown"
     photo_url: str | None = None
     latitude: float | None = None
     longitude: float | None = None
     source: str = "amap_place_detail"
+    observed_at: str | None = None
     failure_reason: str | None = None
 
 

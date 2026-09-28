@@ -3,7 +3,10 @@ import test from "node:test";
 
 import {
   buildRepairPreviewModel,
+  latestRouteReloadActionLabel,
+  latestRouteReloadReceipt,
   repairFailureMessage,
+  undoRevisionReceipt,
   type LocalRepairImpact,
 } from "./repairPreviewModel";
 import type {
@@ -130,9 +133,36 @@ test("translates stale and failed operations without exposing protocol codes", (
   const failed = repairFailureMessage(undefined, "apply");
 
   assert.equal(stale, "路线刚刚发生了变化。这次调整没有保存，原路线保持不变。请基于最新版本重新看看调整建议。");
-  assert.equal(staleUndo, "路线刚刚发生了变化。这次调整没有保存，原路线保持不变。请基于最新版本重新看看调整建议。");
+  assert.equal(staleUndo, "路线刚刚发生了变化。这次撤销没有保存。请载入最新路线确认当前安排。");
   assert.equal(failed, "这次调整没有保存。你的原路线仍然保持不变。");
   assert.doesNotMatch(`${stale}${staleUndo}${failed}`, /409|422|stale_|proposal_|undo_target/);
+});
+
+test("names the compensating revision after a persisted local undo", () => {
+  assert.equal(
+    undoRevisionReceipt("relax_day", 4),
+    "已撤销这次调整，并保存为新版本 4。调整前的路线已恢复。",
+  );
+  assert.equal(
+    undoRevisionReceipt("replace_stop", 7),
+    "已撤销这次替换，并保存为新版本 7。原来的地点和相邻路线已恢复。",
+  );
+});
+
+test("explains the safe next step after loading a newer route", () => {
+  assert.equal(
+    latestRouteReloadReceipt("relax_day", 4),
+    "已载入最新保存版本 4；没有应用刚才的调整。请基于这版路线重新查看当天是否仍然太赶。",
+  );
+  assert.equal(
+    latestRouteReloadReceipt("replace_stop", 7),
+    "已载入最新保存版本 7；没有应用刚才的替换。请基于这版路线重新选择地点。",
+  );
+});
+
+test("distinguishes the first latest-route load from a recoverable retry", () => {
+  assert.equal(latestRouteReloadActionLabel(false), "载入最新路线");
+  assert.equal(latestRouteReloadActionLabel(true), "重新载入最新路线");
 });
 
 test("does not describe an unknown repair owner as a system suggestion", () => {

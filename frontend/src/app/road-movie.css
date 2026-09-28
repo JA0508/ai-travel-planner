@@ -494,6 +494,22 @@
   font-size: 12px;
 }
 
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-stop-reason {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.tc-page[data-visual-shell="road-movie-v0"] .tc-route-stop-reason span {
+  display: inline;
+  margin-right: 6px;
+  color: var(--lake);
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+
 .tc-page[data-visual-shell="road-movie-v0"] .tc-route-rationale {
   margin-top: 28px;
   border-top: 2px solid var(--ink);

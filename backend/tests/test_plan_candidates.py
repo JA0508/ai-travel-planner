@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
 from sqlite3 import connect
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -18,7 +19,9 @@ from app.services.planning_run_dependencies import get_planning_run_repository
 from app.services.trip_compiler import compile_travel_intent
 from app.trips.access import generate_capability, hash_capability, hash_idempotency_key
 from app.trips.dependencies import get_trip_repository, reset_trip_repository_cache_for_tests
-from app.services.constraint_planning import canonical_digest, generate_candidates, intent_digest
+from app.schemas.plan_candidates import CandidateMetrics
+from app.services.constraint_planning import _comparison, _dominates, _title, _tradeoff, canonical_digest, generate_candidates, intent_digest
+from app.services.planning_run_repository import _candidate_title, _candidate_tradeoff
 from app.services.planning_run_replay import replay_planning_run
 from app.services.poi_discovery_provider import PoiDiscoveryCandidate, PoiDiscoveryCapability
 from app.tools.verify_planning_run import main as verify_planning_run_main
@@ -203,6 +206,29 @@ class PlanCandidateApiTests(unittest.TestCase):
         self.assertEqual(recovered.json()["trip"]["id"], trip_id)
         self.assertEqual(recovered.json()["current_revision"]["revision_number"], 1)
         self.assertIn("trip_capability_", recovered.headers["set-cookie"])
+        self.assertEqual(recovered_client.get(f"/trips/{trip_id}").status_code, 200)
+        self.assertEqual(self.trip_count(), 1)
+        self.assertEqual(self.revision_count(), 1)
+
+    def test_selected_planning_run_read_recovers_trip_access_without_selection_retry(self) -> None:
+        generated = self.candidates().json()
+        candidate = generated["candidates"][0]
+        planning_capability = self.client.cookies.get("planning_run_capability")
+        original = self.client.post(
+            f"/trip-compiler/planning-runs/{generated['planning_run_id']}/candidates/{candidate['id']}/select",
+            json={"candidate_hash": candidate["candidate_hash"], "intent_digest": generated["intent_digest"]},
+            headers={"Origin": "http://testserver", "X-Idempotency-Key": "selected-run-read-recovery"},
+        )
+        self.assertEqual(original.status_code, 201, original.text)
+        trip_id = original.json()["trip"]["id"]
+
+        recovered_client = TestClient(app)
+        recovered_client.cookies.set("planning_run_capability", str(planning_capability))
+        recovered = recovered_client.get(f"/trip-compiler/planning-runs/{generated['planning_run_id']}")
+
+        self.assertEqual(recovered.status_code, 200, recovered.text)
+        self.assertEqual(recovered.json()["status"], "selected")
+        self.assertIn("trip_capability_", recovered.headers.get("set-cookie", ""))
         self.assertEqual(recovered_client.get(f"/trips/{trip_id}").status_code, 200)
         self.assertEqual(self.trip_count(), 1)
         self.assertEqual(self.revision_count(), 1)
@@ -523,6 +549,59 @@ class PlanCandidateApiTests(unittest.TestCase):
             [(candidate.id, candidate.candidate_hash) for candidate in first_candidates],
             [(candidate.id, candidate.candidate_hash) for candidate in second_candidates],
         )
+
+    def test_missing_route_data_cannot_dominate_a_candidate_via_calculated_slack(self) -> None:
+        common = {
+            "fixed_coverage": 1,
+            "must_coverage": 2,
+            "optional_coverage": 1,
+            "activity_minutes": 300,
+            "max_daily_activity_minutes": 300,
+            "free_buffer_minutes": 120,
+            "rushed_day_count": 0,
+            "infeasible_day_count": 0,
+            "risk_count": 0,
+        }
+        route_unknown = SimpleNamespace(metrics=CandidateMetrics(
+            **common,
+            total_travel_minutes=None,
+            missing_travel_data=True,
+            minimum_daily_slack_minutes=120,
+            travel_data_completeness="missing",
+        ))
+        route_verified = SimpleNamespace(metrics=CandidateMetrics(
+            **common,
+            total_travel_minutes=45,
+            missing_travel_data=False,
+            minimum_daily_slack_minutes=75,
+            travel_data_completeness="complete",
+        ))
+
+        self.assertFalse(_dominates(route_unknown, route_verified))
+
+    def test_incomplete_route_data_never_describes_candidate_slack_as_confirmed(self) -> None:
+        metrics = CandidateMetrics(
+            fixed_coverage=1,
+            must_coverage=2,
+            optional_coverage=1,
+            total_travel_minutes=None,
+            activity_minutes=300,
+            max_daily_activity_minutes=300,
+            free_buffer_minutes=120,
+            missing_travel_data=True,
+            minimum_daily_slack_minutes=120,
+            rushed_day_count=0,
+            infeasible_day_count=0,
+            risk_count=0,
+            travel_data_completeness="missing",
+        )
+        candidate = SimpleNamespace(id="candidate-1", metrics=metrics)
+
+        self.assertEqual(_title("relaxed", metrics), "路线方案")
+        self.assertEqual(_tradeoff("relaxed", metrics), "保留固定安排和必去地点；路程仍待确认。")
+        self.assertNotIn("最少每天预留", _comparison(candidate).highlights)
+        self.assertEqual(_candidate_title("relaxed", metrics.model_dump(mode="json")), "路线方案")
+        self.assertEqual(_candidate_tradeoff("relaxed", metrics.model_dump(mode="json")), "保留固定安排和必去地点；路程仍待确认。")
 
 
 if __name__ == "__main__":

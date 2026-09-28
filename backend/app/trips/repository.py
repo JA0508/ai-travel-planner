@@ -51,6 +51,9 @@ class TripRepository(Protocol):
     ) -> tuple[TripRecord, bool]:
         ...
 
+    def get_draft_trip_by_creation_idempotency(self, *, idempotency_key_hash: str) -> TripRecord | None:
+        ...
+
     def get_draft_source_text(self, *, trip_id: str) -> str:
         ...
 
@@ -62,6 +65,15 @@ class TripRepository(Protocol):
         idempotency_key_hash: str,
         expected_parent_draft_intent_revision_id: str | None,
     ) -> tuple[DraftIntentRevisionRecord, bool]:
+        ...
+
+    def get_draft_intent_revision_by_idempotency(
+        self,
+        *,
+        trip_id: str,
+        request_digest: str,
+        idempotency_key_hash: str,
+    ) -> DraftIntentRevisionRecord | None:
         ...
 
     def edit_draft_intent_revision(

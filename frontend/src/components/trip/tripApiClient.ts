@@ -9,6 +9,7 @@ export type TripApiResult<TData> =
       ok: false;
       message: string;
       code?: string;
+      responseStatus?: number;
       recoverable?: boolean;
       context?: Record<string, unknown>;
       aborted?: boolean;
@@ -56,6 +57,7 @@ export async function postTripJson<TData>(
       ok: false,
       message: extractApiDetail(data) ?? tripError?.message ?? fallbackMessage,
       code: tripError?.code,
+      responseStatus: response.status,
       recoverable: tripError?.recoverable,
       context: tripError?.context,
     };

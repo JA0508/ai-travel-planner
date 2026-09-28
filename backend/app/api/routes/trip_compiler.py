@@ -58,9 +58,20 @@ def generate_plan_candidates(payload: PlanCandidateRequest, response: Response) 
 
 
 @router.get("/planning-runs/{run_id}", response_model=PlanningRunRecordResponse)
-def get_planning_run(run_id: str, request: Request) -> PlanningRunRecordResponse:
+def get_planning_run(run_id: str, request: Request, response: Response) -> PlanningRunRecordResponse:
     try:
-        return get_planning_run_repository().get(run_id=run_id, capability_hash=_planning_capability_hash(request))
+        planning_capability_hash = _planning_capability_hash(request)
+        record = get_planning_run_repository().get(run_id=run_id, capability_hash=planning_capability_hash)
+        if record.status == "selected" and record.trip_id:
+            trip_capability = generate_capability()
+            recovered_trip_id = get_planning_run_repository().recover_selected_trip_capability(
+                run_id=run_id,
+                planning_capability_hash=planning_capability_hash,
+                trip_capability_hash=hash_capability(trip_capability),
+            )
+            if recovered_trip_id:
+                set_trip_capability_cookie(response, recovered_trip_id, trip_capability)
+        return record
     except PlanningRunError as exc:
         raise HTTPException(status_code=403 if exc.code == "planning_run_access_denied" else 409, detail={"code": exc.code, "message": str(exc), "recoverable": exc.recoverable}) from exc
 

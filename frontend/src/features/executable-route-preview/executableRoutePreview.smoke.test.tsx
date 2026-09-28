@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import React from "react";
+import { PlaceDetailPanel } from "@/components/trip/place-intelligence/PlaceDetailPanel";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   ExecutableRoutePreview,
@@ -11,6 +12,7 @@ import {
 } from "./ExecutableRoutePreview";
 import { buildRoadbookAdjustmentGuide } from "./SavedLivingRoadbook";
 import type { RoutePreviewItinerary } from "./routePreviewModel";
+import type { PlaceDetailViewModel } from "@/components/trip/place-intelligence/placeDetailViewModel";
 
 const componentPath = fileURLToPath(new URL("./ExecutableRoutePreview.tsx", import.meta.url));
 const savedRoadbookPath = fileURLToPath(new URL("./SavedLivingRoadbook.tsx", import.meta.url));
@@ -105,6 +107,40 @@ test("saved route uses an on-the-road workspace vocabulary", () => {
   assert.doesNotMatch(html, /仍可继续编辑路线/);
 });
 
+test("saved roadbook surfaces a route-verification count before a traveler scans the timeline", () => {
+  const saved = structuredClone(itinerary);
+  saved.days[0].blocks[0].items[0] = {
+    ...saved.days[0].blocks[0].items[0],
+    travel_duration_s: null,
+    travel_distance_m: null,
+    travel_data_status: "unavailable",
+  };
+
+  const html = renderToStaticMarkup(<ExecutableRoutePreview itinerary={saved} variant="saved" tripId="trip-1" baseRevisionId="revision-1" onApplied={() => undefined} />);
+
+  assert.match(html, /有 1 段相邻路线待确认/);
+  assert.match(html, /不会按零分钟处理，请在出发前核验。/);
+});
+
+test("saved roadbook does not present its internal route center as a confirmed leg", () => {
+  const saved = structuredClone(itinerary);
+  saved.planning_anchor_source = {
+    source_type: "route_centroid",
+    source_name: "西湖附近路线中心",
+  };
+  saved.days[0].blocks[0].items[0] = {
+    ...saved.days[0].blocks[0].items[0],
+    travel_from_name: "西湖附近路线中心",
+    travel_duration_s: 0,
+    travel_distance_m: 1,
+  };
+
+  const html = renderToStaticMarkup(<ExecutableRoutePreview itinerary={saved} variant="saved" tripId="trip-1" baseRevisionId="revision-1" onApplied={() => undefined} />);
+
+  assert.doesNotMatch(html, /西湖附近路线中心/);
+  assert.doesNotMatch(html, /0 分钟 · 1 米/);
+});
+
 test("saved roadbook gives first-time readers a live route-reading guide", () => {
   const html = renderToStaticMarkup(
     <ExecutableRoutePreview
@@ -120,6 +156,147 @@ test("saved roadbook gives first-time readers a live route-reading guide", () =>
   assert.match(html, /正在查看第 1 天/);
   assert.match(html, /点击时间线中的地点，即可切换当前地点；地图区域会同步显示可用的路线信息。/);
   assert.match(html, /当前没有需要调整的项目；已明确的安排会按原计划保留。/);
+});
+
+test("roadbook place detail labels missing operational facts as pending verification", () => {
+  const viewModel: PlaceDetailViewModel = {
+    identity: { id: "west-lake", name: "西湖", category: "景点", observedAt: "2026-09-26T12:00:00Z" },
+    schedule: { dayIndex: 1, blockLabel: "上午", startTime: "09:00", endTime: "11:00", durationLabel: "2 小时" },
+    trust: {
+      verdict: "uncertain-fit",
+      label: "Uncertain fit",
+      headline: "位置关系可读，但事实证据不足",
+      explanation: "当前缺少 provider 地点详情或完整路线段，不应把启发式判断当作事实。",
+    },
+    routeFit: { topology: "unknown", spatialSummary: "相邻路线待确认", observations: [] },
+    visitContext: { role: "anchor", label: "行程地点" },
+    evidence: [],
+    caveats: [{ key: "missing-open-time", kind: "missing-data", label: "营业时间待验证", detail: "当前无法确认该地点是否覆盖安排时间。" }],
+    actions: { canKeep: true, canReplace: false, canRemove: false, canMoveToUnplanned: false },
+  };
+
+  const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
+  const originalReact = reactGlobal.React;
+  reactGlobal.React = React;
+  try {
+    const html = renderToStaticMarkup(<PlaceDetailPanel viewModel={viewModel} onBack={() => undefined} appearance="roadbook" />);
+
+    assert.match(html, /核验状态/);
+    assert.match(html, /地点详情查询于/);
+    assert.match(html, /地点详情（如营业时间）待验证；当前安排只是时间骨架，不能确认该地点在此时开放。/);
+    assert.doesNotMatch(html, /地点详情与相邻路线已有可用证据/);
+  } finally {
+    reactGlobal.React = originalReact;
+  }
+});
+
+test("roadbook shows a provider opening-hour snapshot without treating it as booking proof", () => {
+  const viewModel: PlaceDetailViewModel = {
+    identity: { id: "west-lake", name: "西湖", category: "景点", observedAt: "2026-09-26T12:00:00Z" },
+    schedule: { dayIndex: 1, blockLabel: "上午", startTime: "09:00", endTime: "11:00", durationLabel: "2 小时" },
+    trust: {
+      verdict: "reasonable-fit",
+      label: "Reasonable fit",
+      headline: "这个地点与前后路线衔接合理",
+      explanation: "相邻路线可用。",
+    },
+    routeFit: { topology: "linear", spatialSummary: "相邻路线顺路", observations: [] },
+    visitContext: { role: "anchor", label: "行程地点" },
+    evidence: [{
+      key: "provider-opening-hours",
+      kind: "provider-fact",
+      label: "营业时间快照",
+      detail: "09:00-17:00 · 地点详情服务 · 查询于 2026-09-26T12:00:00Z",
+    }],
+    caveats: [],
+    actions: { canKeep: true, canReplace: false, canRemove: false, canMoveToUnplanned: false },
+  };
+
+  const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
+  const originalReact = reactGlobal.React;
+  reactGlobal.React = React;
+  try {
+    const html = renderToStaticMarkup(<PlaceDetailPanel viewModel={viewModel} onBack={() => undefined} appearance="roadbook" />);
+
+    assert.match(html, /营业时间快照/);
+    assert.match(html, /09:00-17:00/);
+    assert.match(html, /这是地点详情查询快照/);
+    assert.match(html, /不代表已完成预约/);
+  } finally {
+    reactGlobal.React = originalReact;
+  }
+});
+
+test("roadbook distinguishes a protected fixed arrangement from a verified reservation", () => {
+  const viewModel: PlaceDetailViewModel = {
+    identity: { id: "museum", name: "中国茶叶博物馆", category: "景点" },
+    schedule: { dayIndex: 2, blockLabel: "下午", startTime: "14:00", endTime: "16:00", durationLabel: "2 小时" },
+    trust: {
+      verdict: "strong-fit",
+      label: "Strong route fit",
+      headline: "这是受保护的行程边界",
+      explanation: "固定安排会被保留。",
+    },
+    routeFit: { topology: "linear", spatialSummary: "相邻路线顺路", observations: [] },
+    visitContext: { role: "fixed-event", label: "Fixed event" },
+    evidence: [{
+      key: "user-source",
+      kind: "user-constraint",
+      label: "来自用户输入",
+      detail: "用户说明这是固定预约。",
+    }],
+    caveats: [{
+      key: "fixed-event-boundary",
+      kind: "user-constraint",
+      label: "固定边界",
+      detail: "这个地点不可被自动替换或移除。",
+    }],
+    actions: { canKeep: true, canReplace: false, canRemove: false, canMoveToUnplanned: false },
+  };
+
+  const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
+  const originalReact = reactGlobal.React;
+  reactGlobal.React = React;
+  try {
+    const html = renderToStaticMarkup(<PlaceDetailPanel viewModel={viewModel} onBack={() => undefined} appearance="roadbook" />);
+
+    assert.match(html, /这个固定安排会按你的输入保护/);
+    assert.match(html, /尚未核验订单、入场资格或预约状态/);
+  } finally {
+    reactGlobal.React = originalReact;
+  }
+});
+
+test("roadbook place detail keeps missing facts pending when the route also needs review", () => {
+  const viewModel: PlaceDetailViewModel = {
+    identity: { id: "west-lake", name: "西湖", category: "景点" },
+    schedule: { dayIndex: 1, blockLabel: "上午", startTime: "09:00", endTime: "11:00", durationLabel: "2 小时" },
+    trust: {
+      verdict: "needs-review",
+      label: "Needs review",
+      headline: "这个地点可能带来路线压力",
+      explanation: "相邻移动成本需要复核。",
+    },
+    routeFit: { topology: "minor-detour", spatialSummary: "相邻路线需要复核", observations: [] },
+    visitContext: { role: "anchor", label: "行程地点" },
+    evidence: [],
+    caveats: [
+      { key: "route-pressure", kind: "heuristic", label: "路线压力", detail: "建议复核。" },
+      { key: "missing-open-time", kind: "missing-data", label: "营业时间待验证", detail: "当前无法确认该地点是否覆盖安排时间。" },
+    ],
+    actions: { canKeep: true, canReplace: false, canRemove: false, canMoveToUnplanned: false },
+  };
+  const reactGlobal = globalThis as typeof globalThis & { React?: typeof React };
+  const originalReact = reactGlobal.React;
+  reactGlobal.React = React;
+  try {
+    const html = renderToStaticMarkup(<PlaceDetailPanel viewModel={viewModel} onBack={() => undefined} appearance="roadbook" />);
+
+    assert.match(html, /地点详情（如营业时间）待验证；当前安排只是时间骨架，不能确认该地点在此时开放。/);
+    assert.doesNotMatch(html, /地点详情可用；相邻路线仍建议复核/);
+  } finally {
+    reactGlobal.React = originalReact;
+  }
 });
 
 test("saved roadbook describes only adjustment paths that are currently available", () => {
@@ -213,6 +390,14 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /路线刚刚发生了变化/);
   assert.match(source, /你的原路线仍然保持不变/);
   assert.match(source, /target_day: day, goal: "relax_day"/);
+  assert.match(
+    source,
+    /repairFailureMessage\(response\.code, "preview"\),\s*reloadable: isStaleRouteMutation\(response\.code, response\.context\)/,
+  );
+  assert.match(
+    source,
+    /safeReplaceFailureMessage\(response\.code, "preview", response\.context\),\s*stopId: target\.stable_id \?\? undefined,\s*reloadable: isStaleRouteMutation\(response\.code, response\.context\)/,
+  );
   assert.match(source, /应用这次调整/);
   assert.match(source, /保持原路线/);
   assert.match(source, /调整后的安排/);
@@ -233,6 +418,8 @@ test("saved route preview sends only a user goal to the server-authoritative rep
   assert.match(source, /feedbackRef\.current\?\.focus/);
   assert.match(source, /repair\.status === "restored"\s*\?\s*<RepairFeedback autoFocus/);
   assert.match(source, /replace\.status === "restored"\s*\?\s*<RepairFeedback autoFocus/);
+  assert.match(source, /repair\.status === "reloaded"\s*\?\s*<RepairFeedback autoFocus/);
+  assert.match(source, /replace\.status === "reloaded"\s*\?\s*<RepairFeedback autoFocus/);
   assert.match(source, /eyebrow="ROUTE RESTORED"/);
   assert.match(source, /const repairInteractionActive =/);
   assert.match(source, /const replaceInteractionActive =/);

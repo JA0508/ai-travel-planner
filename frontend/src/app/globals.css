@@ -325,6 +325,33 @@ body {
   gap: 10px;
 }
 
+.uc-place-mention {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px dashed rgba(68, 80, 83, 0.36);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.uc-place-mention p,
+.uc-place-mention small {
+  margin: 0;
+  color: var(--ec-slate);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.uc-place-mention p {
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.uc-place-mention strong {
+  color: var(--ec-ink-soft);
+  font-size: 15px;
+}
+
 .uc-place-recommendation {
   display: grid;
   gap: 4px;

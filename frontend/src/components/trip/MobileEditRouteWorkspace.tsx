@@ -232,10 +232,12 @@ export type POIDetailPreview = {
   tel: string | null;
   website: string | null;
   open_time: string | null;
+  open_time_coverage?: "unknown" | "covers_scheduled_window" | "does_not_cover_scheduled_window";
   photo_url: string | null;
   latitude: number | null;
   longitude: number | null;
   source: string;
+  observed_at: string | null;
   failure_reason: string | null;
 };
 
@@ -2123,6 +2125,7 @@ export function PlaceDetailPanelContainer({
 }) {
   const [poiDetail, setPoiDetail] = useState<POIDetailPreview | null>(null);
   const [poiDetailState, setPoiDetailState] = useState<"idle" | "loading" | "failed">("idle");
+  const [poiDetailObservedAt, setPoiDetailObservedAt] = useState<string | null>(null);
   const resolution = findPlaceResolution(parsedIntent, stop.item.name);
   const fixtureDetail = poiDetailFixtures?.[stop.id] ?? poiDetailFixtures?.[stop.item.name] ?? null;
 
@@ -2130,16 +2133,19 @@ export function PlaceDetailPanelContainer({
     if (fixtureDetail) {
       setPoiDetail(fixtureDetail);
       setPoiDetailState("idle");
+      setPoiDetailObservedAt(fixtureDetail.observed_at);
       return;
     }
     if (!poiDetailEndpoint) {
       setPoiDetail(null);
       setPoiDetailState("idle");
+      setPoiDetailObservedAt(null);
       return;
     }
     if (isGenericPlanningAnchorName(stop.item.name)) {
       setPoiDetail(null);
       setPoiDetailState("idle");
+      setPoiDetailObservedAt(null);
       return;
     }
 
@@ -2148,17 +2154,21 @@ export function PlaceDetailPanelContainer({
       city: stop.item.city ?? resolution?.city ?? null,
       latitude: stop.item.latitude ?? null,
       longitude: stop.item.longitude ?? null,
+      scheduledStartTime: stop.item.start_time,
+      scheduledEndTime: stop.item.end_time,
     });
     const cachedDetail = getCachedPoiDetailPreview(cacheKey);
     if (cachedDetail) {
       setPoiDetail(cachedDetail);
       setPoiDetailState("idle");
+      setPoiDetailObservedAt(cachedDetail.observed_at);
       return;
     }
 
     const controller = new AbortController();
     setPoiDetailState("loading");
     setPoiDetail(null);
+    setPoiDetailObservedAt(null);
 
     postTripJson<POIDetailPreview>(
       poiDetailEndpoint,
@@ -2167,6 +2177,8 @@ export function PlaceDetailPanelContainer({
         city: stop.item.city ?? resolution?.city ?? null,
         latitude: stop.item.latitude ?? null,
         longitude: stop.item.longitude ?? null,
+        scheduled_start_time: stop.item.start_time,
+        scheduled_end_time: stop.item.end_time,
       },
       "POI detail failed.",
       "POI detail failed.",
@@ -2177,6 +2189,7 @@ export function PlaceDetailPanelContainer({
           if (!result.aborted) {
             setPoiDetail(null);
             setPoiDetailState("failed");
+            setPoiDetailObservedAt(null);
           }
           return;
         }
@@ -2186,6 +2199,7 @@ export function PlaceDetailPanelContainer({
         }
         setPoiDetail(payload.found ? payload : null);
         setPoiDetailState(payload.found ? "idle" : "failed");
+        setPoiDetailObservedAt(payload.observed_at);
       });
 
     return () => controller.abort();
@@ -2198,6 +2212,8 @@ export function PlaceDetailPanelContainer({
     stop.item.latitude,
     stop.item.longitude,
     stop.item.name,
+    stop.item.start_time,
+    stop.item.end_time,
   ]);
 
   const viewModel = buildPlaceDetailViewModel({
@@ -2208,6 +2224,7 @@ export function PlaceDetailPanelContainer({
     routeMode,
     poiDetail,
     poiDetailState,
+    poiDetailObservedAt,
   });
   const panel = variant === "panel" || variant === "roadbook";
   const content = (
@@ -2772,22 +2789,28 @@ function routePreviewModeLabel(mode: RoutePreviewMode): string {
   return "步行预览";
 }
 
-function buildPoiDetailCacheKey({
+export function buildPoiDetailCacheKey({
   name,
   city,
   latitude,
   longitude,
+  scheduledStartTime,
+  scheduledEndTime,
 }: {
   name: string;
   city: string | null;
   latitude: number | null;
   longitude: number | null;
+  scheduledStartTime: string | null;
+  scheduledEndTime: string | null;
 }): string {
   return [
     name.trim().toLowerCase(),
     city?.trim().toLowerCase() ?? "",
     latitude != null ? latitude.toFixed(6) : "",
     longitude != null ? longitude.toFixed(6) : "",
+    scheduledStartTime ?? "",
+    scheduledEndTime ?? "",
   ].join("|");
 }
 

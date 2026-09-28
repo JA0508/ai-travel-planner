@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildDayLoads } from "./routePreviewModel";
+import { buildDayLoads, shouldDisplayTravelLeg } from "./routePreviewModel";
 
 const itinerary = {
   trip_days: 2,
@@ -28,4 +28,22 @@ test("classifies a packed day from the server-owned realism payload", () => {
   assert.equal(day.pace, "rushed");
   assert.equal(day.activityMinutes, 425);
   assert.equal(day.travelMinutes, 75);
+});
+
+test("does not present an internal route-center anchor as a traveler leg", () => {
+  const item = {
+    name: "灵隐寺",
+    type: "scenic" as const,
+    start_time: "09:00",
+    end_time: "10:30",
+    is_fixed: false,
+    travel_from_name: "灵隐寺附近路线中心",
+    travel_data_status: "confirmed" as const,
+    travel_duration_s: 0,
+    travel_distance_m: 1,
+  };
+
+  assert.equal(shouldDisplayTravelLeg({ planning_anchor_source: { source_type: "route_centroid", source_name: "灵隐寺附近路线中心" } }, item), false);
+  assert.equal(shouldDisplayTravelLeg({ planning_anchor_source: { source_type: "arrival_anchor", source_name: "杭州东站" } }, { ...item, travel_from_name: "杭州东站" }), true);
+  assert.equal(shouldDisplayTravelLeg({ planning_anchor_source: { source_type: "provided_hotel", source_name: "路线中心酒店" } }, { ...item, travel_from_name: "路线中心酒店" }), true);
 });

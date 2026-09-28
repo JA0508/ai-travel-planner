@@ -1281,6 +1281,8 @@ def preview_safe_replace_candidates(
     *,
     itinerary: ItineraryResponse,
     stop_id: str,
+    preference_policy: PlannerPreferencePolicy | None = None,
+    request_style_preferences: StylePreferenceSignal | set[str] | None = None,
     poi_discovery_provider: PoiDiscoveryProvider | None = None,
     limit: int = 3,
 ) -> tuple[
@@ -1405,7 +1407,12 @@ def preview_safe_replace_candidates(
                 type=target.type,
                 suggested_day=day.day,
                 suggested_block=block.block_type,
-                reasoning_summary=replacement_candidate_reason(impact),
+                reasoning_summary=replacement_candidate_summary(
+                    impact=impact,
+                    option_name=place.name,
+                    option_type=target.type,
+                    request_style_preferences=request_style_preferences,
+                ),
                 itinerary_relation_summary="只替换这一站，并重新检查它前后的两段路线。",
                 verified_place=verified_place,
                 route_impact=impact,
@@ -1413,11 +1420,13 @@ def preview_safe_replace_candidates(
         )
 
     options.sort(
-        key=lambda option: (
-            option.route_impact.delta_duration_s,
-            option.route_impact.after_duration_s,
-            replacement_route_distance(option.route_impact),
-            option.verified_place.provider_place_id,
+        key=cmp_to_key(
+            lambda left, right: compare_safe_replace_candidates(
+                left=left,
+                right=right,
+                preference_policy=preference_policy,
+                request_style_preferences=request_style_preferences,
+            )
         )
     )
     bounded = options[:display_limit]
@@ -1429,6 +1438,130 @@ def preview_safe_replace_candidates(
         "Candidates came from the existing POI provider and were checked against the adjacent route legs.",
         "route_context" if bounded else "empty",
     )
+
+
+def compare_safe_replace_candidates(
+    *,
+    left: ItineraryCompletionOption,
+    right: ItineraryCompletionOption,
+    preference_policy: PlannerPreferencePolicy | None,
+    request_style_preferences: StylePreferenceSignal | set[str] | None,
+) -> int:
+    """Keep verified route safety primary, then honor a close-route food preference."""
+
+    preference_ranking = compare_safe_replace_preference_alignment(
+        left=left,
+        right=right,
+        preference_policy=preference_policy,
+        request_style_preferences=request_style_preferences,
+    )
+    if preference_ranking and safe_replace_routes_are_close(
+        left.route_impact,
+        right.route_impact,
+    ):
+        return preference_ranking
+
+    left_route = (
+        left.route_impact.delta_duration_s,
+        left.route_impact.after_duration_s,
+        replacement_route_distance(left.route_impact),
+        left.verified_place.provider_place_id,
+    )
+    right_route = (
+        right.route_impact.delta_duration_s,
+        right.route_impact.after_duration_s,
+        replacement_route_distance(right.route_impact),
+        right.verified_place.provider_place_id,
+    )
+    if left_route != right_route:
+        return -1 if left_route < right_route else 1
+    if preference_ranking:
+        return preference_ranking
+    return 0
+
+
+def compare_safe_replace_preference_alignment(
+    *,
+    left: ItineraryCompletionOption,
+    right: ItineraryCompletionOption,
+    preference_policy: PlannerPreferencePolicy | None,
+    request_style_preferences: StylePreferenceSignal | set[str] | None,
+) -> int:
+    left_key = safe_replace_preference_alignment_key(
+        option=left,
+        preference_policy=preference_policy,
+        request_style_preferences=request_style_preferences,
+    )
+    right_key = safe_replace_preference_alignment_key(
+        option=right,
+        preference_policy=preference_policy,
+        request_style_preferences=request_style_preferences,
+    )
+    if left_key == right_key:
+        return 0
+    return -1 if left_key < right_key else 1
+
+
+def safe_replace_preference_alignment_key(
+    *,
+    option: ItineraryCompletionOption,
+    preference_policy: PlannerPreferencePolicy | None,
+    request_style_preferences: StylePreferenceSignal | set[str] | None,
+) -> tuple[int, int]:
+    """Rank only verified candidates; this never admits a candidate or changes a route."""
+
+    style_signal = normalize_style_preference_signal(request_style_preferences)
+    profile = infer_poi_profile(option.name, option.type)
+    food_style_rank = 1
+    if style_signal and style_signal.source_for(STYLE_BUCKET_FOOD_STOP) == "explicit":
+        food_style_rank = 0 if profile.visit_style == POIVisitStyle.FOOD_DISTRICT else 1
+
+    dining_rank = 1
+    if preference_policy is not None and preference_policy.dining_priority == "high":
+        dining_rank = 0 if profile.visit_style == POIVisitStyle.FOOD_DISTRICT else 1
+    return food_style_rank, dining_rank
+
+
+def safe_replace_preference_reason(
+    *,
+    option_name: str,
+    option_type: POIType,
+    request_style_preferences: StylePreferenceSignal | set[str] | None,
+) -> str:
+    style_signal = normalize_style_preference_signal(request_style_preferences)
+    profile = infer_poi_profile(option_name, option_type)
+    if (
+        style_signal
+        and style_signal.source_for(STYLE_BUCKET_FOOD_STOP) == "explicit"
+        and profile.visit_style == POIVisitStyle.FOOD_DISTRICT
+    ):
+        return "它也贴合你明确提到的本地小吃偏好。"
+    return ""
+
+
+def replacement_candidate_summary(
+    *,
+    impact: ReplacementRouteImpact,
+    option_name: str,
+    option_type: POIType,
+    request_style_preferences: StylePreferenceSignal | set[str] | None,
+) -> str:
+    route_reason = replacement_candidate_reason(impact)
+    preference_reason = safe_replace_preference_reason(
+        option_name=option_name,
+        option_type=option_type,
+        request_style_preferences=request_style_preferences,
+    )
+    return append_sentence_prefix(route_reason, preference_reason) if preference_reason else route_reason
+
+
+def safe_replace_routes_are_close(
+    left: ReplacementRouteImpact,
+    right: ReplacementRouteImpact,
+) -> bool:
+    if left.delta_duration_s is None or right.delta_duration_s is None:
+        return False
+    return abs(left.delta_duration_s - right.delta_duration_s) <= MEAL_REPAIR_PREFERENCE_ROUTE_CLOSE_DELTA_SECONDS
 
 
 def replacement_candidate_category_compatible(
@@ -3009,7 +3142,13 @@ def meal_repair_preference_alignment_key(
     explicit_style_rank = 2
     if style_signal:
         if style_signal.source_for(STYLE_BUCKET_FOOD_STOP) == "explicit":
-            explicit_style_rank = min(explicit_style_rank, 0)
+            explicit_style_rank = min(
+                explicit_style_rank,
+                0
+                if "street_food" in candidate_themes
+                or visit_style == POIVisitStyle.FOOD_DISTRICT
+                else 1,
+            )
         if style_signal.source_for(STYLE_BUCKET_NIGHT_VIEW) == "explicit" and block_type == TimeBlockType.EVENING:
             explicit_style_rank = min(
                 explicit_style_rank,

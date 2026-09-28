@@ -296,6 +296,61 @@ class ItineraryCompletionRecommendationTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         self.assertEqual(selected.name, "江边夜市晚餐")
 
+    def test_meal_repair_prefers_street_food_when_explicit_food_preference_and_route_are_equal(self) -> None:
+        itinerary = self.build_manual_itinerary(
+            blocks=[
+                DayTimeBlock(
+                    block_type=TimeBlockType.EVENING,
+                    start_time=time(17, 30),
+                    end_time=time(21, 0),
+                    items=[],
+                )
+            ],
+        )
+        target_block = itinerary.days[0].blocks[0]
+        candidates = [
+            CandidateSpec(
+                name="A 普通晚餐",
+                type=POIType.RESTAURANT,
+                block_types=(TimeBlockType.EVENING,),
+                areas=("people_square",),
+                themes=(),
+                duration_minutes=60,
+                profile_intensity="medium",
+                latitude=31.2304,
+                longitude=121.4737,
+            ),
+            CandidateSpec(
+                name="Z 本地小吃摊",
+                type=POIType.RESTAURANT,
+                block_types=(TimeBlockType.EVENING,),
+                areas=("people_square",),
+                themes=("street_food",),
+                duration_minutes=60,
+                profile_intensity="medium",
+                latitude=31.2304,
+                longitude=121.4737,
+            ),
+        ]
+
+        selected = choose_meal_repair_candidate(
+            candidates=candidates,
+            day_details=itinerary.days[0],
+            target_block=target_block,
+            block_type=TimeBlockType.EVENING,
+            existing_names=set(),
+            used_names=set(),
+            day_signal=(set(), set()),
+            trip_signal=(set(), set()),
+            day_centroid=None,
+            trip_centroid=None,
+            style_preferences=StylePreferenceSignal(explicit=frozenset({"food_stop"})),
+            preference_policy=None,
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.name, "Z 本地小吃摊")
+
     def test_completion_task_action_repairs_meal_anchor_only_for_target_block(self) -> None:
         itinerary = self.build_manual_itinerary(
             blocks=[

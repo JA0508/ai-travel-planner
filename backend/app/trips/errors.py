@@ -317,32 +317,54 @@ class RevisionNotUndoableError(TripError):
 
 
 class RestoreWouldDropFixedItemsError(TripError):
-    def __init__(self, *, protected_item_count: int) -> None:
+    def __init__(self, *, protected_item_count: int, protected_item_names: list[str]) -> None:
         super().__init__(
             code="restore_would_drop_fixed_items",
             message="Restoring this revision would remove or change a fixed arrangement.",
             status_code=409,
-            context={"protected_item_count": protected_item_count},
+            context={
+                "protected_item_count": protected_item_count,
+                "protected_item_names": protected_item_names,
+            },
         )
 
 
 class RestoreWouldDropMustVisitPlacesError(TripError):
-    def __init__(self, *, protected_item_count: int) -> None:
+    def __init__(self, *, protected_item_count: int, protected_item_names: list[str]) -> None:
         super().__init__(
             code="restore_would_drop_must_visit_places",
             message="Restoring this revision would remove a current must-visit place.",
             status_code=409,
-            context={"protected_item_count": protected_item_count},
+            context={
+                "protected_item_count": protected_item_count,
+                "protected_item_names": protected_item_names,
+            },
         )
 
 
 class RestoreWouldDropAvailabilityWindowsError(TripError):
-    def __init__(self, *, protected_window_count: int) -> None:
+    def __init__(self, *, protected_window_count: int, protected_window_labels: list[str]) -> None:
         super().__init__(
             code="restore_would_drop_availability_windows",
             message="Restoring this revision would remove a current availability window.",
             status_code=409,
-            context={"protected_window_count": protected_window_count},
+            context={
+                "protected_window_count": protected_window_count,
+                "protected_window_labels": protected_window_labels,
+            },
+        )
+
+
+class RestoreWouldChangeTravelBoundaryAnchorsError(TripError):
+    def __init__(self, *, protected_boundary_count: int, protected_boundary_labels: list[str]) -> None:
+        super().__init__(
+            code="restore_would_change_travel_boundary_anchors",
+            message="Restoring this revision would remove or change a current travel boundary anchor.",
+            status_code=409,
+            context={
+                "protected_boundary_count": protected_boundary_count,
+                "protected_boundary_labels": protected_boundary_labels,
+            },
         )
 
 

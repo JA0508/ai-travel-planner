@@ -14,6 +14,7 @@ type Props = {
   targetDay: number;
   impact: LocalRepairImpact;
   applying: boolean;
+  errorMessage?: string;
   onKeep: () => void;
   onApply: () => void;
 };
@@ -24,6 +25,7 @@ export function RoadbookRepairPreview({
   targetDay,
   impact,
   applying,
+  errorMessage,
   onKeep,
   onApply,
 }: Props) {
@@ -94,10 +96,12 @@ export function RoadbookRepairPreview({
         ) : null}
       </div>
 
+      {errorMessage ? <p className="repair-proof__retry" role="alert">{errorMessage}</p> : null}
+
       <footer className="repair-proof__actions">
         <button type="button" onClick={onKeep} disabled={applying}>保持原路线</button>
         <button type="button" onClick={onApply} disabled={applying}>
-          {applying ? "正在保存调整…" : "应用这次调整"}
+          {applying ? "正在保存调整…" : errorMessage ? "重试这次调整" : "应用这次调整"}
           <span aria-hidden="true">→</span>
         </button>
       </footer>
@@ -179,6 +183,7 @@ function RepairPreviewStyles() {
   return <style>{`
     .repair-proof{--repair-paper:#fffaf2;--repair-ink:#171613;--repair-muted:#706a62;--repair-line:rgba(23,22,19,.17);--repair-orange:#e65a28;position:relative;z-index:8;display:grid;gap:26px;margin:-1px 0 44px;border-top:5px solid var(--repair-orange);border-bottom:1px solid var(--repair-ink);background:var(--repair-paper);padding:34px 38px;color:var(--repair-ink)}
     .repair-proof__heading{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,.55fr);gap:32px;align-items:end}.repair-proof__heading p,.repair-proof__evidence article>p,.repair-proof__column>section>p{margin:0;color:var(--repair-orange);font-size:10px;font-weight:900;letter-spacing:.15em}.repair-proof__heading h2{margin:7px 0 0;font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:38px;line-height:1}.repair-proof__heading>span{color:var(--repair-muted);font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:15px;line-height:1.65}
+    .repair-proof__retry{margin:0;border-left:3px solid var(--repair-orange);padding:10px 13px;background:#fff0e8;color:#6e260f;font-size:13px;line-height:1.55}
     .repair-proof__compare{display:grid;grid-template-columns:minmax(0,1fr) 42px minmax(0,1fr);gap:12px;align-items:start}.repair-proof__arrow{display:grid;place-items:center;padding-top:72px;color:var(--repair-orange);font-size:28px}.repair-proof__column{min-width:0;border-top:1px solid var(--repair-ink);padding-top:14px}.repair-proof__column>h3{margin:0 0 16px;font-family:"Arial Narrow","Avenir Next Condensed","Noto Sans SC",sans-serif;font-size:25px}.repair-proof__column>section{display:grid;gap:10px}.repair-proof__column>section+section{margin-top:18px;border-top:1px dashed var(--repair-line);padding-top:17px}.repair-proof__route{display:grid}.repair-proof__route-unit{position:relative}.repair-proof__leg{display:grid;grid-template-columns:18px minmax(0,1fr);gap:5px;margin-left:74px;padding:9px 0;color:var(--repair-muted);font-size:10px}.repair-proof__leg i{color:var(--repair-orange);font-size:18px;font-style:normal;line-height:.6}.repair-proof__stop{display:grid;grid-template-columns:56px 18px minmax(0,1fr);gap:9px;align-items:start;border-top:1px solid var(--repair-line);padding:13px 8px}.repair-proof__stop>time{padding-top:4px;color:var(--repair-muted);font-size:11px;font-weight:900}.repair-proof__stop>span{width:13px;height:13px;margin-top:3px;border:2px solid var(--repair-paper);border-radius:50%;background:var(--repair-orange);box-shadow:0 0 0 1px var(--repair-orange)}.repair-proof__stop>div{display:grid;gap:3px}.repair-proof__stop strong{font-size:15px}.repair-proof__stop small{color:var(--repair-muted);font-size:10px}.repair-proof__route-unit.is-changed .repair-proof__stop{background:rgba(230,90,40,.1)}.repair-proof__route-unit.is-changed .repair-proof__stop strong{color:#9a3514}.repair-proof__column.is-before .repair-proof__route-unit.is-changed .repair-proof__stop strong{text-decoration:line-through;text-decoration-thickness:1px}.repair-proof__empty{color:var(--repair-muted);font-size:12px}
     .repair-proof__evidence{display:grid;grid-template-columns:.8fr 1fr 1.2fr;border-top:1px solid var(--repair-line);border-bottom:1px solid var(--repair-line)}.repair-proof__evidence article{padding:21px 24px}.repair-proof__evidence article+article{border-left:1px solid var(--repair-line)}.repair-proof__change{display:grid;align-content:start;gap:9px}.repair-proof__change>strong{font-family:"Iowan Old Style","Songti SC",Georgia,serif;font-size:20px;line-height:1.3}.repair-proof__change>span,.repair-proof__why>span{color:var(--repair-muted);font-size:12px;line-height:1.6}.repair-proof__why{display:grid;align-content:start;gap:9px}.repair-proof__protected ul{display:grid;gap:11px;margin:10px 0 0;padding:0;list-style:none}.repair-proof__protected li{display:grid;grid-template-columns:20px minmax(0,1fr);gap:7px}.repair-proof__protected li>b{color:#4f684c}.repair-proof__protected li>span{display:grid;gap:2px}.repair-proof__protected li strong{font-size:13px}.repair-proof__protected li small{color:var(--repair-muted);font-size:11px}.repair-proof__actions{display:flex;justify-content:flex-end;gap:12px}.repair-proof__actions button{min-height:44px;border:1px solid var(--repair-ink);padding:10px 17px;background:transparent;color:var(--repair-ink);font:inherit;font-size:13px;font-weight:900;cursor:pointer}.repair-proof__actions button:last-child{display:flex;align-items:center;gap:20px;background:var(--repair-ink);color:#fff}.repair-proof__actions button:last-child span{color:var(--repair-orange)}.repair-proof__actions button:disabled{opacity:.55;cursor:wait}.repair-proof__actions button:focus-visible{outline:3px solid rgba(230,90,40,.4);outline-offset:3px}
     @media(max-width:760px){.repair-proof{gap:15px;margin:0 -18px 32px;padding:22px 18px 24px}.repair-proof__heading{grid-template-columns:1fr;gap:7px}.repair-proof__heading h2{font-size:29px}.repair-proof__heading>span{font-size:13px}.repair-proof__compare{grid-template-columns:1fr;gap:9px}.repair-proof__arrow{height:20px;padding:0;transform:rotate(90deg);font-size:23px}.repair-proof__column>h3{margin-bottom:8px;font-size:22px}.repair-proof__column>section{gap:4px}.repair-proof__column>section+section{margin-top:8px;padding-top:8px}.repair-proof__leg{margin-left:72px;padding:4px 0}.repair-proof__stop{padding:8px 5px}.repair-proof__stop>div{gap:1px}.repair-proof__stop strong{font-size:14px}.repair-proof__evidence{grid-template-columns:1fr}.repair-proof__evidence article{padding:14px 0}.repair-proof__evidence article+article{border-top:1px solid var(--repair-line);border-left:0}.repair-proof__actions{display:grid;grid-template-columns:1fr 1.25fr;margin:0 -5px;padding:8px;background:var(--repair-paper);border-top:1px solid var(--repair-line)}.repair-proof__actions button{padding:9px 10px}.repair-proof__actions button:last-child{justify-content:center;gap:8px}}

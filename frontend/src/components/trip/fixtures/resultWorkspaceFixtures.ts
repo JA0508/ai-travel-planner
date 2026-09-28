@@ -394,6 +394,7 @@ function poi(name: string, category: string, latitude?: number | null, longitude
     latitude: latitude ?? null,
     longitude: longitude ?? null,
     source: "fixture",
+    observed_at: "2026-09-26T12:00:00Z",
     failure_reason: null,
   };
 }

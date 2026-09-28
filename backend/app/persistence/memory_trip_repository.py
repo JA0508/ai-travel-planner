@@ -176,6 +176,10 @@ class MemoryTripRepository:
         self.draft_trip_idempotency_records[idempotency_key_hash] = (request_digest, trip_id)
         return copy.deepcopy(trip), False
 
+    def get_draft_trip_by_creation_idempotency(self, *, idempotency_key_hash: str) -> TripRecord | None:
+        record = self.draft_trip_idempotency_records.get(idempotency_key_hash)
+        return self.get_trip(record[1]) if record is not None else None
+
     def get_draft_source_text(self, *, trip_id: str) -> str:
         try:
             return self.draft_trip_source_inputs[trip_id]
@@ -215,6 +219,16 @@ class MemoryTripRepository:
         self.trips[trip.id] = replace(trip, draft_version=trip.draft_version + 1, updated_at=revision.created_at)
         self.draft_intent_idempotency_records[key] = (request_digest, stored.id, True, trip.draft_version + 1)
         return copy.deepcopy(stored), False
+
+    def get_draft_intent_revision_by_idempotency(self, *, trip_id: str, request_digest: str,
+        idempotency_key_hash: str) -> DraftIntentRevisionRecord | None:
+        existing = self.draft_intent_idempotency_records.get((trip_id, idempotency_key_hash))
+        if existing is None:
+            return None
+        digest, revision_id, _changed, _draft_version = existing
+        if digest != request_digest:
+            raise IdempotencyConflictError()
+        return copy.deepcopy(self.draft_intent_revisions[revision_id])
 
     def edit_draft_intent_revision(self, *, revision: DraftIntentRevisionRecord, request_digest: str,
         idempotency_key_hash: str, expected_parent_draft_intent_revision_id: str, expected_draft_version: int,

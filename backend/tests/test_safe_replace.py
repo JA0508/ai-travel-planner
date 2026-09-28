@@ -16,16 +16,23 @@ from app.schemas import (
     ItineraryResponse,
     PlanningAnchorSource,
     POIType,
+    RegenerationIntentSummary,
     ScheduledPOI,
     ScheduledPOISourceType,
     TimeBlockType,
+    TripIntentEnvelope,
+    TripIntentEnvelopeSource,
+    UserConfirmedReplacement,
 )
+from app.api.routes.itinerary import build_replan_request
 from app.schemas.itinerary import VerifiedPlaceRef
 from app.services.poi_discovery_provider import (
     PoiDiscoveryCandidate,
     PoiDiscoveryCapability,
 )
 from app.services.itinerary_completion_recommendation import replacement_route_impact
+from app.services.nl_parser import parse_trip_text_fallback
+from app.trips.mutation_commands import TripMutationCommandEnvelope, TripMutationEngine
 from app.trips.dependencies import reset_trip_repository_cache_for_tests
 
 
@@ -193,6 +200,31 @@ class CandidateQualityProvider(SafeReplaceProvider):
     )
 
 
+class FoodPreferenceReplaceProvider(SafeReplaceProvider):
+    candidates = (
+        PoiDiscoveryCandidate(
+            name="顺路餐厅",
+            address="杭州市西湖区龙井路",
+            type="杭帮菜",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.231,
+            longitude=120.111,
+            provider_place_id="amap-route-a",
+        ),
+        PoiDiscoveryCandidate(
+            name="本地小吃",
+            address="杭州市西湖区龙井路",
+            type="小吃快餐店",
+            typecode="050100",
+            business_area="杭州",
+            latitude=30.232,
+            longitude=120.112,
+            provider_place_id="amap-route-b",
+        ),
+    )
+
+
 class SingleCandidateProvider(SafeReplaceProvider):
     def __init__(self, candidate: PoiDiscoveryCandidate) -> None:
         self.candidates = (candidate,)
@@ -291,6 +323,120 @@ class SafeReplaceTests(unittest.TestCase):
         self.assertNotIn("西湖博物馆", {option["name"] for option in options})
         self.assertNotIn("远山宴", {option["name"] for option in options})
         self.assertEqual(route_lookup.call_count, 8)
+
+    def test_replacement_candidates_prefer_explicit_food_style_when_routes_are_close(self) -> None:
+        client = TestClient(app)
+        itinerary = safe_replace_itinerary().model_copy(
+            update={
+                "trip_intent": TripIntentEnvelope(
+                    source=TripIntentEnvelopeSource.INITIAL_TEXT,
+                    current_intent=RegenerationIntentSummary(
+                        suggested_trip_days=1,
+                        trip_days_basis="用户明确要求一天",
+                        preferences=["本地美食"],
+                        style_preferences=["food_stop"],
+                        style_preference_sources={"food_stop": "explicit"},
+                    ),
+                )
+            }
+        )
+
+        with (
+            patch(
+                "app.services.itinerary_completion_recommendation.default_poi_discovery_provider",
+                return_value=FoodPreferenceReplaceProvider(),
+            ),
+            patch(
+                "app.services.itinerary_completion_recommendation.get_walking_route",
+                side_effect=ordered_route,
+            ),
+        ):
+            response = client.post(
+                "/preview-completion-task-candidates",
+                json={
+                    "itinerary": itinerary.model_dump(mode="json"),
+                    "task_id": "replace_stop",
+                    "replacement_stop_id": "stop-meal",
+                    "day": 1,
+                    "block_type": "afternoon",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            [option["name"] for option in response.json()["options"]],
+            ["本地小吃", "顺路餐厅"],
+        )
+        self.assertIn("明确提到的本地小吃偏好", response.json()["options"][0]["reasoning_summary"])
+
+    def test_safe_replace_records_a_rejected_system_restaurant_and_confirmed_choice_in_trip_intent(self) -> None:
+        itinerary = safe_replace_itinerary().model_copy(
+            update={
+                "trip_intent": TripIntentEnvelope(
+                    source=TripIntentEnvelopeSource.INITIAL_TEXT,
+                    current_intent=RegenerationIntentSummary(
+                        suggested_trip_days=1,
+                        trip_days_basis="用户明确要求一天",
+                    ),
+                )
+            }
+        )
+        preview = TripMutationEngine().preview(
+            base_snapshot=itinerary.model_dump(mode="json"),
+            envelope=TripMutationCommandEnvelope.model_validate(
+                replacement_command(
+                    base_revision_id="revision-1",
+                    stop_id="stop-meal",
+                    option=verified_option("茶人村", "amap-tea-village", 30.229, 120.111),
+                )
+            ),
+        )
+
+        intent = preview.resulting_snapshot["trip_intent"]["current_intent"]
+        self.assertEqual(intent["rejected_restaurants"], ["青芝坞餐厅"])
+        self.assertEqual(
+            intent["confirmed_replacements"],
+            [{
+                "original_name": "青芝坞餐厅",
+                "original_type": "restaurant",
+                "replacement_name": "茶人村",
+                "replacement_type": "restaurant",
+                "source": "swap",
+                "reasoning_summary": "它与这一段路线相邻。",
+            }],
+        )
+
+    def test_replan_carries_confirmed_safe_replacement_as_a_restaurant_seed(self) -> None:
+        base_intent = RegenerationIntentSummary(
+            city="杭州",
+            suggested_trip_days=1,
+            trip_days_basis="用户明确要求一天",
+            carry_forward_restaurants=["青芝坞餐厅"],
+            rejected_restaurants=["青芝坞餐厅"],
+            confirmed_replacements=[
+                UserConfirmedReplacement(
+                    original_name="青芝坞餐厅",
+                    original_type=POIType.RESTAURANT,
+                    replacement_name="茶人村",
+                    replacement_type=POIType.RESTAURANT,
+                    reasoning_summary="它与这一段路线相邻。",
+                )
+            ],
+        )
+
+        payload, _, _ = build_replan_request(
+            base_intent=base_intent,
+            follow_up_text="保持原来的安排",
+            follow_up_intent=parse_trip_text_fallback("保持原来的安排"),
+            auto_fill_sparse_days=True,
+        )
+
+        self.assertEqual([restaurant.name for restaurant in payload.restaurants], ["茶人村"])
+        self.assertEqual(payload.rejected_restaurants, ["青芝坞餐厅"])
+        self.assertEqual(
+            [replacement.replacement_name for replacement in payload.confirmed_replacements],
+            ["茶人村"],
+        )
 
     def test_replacement_candidates_do_not_pad_with_unsafe_places(self) -> None:
         candidate_counts = (
