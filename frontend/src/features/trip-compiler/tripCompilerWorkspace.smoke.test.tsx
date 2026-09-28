@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { TripCompilerWorkspace } from "./TripCompilerWorkspace";
+import {
+  latestRouteReloadFailureMessage,
+  TripCompilerWorkspace,
+} from "./TripCompilerWorkspace";
 
 const componentPath = fileURLToPath(new URL("./TripCompilerWorkspace.tsx", import.meta.url));
 
@@ -61,4 +64,11 @@ test("live compiler uses the immutable Draft Intent path before server candidate
   assert.doesNotMatch(source, /generateTripCompilerCandidates/);
   assert.doesNotMatch(source, /compileTripCompilerIntent/);
   assert.doesNotMatch(source, /planTripCompilerIntent/);
+});
+
+test("latest-route reload failure preserves the current route with a traveler-facing recovery message", () => {
+  assert.equal(
+    latestRouteReloadFailureMessage(),
+    "暂时无法载入最新路线。当前页面没有改动任何路线。",
+  );
 });

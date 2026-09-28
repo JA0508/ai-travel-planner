@@ -80,7 +80,7 @@ export function TripCompilerWorkspace() {
 
   async function reloadSavedRoute(tripId: string, intent: TravelIntent): Promise<LatestRouteReloadResult> {
     const result = await getTripJson<SavedTrip>(TRIP_API_ENDPOINTS.getTrip(tripId), "暂时无法载入最新路线。", "无法连接后端接口。");
-    if (!result.ok) return { errorMessage: result.message };
+    if (!result.ok) return { errorMessage: latestRouteReloadFailureMessage() };
     setState({ kind: "route", saved: result.data, intent });
     return { revisionNumber: result.data.current_revision.revision_number };
   }
@@ -290,6 +290,10 @@ function clearDraftCreationRecovery() {
 
 function candidateSaveRetryMessage() {
   return "暂时未能确认保存结果。请重试同一条路线；系统会继续这次保存，不会重复创建行程。";
+}
+
+export function latestRouteReloadFailureMessage() {
+  return "暂时无法载入最新路线。当前页面没有改动任何路线。";
 }
 
 function candidateSelectionRecoveryStorageKey(runId: string) {

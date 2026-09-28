@@ -1398,7 +1398,9 @@ test("Failed latest-route reload makes the retry explicit without changing the r
 
   await expect(page.getByText("暂时无法载入最新路线。当前页面没有改动任何路线。", { exact: false })).toBeVisible();
   await expect(page.getByRole("button", { name: "重新载入最新路线" })).toBeVisible();
-  await expect(page.getByText("湖畔小馆", { exact: true }).first()).toBeVisible();
+  await expect(
+    page.locator("[data-roadbook-stop]").filter({ hasText: "湖畔小馆" }).first(),
+  ).toBeVisible();
 
   await page.unroute(`**/api/trips/${saved.trip.id}`);
   const retryResponse = page.waitForResponse((response) => (
