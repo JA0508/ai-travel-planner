@@ -107,10 +107,12 @@ export function buildPrePlanConfirmationViewModel(
       tone: "todo",
     }));
   const confirmationItems = [...genericItems, ...fixedPlaceItems, ...unresolvedMustItems];
-  // Old Draft revisions may predate fixed-place readiness enforcement. Keep the
+  // Old Draft revisions may predate place-identity readiness enforcement. Keep the
   // browser from issuing a request that the server must reject, while the server
   // remains the authority for every new immutable revision.
-  const canGeneratePreview = isPlannerReady(envelope.planner_ready_status) && unresolvedFixedEventIds.length === 0;
+  const canGeneratePreview = isPlannerReady(envelope.planner_ready_status)
+    && unresolvedFixedEventIds.length === 0
+    && unresolvedMustItems.length === 0;
   const actionableConfirmationItems = getActionableConfirmationItems(
     confirmationItems,
     identities,

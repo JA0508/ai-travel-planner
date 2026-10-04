@@ -21,6 +21,47 @@ test("simple confirmed trip can continue without optional transport or budget", 
   assert.match(view.summary.find((item) => item.label === "旅行时间")?.value ?? "", /2 天/);
 });
 
+test("an old ready Draft requires confirmation of every unresolved must-place identity", () => {
+  for (const resolution_status of ["ambiguous", "unresolved"] as const) {
+    const base = envelope();
+    const view = buildPrePlanConfirmationViewModel({
+      ...base,
+      formal_contract: {
+        ...base.formal_contract,
+        place_identities: [{
+          stable_id: "hongyadong", original_name: "洪崖洞", canonical_name: null,
+          city: "重庆", ownership: "must", fixed_event_id: null, resolution_status,
+          provider: null, provider_place_id: null, latitude: null, longitude: null,
+          category: null, source_fragment_ids: [], confirmation_options: [], resolution_confidence: null,
+        }],
+      },
+    });
+    assert.equal(view.canGeneratePreview, false);
+    assert.equal(view.heading, "还需要补充信息");
+    assert.equal(view.remainingActionableConfirmationCount, 1);
+    assert.equal(view.requiresTravelInformationEdit, false);
+    assert.equal(view.actionHint, "还差 1 项即可生成首版路线。");
+  }
+});
+
+test("a verified must-place does not block a ready Draft", () => {
+  const base = envelope();
+  const view = buildPrePlanConfirmationViewModel({
+    ...base,
+    formal_contract: {
+      ...base.formal_contract,
+      place_identities: [{
+        stable_id: "hongyadong", original_name: "洪崖洞", canonical_name: "洪崖洞",
+        city: "重庆", ownership: "must", fixed_event_id: null, resolution_status: "verified",
+        provider: "amap", provider_place_id: "fixture-hongyadong", latitude: 29.56, longitude: 106.58,
+        category: null, source_fragment_ids: [], confirmation_options: [], resolution_confidence: 1,
+      }],
+    },
+  });
+  assert.equal(view.canGeneratePreview, true);
+  assert.equal(view.remainingActionableConfirmationCount, 0);
+});
+
 test("missing destination uses plain language and blocks the primary action", () => {
   const view = buildPrePlanConfirmationViewModel(envelope({
     fields: [],
