@@ -11,6 +11,12 @@ const componentPath = fileURLToPath(new URL("./PrePlanIntentWorkspace.tsx", impo
 const queuePath = fileURLToPath(new URL("./PrePlanConfirmationQueue.tsx", import.meta.url));
 const stylesPath = fileURLToPath(new URL("../../app/globals.css", import.meta.url));
 
+test("initial Draft load recovery retries reading before starting any compile", () => {
+  const source = readFileSync(componentPath, "utf8");
+  assert.match(source, /function retryBootstrap\(\)\s*\{\s*if \(compileAttemptRef.current\) void compileIntent\(\);\s*else void bootstrapIntent\(\);\s*\}/);
+  assert.match(source, /<RetryState onRetry=\{retryBootstrap\}/);
+});
+
 test("the primary source-refresh action starts a new compile attempt without bypassing confirmation", () => {
   const source = readFileSync(componentPath, "utf8");
   const handler = source.slice(source.indexOf("function handlePrimaryAction()"), source.indexOf("return (", source.indexOf("function handlePrimaryAction()")));

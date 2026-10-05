@@ -200,6 +200,11 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
     setFeedback(null);
   }
 
+  function retryBootstrap() {
+    if (compileAttemptRef.current) void compileIntent();
+    else void bootstrapIntent();
+  }
+
   async function bootstrapIntent() {
     setBootstrap("compiling");
     setFeedback({ tone: "info", message: "正在整理你的旅行需求……" });
@@ -577,7 +582,7 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       </header>
 
       {bootstrap === "compiling" || bootstrap === "idle" ? <LoadingState /> : null}
-      {bootstrap === "failed" ? <RetryState onRetry={() => void compileIntent()} /> : null}
+      {bootstrap === "failed" ? <RetryState onRetry={retryBootstrap} /> : null}
 
       {view && intent ? <>
         <section className="uc-intent-card uc-intent-trip-brief" aria-label="已理解">
