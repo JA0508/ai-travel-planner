@@ -11,6 +11,14 @@ const componentPath = fileURLToPath(new URL("./PrePlanIntentWorkspace.tsx", impo
 const queuePath = fileURLToPath(new URL("./PrePlanConfirmationQueue.tsx", import.meta.url));
 const stylesPath = fileURLToPath(new URL("../../app/globals.css", import.meta.url));
 
+test("the primary source-refresh action starts a new compile attempt without bypassing confirmation", () => {
+  const source = readFileSync(componentPath, "utf8");
+  const handler = source.slice(source.indexOf("function handlePrimaryAction()"), source.indexOf("return (", source.indexOf("function handlePrimaryAction()")));
+  assert.match(handler, /if \(!view \|\| busy\) return/);
+  assert.match(handler, /primaryAction.kind === "refresh_intent"[\s\S]*compileIntent\(\{ startNewAttempt: true \}\);\s*return;/);
+  assert.doesNotMatch(handler, /void apply\(/);
+});
+
 test("pre-plan workspace starts with a plain-language confirmation surface", () => {
   const html = renderToStaticMarkup(
     <PrePlanIntentWorkspace

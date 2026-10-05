@@ -44,11 +44,13 @@ test("turns the primary action into request recovery only for a confirmed editin
       requiresTravelInformationEdit: true,
       remainingActionableConfirmationCount: 0,
     }).kind,
-    "blocked",
+    "refresh_intent",
   );
 });
 
 test("names required recompilation when imported material has changed", () => {
+  assert.equal(prePlanPrimaryAction({ sourcesChanged: true, canGeneratePreview: true,
+    requiresTravelInformationEdit: false, remainingActionableConfirmationCount: 0 }).kind, "refresh_intent");
   assert.equal(
     prePlanPrimaryActionLabel({
       sourcesChanged: true,
@@ -56,7 +58,7 @@ test("names required recompilation when imported material has changed", () => {
       requiresTravelInformationEdit: false,
       remainingActionableConfirmationCount: 0,
     }),
-    "请先重新整理旅行信息",
+    "重新整理旅行信息",
   );
 });
 

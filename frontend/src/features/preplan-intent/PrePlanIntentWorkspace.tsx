@@ -556,7 +556,11 @@ export function PrePlanIntentWorkspace({ tripId, directUserText, onApplied, onCa
       : view?.actionHint ?? "正在整理你的旅行需求。";
 
   function handlePrimaryAction() {
-    if (!view) return;
+    if (!view || busy) return;
+    if (primaryAction.kind === "refresh_intent") {
+      void compileIntent({ startNewAttempt: true });
+      return;
+    }
     if (primaryAction.kind === "modify_request") {
       onCancel(blockedConfirmationRecoveryNotice(view.confirmationItems) ?? undefined);
       return;
