@@ -108,6 +108,14 @@ test("offers an explicit safe refresh when selected place facts have changed", (
   );
 });
 
+test("unverified formal intent offers the refresh named in its recovery message", () => {
+  const context = { reason_code: "formal_contract_not_verified" };
+  assert.match(userFacingPrePlanRequestError("planner_handoff_blocked", undefined, context), /重新整理旅行信息/);
+  assert.equal(plannerHandoffRecoveryAction("planner_handoff_blocked", context), "refresh_intent");
+  assert.equal(plannerHandoffRecoveryAction("unexpected_failure", context), undefined);
+  assert.equal(plannerHandoffRecoveryAction("planner_handoff_blocked", { reason_code: "unknown" }), undefined);
+});
+
 test("keeps the server-provided fixed-arrangement field identity for focused recovery", () => {
   assert.equal(
     plannerHandoffRecoveryFieldId("focus_fixed_place_confirmation", { field_id: "field:booking:late-show" }),

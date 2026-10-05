@@ -27,7 +27,8 @@ const DATE_POLICY_RECOVERY_REASONS = new Set([
   "travel_boundary_outside_trip",
 ]);
 
-const PLACE_FACT_REFRESH_RECOVERY_REASONS = new Set([
+const INTENT_REFRESH_RECOVERY_REASONS = new Set([
+  "formal_contract_not_verified",
   "intent_candidate_missing",
   "intent_candidate_identity_not_verified",
   "fixed_event_candidate_missing",
@@ -41,7 +42,7 @@ export function plannerHandoffRecoveryAction(
   if (context.reason_code === "must_place_identity_not_verified") return "focus_place_confirmation";
   if (context.reason_code === "fixed_event_identity_not_verified") return "focus_fixed_place_confirmation";
   if (context.reason_code === "destination_missing") return "edit_destination";
-  if (PLACE_FACT_REFRESH_RECOVERY_REASONS.has(context.reason_code)) return "refresh_intent";
+  if (INTENT_REFRESH_RECOVERY_REASONS.has(context.reason_code)) return "refresh_intent";
   return DATE_POLICY_RECOVERY_REASONS.has(context.reason_code) ? "edit_date_policy" : undefined;
 }
 
