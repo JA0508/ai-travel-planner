@@ -95,7 +95,7 @@ for (const viewportCase of viewportCases) {
     const tripId = await createDraftThroughHome(page, "周末玩两天，轻松一点。");
     const overview = page.getByRole("region", { name: "已理解" });
     const clarification = page.getByRole("region", { name: "还需确认" });
-    const primary = page.getByRole("button", { name: "生成路线预览" });
+    const primary = page.locator("#preplan-primary-action");
 
     await expect(clarification.getByText("请填写这次旅行的目的地")).toBeVisible();
     await expect(primary).toBeDisabled();
@@ -404,6 +404,7 @@ test(`Scenario E: confirms canonical places before creating one existing Plannin
   const savedPayload = await savedResponse.json() as { trip: { id: string } };
   const savedRoadbook = page.getByRole("region", { name: "可执行路线预览" });
   await expect(savedRoadbook).toBeVisible();
+  await savedRoadbook.getByRole("button", { name: "DAY 02" }).click();
   await expect(savedRoadbook.getByText("14 分钟 · 1.1 公里").first()).toBeVisible();
   await page.screenshot({ path: `test-results/intent/round26.1-hangzhou-${viewportCase.name}.png`, fullPage: true });
   const saved = readDraftDatabase(savedPayload.trip.id);
@@ -516,7 +517,7 @@ test("Scenario H: home confirmation requires a fixed-place revision before previ
     if (request.url().includes("/preplan-handoff/preview")) previewRequests.push(request.url());
   });
   const tripId = await createDraftThroughHome(page, "去上海两天，第二天下午两点到四点预约了上海博物馆。");
-  const primary = page.getByRole("button", { name: "生成路线预览" });
+  const primary = page.locator("#preplan-primary-action");
   const fixedPlace = page.getByRole("region", { name: "还需确认" });
 
   await expect(fixedPlace.getByText(/确认.*上海博物馆/)).toBeVisible();
@@ -556,7 +557,7 @@ test("Scenario I: home confirmation reveals the first route preview after the fi
   // the preview's obsolete route-segment request.
   gate.allowExpectedRouteSegmentAbort();
   const tripId = await createDraftThroughHome(page, "去杭州玩两天，轻松一点，想去西湖。");
-  const primary = page.getByRole("button", { name: "生成路线预览" });
+  const primary = page.locator("#preplan-primary-action");
   const confirmationQueue = page.getByRole("region", { name: "还需确认" });
 
   await expect(primary).toBeDisabled();

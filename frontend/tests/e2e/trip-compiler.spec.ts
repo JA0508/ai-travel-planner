@@ -28,11 +28,11 @@ type SavedRoadbookPayload = {
 
 function installNetworkGate(
   page: import("@playwright/test").Page,
-  options: { ignoreConsoleError?: (message: string) => boolean } = {},
+  options: { ignoreConsoleError?: (message: string) => boolean; ignoreResponse?: (response: import("@playwright/test").Response) => boolean } = {},
 ) {
   const failures: string[] = [];
   page.on("response", (response) => {
-    if (response.url().includes("/api/") && response.status() >= 500) failures.push(`${response.status()} ${response.url()}`);
+    if (response.url().includes("/api/") && response.status() >= 500 && !options.ignoreResponse?.(response)) failures.push(`${response.status()} ${response.url()}`);
   });
   page.on("console", (message) => {
     if (message.type() === "error" && !options.ignoreConsoleError?.(message.text())) failures.push(`console.error: ${message.text()}`);
@@ -1389,9 +1389,15 @@ test("A stale replacement undo names the failed undo and loads the latest route"
 });
 
 test("Failed latest-route reload makes the retry explicit without changing the route", async ({ page }) => {
-  const assertClean = installNetworkGate(page);
+  let expectedTripUrl: string | null = null;
+  const assertClean = installNetworkGate(page, {
+    ignoreResponse: (response) => response.status() === 503 && response.url() === expectedTripUrl,
+    ignoreConsoleError: (message) => isExpectedStaleConflictConsole(message)
+      || message === "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+  });
   await page.setViewportSize({ width: 1440, height: 900 });
   const saved = await createSavedRoadbook(page);
+  expectedTripUrl = new URL(`/api/trips/${saved.trip.id}`, page.url()).href;
   await openSafeReplaceCandidates(page, "湖畔小馆", 2);
   await selectReplacementCandidate(page, "茶人村");
   await expect(page.getByRole("heading", { name: "换成这里以后，这一段会这样走" })).toBeVisible();
