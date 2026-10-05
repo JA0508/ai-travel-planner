@@ -1,0 +1,5 @@
+# Generate a bcrypt hash with `docker run --rm -it caddy:2.10-alpine caddy hash-password`.
+# This deliberately invalid hash must be replaced before Caddy will start.
+basic_auth {
+    invited-tester REPLACE_WITH_BCRYPT_HASH
+}

@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
+from app.core.production_security import validate_production_security
 from app.core.runtime_config import (
     configure_logging,
     get_import_configuration_summary,
@@ -63,7 +64,14 @@ async def attach_request_observability(request: Request, call_next):
 
 @app.on_event("startup")
 def check_runtime_capabilities() -> None:
+    validate_production_security(os.environ)
     enforce_poi_discovery_configuration()
+
+
+@app.get("/health")
+def health() -> dict:
+    """Local liveness probe; provider readiness is a separate operation."""
+    return {"status": "ok"}
 
 
 @app.get("/readiness")

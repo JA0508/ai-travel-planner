@@ -1,0 +1,60 @@
+name: trip-preview
+services:
+  edge:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?Set a DNS hostname}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${ACCESS_FILE:?Set absolute path to access.caddy}:/etc/caddy/access.caddy:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      frontend:
+        condition: service_started
+  frontend:
+    build:
+      context: ..
+      dockerfile: infra/frontend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+  backend:
+    build:
+      context: ..
+      dockerfile: infra/backend.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ${BACKEND_ENV_FILE:?Set absolute path to private backend.env}
+    environment:
+      APP_ENV: production
+      POI_DISCOVERY_MODE: required
+      TRIP_STORE_MODE: sqlite
+      TRIP_STORE_PATH: /data/trips.sqlite3
+      IMPORT_ARTIFACT_STORE_MODE: local
+      IMPORT_ARTIFACT_ROOT: /data/import-artifacts
+      IMPORT_BINARY_STAGING_ROOT: /data/import-staging
+      TRIP_CAPABILITY_COOKIE_SECURE: "true"
+      TRIP_ALLOWED_ORIGINS: https://${PUBLIC_DOMAIN:?Set a DNS hostname}
+      CORS_ALLOW_ORIGINS: https://${PUBLIC_DOMAIN:?Set a DNS hostname}
+    volumes:
+      - trip-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  trip-data:
+  caddy-data:
+  caddy-config:

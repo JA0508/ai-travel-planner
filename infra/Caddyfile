@@ -1,0 +1,11 @@
+{$PUBLIC_DOMAIN} {
+    import /etc/caddy/access.caddy
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options nosniff
+        Referrer-Policy same-origin
+    }
+    reverse_proxy frontend:3000 {
+        header_up -Authorization
+    }
+}
